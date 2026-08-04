@@ -1,0 +1,68 @@
+rules:
+  - id: PGDR-BR-001
+    rule: "Vehicle identity resolution must occur before vehicle-specific reasoning."
+    enforcement: block
+  - id: PGDR-BR-002
+    rule: "Safety triage must occur before detailed hypothesis generation."
+    enforcement: block
+  - id: PGDR-BR-003
+    rule: "The user complaint must be preserved verbatim."
+    enforcement: invariant
+  - id: PGDR-BR-004
+    rule: "Structured interpretations must be separated from user statements."
+    enforcement: invariant
+  - id: PGDR-BR-005
+    rule: "Every hypothesis must be linked to observations."
+    enforcement: fatal
+  - id: PGDR-BR-006
+    rule: "No exact component failure may be declared without professional evidence."
+    enforcement: fatal
+  - id: PGDR-BR-007
+    rule: "Dangerous observation requests are prohibited."
+    enforcement: fatal
+  - id: PGDR-BR-008
+    rule: "A severe safety rule overrides all non-safety outputs."
+    enforcement: fatal
+  - id: PGDR-BR-009
+    rule: "A report may be produced with incomplete information if limitations are explicit."
+    enforcement: allow
+  - id: PGDR-BR-010
+    rule: "User evidence and automated interpretation must remain distinguishable."
+    enforcement: invariant
+  - id: PGDR-BR-011
+    rule: "The runner must prioritize reproducibility information for intermittent symptoms."
+    enforcement: warn
+  - id: PGDR-BR-012
+    rule: "The runner must not estimate a definitive repair cost."
+    enforcement: fatal
+  - id: PGDR-BR-013
+    rule: "The garage report must include unresolved questions."
+    enforcement: warn
+  - id: PGDR-BR-014
+    rule: "The runner must not represent the absence of detected risk as proof of safety."
+    enforcement: invariant
+  - id: PGDR-BR-015
+    rule: "The final user summary must be less technical than the garage report."
+    enforcement: warn
+
+invariants:
+  - id: PGDR-INV-001
+    statement: "The runner must not ask a question that cannot materially affect safety, classification, evidence quality, or garage preparation."
+  - id: PGDR-INV-002
+    statement: "No evidence request may expose the user to traffic, thermal, mechanical, electrical, chemical, or visibility hazards."
+  - id: PGDR-INV-003
+    statement: "Absence of reported danger is not evidence of vehicle safety."
+  - id: PGDR-INV-004
+    statement: "A high-risk signal must override convenience and appointment preparation."
+  - id: PGDR-INV-005
+    statement: "Safety instructions must precede diagnostic hypotheses."
+  - id: PGDR-INV-006
+    statement: "The system must not encourage driving to reproduce a potentially dangerous symptom."
+  - id: PGDR-INV-007
+    statement: "Uncertainty must be represented explicitly and must not be converted into confident language during report generation."
+
+thresholds:
+  max_hypotheses_user_display: 5
+  max_hypotheses_garage_report: 8
+  min_confidence_for_user_display: low
+  identity_confidence_min_for_specific_reasoning: 0.6

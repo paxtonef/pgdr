@@ -1,0 +1,105 @@
+symptom_families:
+  - id: starting
+    label: "Système de démarrage"
+  - id: engine_running
+    label: "Moteur en fonctionnement"
+  - id: acceleration
+    label: "Accélération"
+  - id: power_loss
+    label: "Perte de puissance"
+  - id: braking
+    label: "Freinage"
+  - id: steering
+    label: "Direction"
+  - id: suspension
+    label: "Suspension"
+  - id: transmission
+    label: "Transmission"
+  - id: electrical
+    label: "Système électrique"
+  - id: battery_or_charging
+    label: "Batterie / Charge"
+  - id: temperature_or_overheating
+    label: "Température / Surchauffe"
+  - id: fluid_leak
+    label: "Fuite de liquide"
+  - id: smoke
+    label: "Fumée"
+  - id: smell
+    label: "Odeur"
+  - id: noise
+    label: "Bruit"
+  - id: vibration
+    label: "Vibration"
+  - id: warning_light
+    label: "Voyant"
+  - id: fuel_consumption
+    label: "Consommation de carburant"
+  - id: tyre_or_wheel
+    label: "Pneus / Roues"
+  - id: climate_control
+    label: "Climatisation"
+  - id: visibility
+    label: "Visibilité"
+  - id: body_or_structure
+    label: "Carrosserie / Structure"
+  - id: charging_system_ev
+    label: "Système de charge (EV)"
+  - id: unknown
+    label: "Non classé"
+
+# Simple keyword -> family map used by the rule-based v0.1 complaint parser.
+# Longer/more specific phrases should be listed first where overlap is possible.
+keyword_map:
+  tremble: vibration
+  tremblement: vibration
+  vibration: vibration
+  bruit: noise
+  claquement: noise
+  grincement: noise
+  sifflement: noise
+  voyant: warning_light
+  "check engine": warning_light
+  moteur: engine_running
+  ralenti: engine_running
+  cale: engine_running
+  frein: braking
+  freine: braking
+  direction: steering
+  volant: steering
+  fuite: fluid_leak
+  "tache d'huile": fluid_leak
+  "tache d'essence": fluid_leak
+  "trace d'huile": fluid_leak
+  flaque: fluid_leak
+  fumée: smoke
+  odeur: smell
+  brûlé: smell
+  chauffe: temperature_or_overheating
+  surchauffe: temperature_or_overheating
+  température: temperature_or_overheating
+  batterie: battery_or_charging
+  alternateur: battery_or_charging
+  démarre: starting
+  démarrer: starting
+  starter: starting
+  accélère: acceleration
+  accélération: acceleration
+  puissance: power_loss
+  pâtit: power_loss
+  pneu: tyre_or_wheel
+  roue: tyre_or_wheel
+  crevaison: tyre_or_wheel
+  degonfle: tyre_or_wheel
+  consommation: fuel_consumption
+  essence: fuel_consumption
+  clim: climate_control
+  climatisation: climate_control
+  chauffage: climate_control
+  essuie-glace: visibility
+  phare: visibility
+  carrosserie: body_or_structure
+  porte: body_or_structure
+  boîte: transmission
+  vitesse: transmission
+  embrayage: transmission

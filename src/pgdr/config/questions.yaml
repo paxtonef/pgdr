@@ -1,0 +1,98 @@
+questions:
+  - question_id: Q-STATE-001
+    target: vehicle_current_state
+    category: vehicle_behavior
+    prompt: "Où se trouve le véhicule actuellement ?"
+    answer_type: single_choice
+    required: true
+    risk_level: none
+    selection_reason: "Contexte nécessaire pour proposer une collecte de preuves sûre."
+    choices: ["domicile", "bord de route", "parking", "travail", "garage", "en mouvement", "je ne sais pas"]
+
+  - question_id: Q-STATE-002
+    target: engine_state
+    category: operating_condition
+    prompt: "Le symptôme apparaît-il moteur froid, moteur chaud, ou dans les deux cas ?"
+    answer_type: single_choice
+    required: false
+    risk_level: none
+    selection_reason: "Condition de reproduction essentielle pour le garage."
+    choices: ["froid (au démarrage)", "chaud (roulé plus de 15 min)", "les deux", "je ne sais pas"]
+
+  - question_id: Q-SYM-001
+    target: symptom_frequency
+    category: temporal
+    prompt: "À quelle fréquence observez-vous ce problème ?"
+    answer_type: single_choice
+    required: true
+    risk_level: none
+    selection_reason: "Classification de fréquence pour la reproduction en atelier."
+    choices: ["toujours", "souvent", "parfois", "rarement", "une seule fois", "de plus en plus fréquent"]
+
+  - question_id: Q-SYM-002
+    target: symptom_severity
+    category: intensity
+    prompt: "Diriez-vous que le problème est léger, modéré, ou fort ?"
+    answer_type: single_choice
+    required: false
+    risk_level: none
+    selection_reason: "Pondération du niveau de triage."
+    choices: ["léger", "modéré", "fort", "handicapant", "je ne sais pas"]
+
+  - question_id: Q-COND-001
+    target: speed_range
+    category: operating_condition
+    prompt: "Le symptôme apparaît-il plutôt au ralenti, en accélération, à vitesse stabilisée, ou au freinage ?"
+    answer_type: multiple_choice
+    required: false
+    risk_level: none
+    selection_reason: "Discrimination des conditions de fonctionnement."
+    choices: ["au ralenti / démarrage", "en accélération", "à vitesse stabilisée", "au freinage", "en virage", "je ne sais pas"]
+
+  - question_id: Q-EVT-001
+    target: recent_maintenance
+    category: recent_event
+    prompt: "Un entretien, changement de batterie, de pneus, ou un plein de carburant a-t-il eu lieu récemment ?"
+    answer_type: yes_no
+    required: false
+    risk_level: none
+    selection_reason: "Corrélation avec un événement récent."
+
+  - question_id: Q-EVT-002
+    target: recent_event_detail
+    category: recent_event
+    prompt: "Précisez cet événement récent et sa date approximative :"
+    answer_type: text
+    required: false
+    risk_level: none
+    selection_reason: "Détail de l'événement récent."
+    ask_if: "Q-EVT-001==true"
+
+  - question_id: Q-EVI-001
+    target: evidence_availability
+    category: evidence
+    prompt: "Avez-vous une photo du voyant, un enregistrement du bruit, ou une vidéo ?"
+    answer_type: yes_no
+    required: false
+    risk_level: none
+    selection_reason: "Évaluation de la disponibilité de preuves."
+
+  - question_id: Q-EVI-002
+    target: dashboard_photo
+    category: evidence
+    prompt: "Vous pouvez joindre une photo du tableau de bord (véhicule à l'arrêt uniquement)."
+    answer_type: media_upload
+    required: false
+    risk_level: low
+    selection_reason: "Preuve visuelle du voyant — collecte sûre uniquement à l'arrêt."
+    ask_if: "Q-EVI-001==true"
+
+  - question_id: Q-CLAR-001
+    target: contradiction_check
+    category: clarification
+    prompt: "Certaines informations semblent contradictoires. Pouvez-vous préciser ?"
+    answer_type: text
+    required: false
+    risk_level: none
+    selection_reason: "Résolution d'une contradiction détectée."
+    ask_if: "contradiction_detected"

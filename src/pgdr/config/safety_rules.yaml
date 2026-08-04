@@ -1,0 +1,276 @@
+# Deterministic safety rule table. Never AI-generated at runtime (pack 15.3 /
+# 20.1: ai_override_prohibited). Each rule is evaluated independently; the
+# HIGHEST-severity matching rule wins (see safety_engine.severity_rank).
+rules:
+  - id: PGDR-SAF-001
+    name: "Perte de pédale de frein"
+    conditions:
+      keywords_any:
+        - "pedale de frein molle"
+        - "pédale de frein molle"
+        - "pedale de frein est molle"
+        - "pédale de frein est molle"
+        - "perte de frein"
+        - "frein ne freine plus"
+        - "ne freine plus"
+        - "plus de frein"
+        - "brake pedal loss"
+        - "no brakes"
+        - "soft brake pedal"
+        - "brake pedal feels soft"
+        - "brake pedal is soft"
+        - "spongy brake"
+        - "losing brakes"
+        - "no brake pressure"
+        - "brakes are not working"
+        - "brakes stopped working"
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Faites immobiliser le véhicule en sécurité et appelez une dépanneuse."
+    reason: "Perte de fonction de freinage = danger vital immédiat."
+
+  - id: PGDR-SAF-001B
+    name: "Frein mou (mots non adjacents)"
+    conditions:
+      keywords_any_words_groups:
+        - ["pedale", "molle"]
+        - ["pedal", "soft"]
+        - ["brake", "soft"]
+        - ["frein", "mou"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Faites immobiliser le véhicule en sécurité et appelez une dépanneuse."
+    reason: "Perte de fonction de freinage = danger vital immédiat."
+
+  - id: PGDR-SAF-002
+    name: "Voyant huile + perte de puissance"
+    conditions:
+      warning_keywords_any: ["huile", "oil pressure"]
+      keywords_any: ["perte de puissance", "power loss"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Arrêtez le moteur immédiatement. Ne redémarrez pas."
+    reason: "Pression d'huile critique associée à une perte de puissance = risque de destruction moteur."
+
+  - id: PGDR-SAF-003
+    name: "Surchauffe sévère"
+    conditions:
+      keywords_any: ["surchauffe", "overheating", "voyant température rouge", "fume sous le capot"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Arrêtez le véhicule dans un endroit sûr, coupez le moteur et attendez le refroidissement."
+    reason: "Surchauffe sévère = risque de fusion moteur ou d'incendie."
+
+  - id: PGDR-SAF-004
+    name: "Fumée et odeur de brûlé"
+    conditions:
+      keywords_any: ["fumée", "smoke", "odeur de brûlé", "burning smell", "étincelles"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: true
+    roadside_assistance: true
+    instruction: "Arrêtez-vous immédiatement, évacuez le véhicule et appelez les secours."
+    reason: "Fumée visible et/ou odeur de brûlé = risque d'incendie."
+
+  - id: PGDR-SAF-005
+    name: "Perte de direction"
+    conditions:
+      keywords_any: ["perte de direction", "volant libre", "steering loss", "direction bloquée"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Faites dépanner le véhicule sur place."
+    reason: "Perte de contrôle directionnel = danger vital."
+
+  - id: PGDR-SAF-005B
+    name: "Direction devenue subitement très dure"
+    conditions:
+      keywords_any_words_groups:
+        - ["direction", "dure"]
+        - ["direction", "difficile"]
+        - ["volant", "dur"]
+        - ["direction", "bloque"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Une direction devenue subitement dure peut indiquer une panne d'assistance de direction."
+    reason: "Rigidité soudaine de la direction = risque de perte de contrôle (AMD pack 11.2: sudden_extreme_stiffness)."
+
+  - id: PGDR-SAF-006
+    name: "Pneu visiblement à plat ou roue instable"
+    conditions:
+      keywords_any: ["pneu à plat", "pneu crevé", "flat tyre", "roue qui bouge", "roue desserrée", "roue bouge"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas sur ce pneu. Changez la roue si vous savez le faire en sécurité, sinon appelez le dépannage."
+    reason: "Pneu à plat ou roue instable = risque de perte de contrôle."
+
+  - id: PGDR-SAF-006B
+    name: "Pneu à plat / dégonflé (mots non adjacents dans la phrase)"
+    conditions:
+      keywords_any_words_groups:
+        - ["pneu", "plat"]
+        - ["pneu", "degonfle"]
+        - ["roue", "bouge"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas sur ce pneu. Changez la roue si vous savez le faire en sécurité, sinon appelez le dépannage."
+    reason: "Pneu à plat ou roue instable = risque de perte de contrôle."
+
+  - id: PGDR-SAF-007
+    name: "Voyant moteur clignotant + vibration"
+    conditions:
+      warning_behavior: flashing
+      warning_keywords_any: ["moteur", "check engine"]
+      keywords_any: ["vibration", "tremble", "tremblement"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Un voyant moteur clignotant associé à des vibrations indique un défaut actif."
+    reason: "Clignotement du voyant moteur + vibration = défaut allumage/injection actif, risque d'endommagement du catalyseur."
+
+  - id: PGDR-SAF-008
+    name: "Fuite majeure de carburant"
+    conditions:
+      keywords_any: ["fuite d'essence", "fuite de gasoil", "fuite de carburant", "fuel leak"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: true
+    roadside_assistance: true
+    instruction: "Ne démarrez pas le moteur. Éloignez toute source d'inflammation et appelez les secours."
+    reason: "Fuite de carburant = risque d'incendie majeur."
+
+  - id: PGDR-SAF-008B
+    name: "Fuite majeure de liquide inconnu (grande flaque)"
+    conditions:
+      keywords_any_words_groups:
+        - ["fuite", "flaque"]
+        - ["fuite", "importante"]
+        - ["flaque", "grande"]
+        - ["major", "leak"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne démarrez pas avant d'avoir identifié le liquide si possible sans danger. Une fuite importante peut affecter le freinage, la direction ou le refroidissement."
+    reason: "Fuite majeure de liquide non identifié = risque pour le freinage, la direction ou le refroidissement (AMD pack 11.2: major_unknown_fluid_leak)."
+
+  - id: PGDR-SAF-009
+    name: "Événement thermique batterie (véhicule électrique)"
+    conditions:
+      keywords_any: ["batterie chaude", "battery thermal", "charge qui surchauffe", "charging overheating"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: true
+    roadside_assistance: true
+    instruction: "Débranchez la charge si possible sans danger. Évacuez en cas de fumée. Appelez les secours."
+    reason: "Événement thermique sur la batterie haute tension = risque d'emballement thermique."
+
+  - id: PGDR-SAF-009B
+    name: "Batterie qui chauffe pendant la charge (mots non adjacents)"
+    conditions:
+      keywords_any_words_groups:
+        - ["batterie", "chauffe"]
+        - ["battery", "hot"]
+        - ["battery", "overheat"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: true
+    roadside_assistance: true
+    instruction: "Débranchez la charge si possible sans danger. Évacuez en cas de fumée. Appelez les secours."
+    reason: "Chauffe anormale de la batterie haute tension pendant la charge = risque d'emballement thermique (AMD pack 11.2: battery_thermal_event)."
+
+  - id: PGDR-SAF-010
+    name: "Éclairage défaillant de nuit"
+    conditions:
+      keywords_any: ["phare hs", "plus de phares", "lighting failure", "éclairage ne fonctionne plus"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: false
+    instruction: "Ne conduisez pas de nuit sans éclairage fonctionnel."
+    reason: "Éclairage défaillant de nuit = risque de collision."
+
+  - id: PGDR-SAF-011
+    name: "Voyant airbag allumé"
+    conditions:
+      warning_keywords_any: ["airbag", "srs"]
+    triage_level: prompt_inspection
+    driving_assessment: professional_assessment_required
+    emergency_services: false
+    roadside_assistance: false
+    instruction: "Le système de protection passif semble désactivé. Faites inspecter le véhicule rapidement."
+    reason: "Voyant airbag/SRS actif = protection passive potentiellement compromise en cas d'accident."
+
+  - id: PGDR-SAF-011B
+    name: "Voyant ABS allumé"
+    conditions:
+      warning_keywords_any: ["abs"]
+    triage_level: prompt_inspection
+    driving_assessment: professional_assessment_required
+    emergency_services: false
+    roadside_assistance: false
+    instruction: "Le système antiblocage des roues (ABS) semble désactivé. Le freinage normal fonctionne mais reste moins efficace en urgence. Faites inspecter rapidement."
+    reason: "Voyant ABS actif = fonction d'assistance au freinage potentiellement compromise."
+
+  - id: PGDR-SAF-012
+    name: "Voyant frein rouge"
+    conditions:
+      warning_color: red
+      warning_keywords_any: ["frein", "brake"]
+    triage_level: do_not_drive
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Vérifiez le niveau de liquide de frein si cela peut être fait sans danger. Sinon, faites appel au dépannage."
+    reason: "Voyant frein rouge = perte de liquide ou défaillance ABS/ESP possible."
+
+  - id: PGDR-SAF-013
+    name: "Voyant batterie/charge rouge en roulant"
+    conditions:
+      warning_color: red
+      warning_keywords_any: ["batterie", "charge", "alternateur", "battery"]
+    triage_level: prompt_inspection
+    driving_assessment: professional_assessment_required
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Le système de charge semble défaillant. Une panne moteur (arrêt) est possible à tout moment."
+    reason: "Alternateur ou batterie potentiellement en défaut — risque d'arrêt moteur imprévu."
+
+  - id: PGDR-SAF-014
+    name: "Bruit de direction avec perte de contrôle perçue"
+    conditions:
+      keywords_any: ["bruit de direction", "steering noise"]
+      keywords_any_secondary: ["perte de contrôle", "direction qui tire", "direction lâche"]
+    triage_level: emergency_stop
+    driving_assessment: do_not_drive
+    emergency_services: false
+    roadside_assistance: true
+    instruction: "Ne roulez pas. Un composant de direction est potentiellement défaillant."
+    reason: "Bruit de direction combiné à une perte de contrôle perçue = défaillance structurelle possible."
+
+# Default fallback when no rule matches — never asserts safety (PGDR-INV-003).
+default:
+  triage_level: monitor_and_document
+  driving_assessment: not_assessed
+  emergency_services: false
+  roadside_assistance: false
+  instruction: >-
+    Aucun signal critique n'a été identifié dans les informations fournies.
+    Cela ne constitue pas une confirmation que le véhicule est sûr à conduire.
+  reason: "Absence de signal de danger détecté ≠ preuve de sécurité (PGDR-INV-003)."

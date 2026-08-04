@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pgdr"
+version = "0.1.0"
+description = "Pre-Garage Diagnostic Runner"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+    "rich>=13.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+pgdr = "pgdr.cli:main"
