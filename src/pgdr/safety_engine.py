@@ -14,6 +14,16 @@ other words sit between them in the sentence.
 It NEVER produces `driving_assessment: safe_to_drive` — that value does not
 even exist in the DrivingAssessment enum (see enums.py docstring, and
 boundary contract in AMD pack 1.3 / 11.4).
+
+P0 fail-closed contract: constructing a SafetyEngine calls
+config_loader.load_safety_rules(), which fully validates safety_rules.yaml
+(schema + enum values + unique ids + non-empty conditions) before this
+class ever sees it. If that validation fails, it raises
+pgdr.errors.ConfigurationError and this class is simply never instantiated
+— there is no code path here that converts a bad config into a degraded
+but "apparently normal" triage result. Callers (session_controller.py,
+cli.py) must let ConfigurationError propagate to a hard failure, never
+catch it and substitute a default triage level.
 """
 from __future__ import annotations
 
@@ -35,17 +45,24 @@ _SEVERITY_ORDER = [
 
 
 def _severity_rank(level: TriageLevel) -> int:
-    try:
-        return _SEVERITY_ORDER.index(level)
-    except ValueError:
-        return 0
+    # No except/fallback: _SEVERITY_ORDER enumerates every TriageLevel
+    # member, so this can only raise if a new enum member is added without
+    # updating the list — a real programming error that should fail loudly
+    # during development, not be silently mapped to "least severe".
+    return _SEVERITY_ORDER.index(level)
 
 
 class SafetyEngine:
     def __init__(self) -> None:
+        # load_safety_rules() has already run full P0.3 semantic
+        # validation (unique ids, required fields present, valid enum
+        # values, non-empty conditions) — so from here on we trust the
+        # structure completely. No .get(..., []) / .get(..., {}) fallback:
+        # if validation was somehow bypassed, this should fail loudly
+        # (KeyError) rather than silently degrade.
         cfg = load_safety_rules()
-        self.rules: list[dict] = cfg.get("rules", [])
-        self.default: dict = cfg.get("default", {})
+        self.rules: list[dict] = cfg["rules"]
+        self.default: dict = cfg["default"]
 
     def evaluate(self, session: DiagnosticSession) -> SafetyTriage:
         text = self._all_text(session)
@@ -54,27 +71,23 @@ class SafetyEngine:
         triage = SafetyTriage()
         for rule in self.rules:
             if self._matches(rule.get("conditions", {}), text, warning_texts, session):
-                level = self._parse_level(rule.get("triage_level"))
+                level = TriageLevel(rule["triage_level"])
                 if _severity_rank(level) >= _severity_rank(triage.level):
                     triage.level = level
                     triage.triggered_rules.append(rule["id"])
-                    triage.reasons.append(rule.get("reason", ""))
-                    triage.user_instruction = rule.get("instruction", triage.user_instruction)
-                    triage.driving_assessment = DrivingAssessment(
-                        rule.get("driving_assessment", "not_assessed")
-                    )
+                    triage.reasons.append(rule["reason"])
+                    triage.user_instruction = rule["instruction"]
+                    triage.driving_assessment = DrivingAssessment(rule["driving_assessment"])
                     triage.emergency_services_required = bool(rule.get("emergency_services", False))
                     triage.roadside_assistance_recommended = bool(rule.get("roadside_assistance", False))
 
         if not triage.triggered_rules:
-            triage.level = self._parse_level(self.default.get("triage_level", "monitor_and_document"))
-            triage.driving_assessment = DrivingAssessment(
-                self.default.get("driving_assessment", "not_assessed")
-            )
+            triage.level = TriageLevel(self.default["triage_level"])
+            triage.driving_assessment = DrivingAssessment(self.default["driving_assessment"])
             triage.emergency_services_required = bool(self.default.get("emergency_services", False))
             triage.roadside_assistance_recommended = bool(self.default.get("roadside_assistance", False))
-            triage.user_instruction = self.default.get("instruction", "")
-            triage.reasons.append(self.default.get("reason", ""))
+            triage.user_instruction = self.default["instruction"]
+            triage.reasons.append(self.default["reason"])
 
         return triage
 
@@ -141,10 +154,3 @@ class SafetyEngine:
                 return False
 
         return True
-
-    @staticmethod
-    def _parse_level(raw: str | None) -> TriageLevel:
-        try:
-            return TriageLevel(raw)
-        except (ValueError, TypeError):
-            return TriageLevel.MONITOR_AND_DOCUMENT

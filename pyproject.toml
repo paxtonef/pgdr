@@ -16,3 +16,16 @@ dependencies = [
 
 [project.scripts]
 pgdr = "pgdr.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pgdr"]
+
+# P0.1 — the 4 governance YAML files must ship inside the wheel and be
+# loadable via importlib.resources against the pgdr.config package (see
+# config_loader.py), not via a path relative to __file__ that only exists
+# in a source checkout.
+[tool.hatch.build.targets.wheel.force-include]
+"src/pgdr/config/safety_rules.yaml" = "pgdr/config/safety_rules.yaml"
+"src/pgdr/config/symptom_taxonomy.yaml" = "pgdr/config/symptom_taxonomy.yaml"
+"src/pgdr/config/questions.yaml" = "pgdr/config/questions.yaml"
+"src/pgdr/config/business_rules.yaml" = "pgdr/config/business_rules.yaml"

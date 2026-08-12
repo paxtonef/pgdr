@@ -13,6 +13,7 @@ from pgdr.enums import (
     DrivingStatus, ResolutionStatus, SessionState, TechnicalLevel, Urgency,
     VehicleLocation, VehicleState,
 )
+from pgdr.errors import ConfigurationError
 from pgdr.models import (
     Answer, Consent, InitialComplaint, PreGarageDiagnosticRequest,
     UserContext, VehicleIdentityContext,
@@ -32,6 +33,23 @@ def _warning(text: str) -> None:
 
 def _success(text: str) -> None:
     console.print(Panel(text, style="bold green"))
+
+
+def _config_failure(exc: ConfigurationError) -> None:
+    """P0 fail-closed boundary. A ConfigurationError means the safety
+    envelope could not be validated — PGDR must refuse to run. This
+    prints an explicit TECHNICAL failure, deliberately NOT styled or
+    worded like a safety instruction (no "do not drive", no triage
+    language) because that would be fabricating a safety conclusion from
+    a configuration error rather than reporting the actual problem."""
+    console.print(Panel(
+        "PGDR CONFIGURATION INVALID — refusing to start.\n\n"
+        f"{exc}\n\n"
+        "This is a software configuration problem, not a vehicle safety "
+        "assessment. No diagnostic session was started.",
+        title="PGDR UNAVAILABLE",
+        style="bold white on red",
+    ))
 
 
 @click.group()
@@ -83,7 +101,11 @@ def run(request_id, locale, vir_id, vir_status, complaint, location, vehicle_sta
         ),
     )
 
-    controller = SessionController()
+    try:
+        controller = SessionController()
+    except ConfigurationError as exc:
+        _config_failure(exc)
+        raise SystemExit(1) from None
     session = controller.start(request)
 
     if session.state == SessionState.ESCALATED:
