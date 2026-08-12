@@ -222,5 +222,37 @@ def _print_result(session) -> None:
             console.print(f"  ! {lim}")
 
 
+@main.command()
+@click.option("--json-output", is_flag=True, help="Print machine-readable JSON instead of a panel")
+def readiness(json_output: bool) -> None:
+    """P1 — Reports whether this PGDR instance is READY to safely accept
+    diagnostic work (distinct from liveness — see
+    runner_execution_contract.yaml). Exits 0 if READY, 1 if NOT_READY."""
+    from pgdr.readiness import check_readiness
+
+    report = check_readiness()
+
+    if json_output:
+        import json as json_module
+        click.echo(json_module.dumps(report.as_dict(), indent=2))
+    else:
+        lines = []
+        for c in report.checks:
+            marker = "✓" if c.status.value == "ok" else "✗"
+            kind = "required" if c.required else "optional"
+            line = f"{marker} {c.name} ({kind}): {c.status.value}"
+            if c.detail:
+                line += f" — {c.detail}"
+            lines.append(line)
+        if not report.ready:
+            lines.append(f"\nreason: {report.reason.value}")
+        style = "bold green" if report.ready else "bold white on red"
+        title = "PGDR READY" if report.ready else "PGDR NOT READY"
+        console.print(Panel("\n".join(lines), title=title, style=style))
+
+    if not report.ready:
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

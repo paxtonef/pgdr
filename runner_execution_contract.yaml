@@ -1,0 +1,228 @@
+# PGDR Runner Execution Contract (REC) v1
+#
+# This file describes PGDR's ACTUAL, VERIFIED current execution behavior —
+# not planned or aspirational architecture. Every field here corresponds to
+# something checked either by an automated test (see `verification` below)
+# or directly observable in the source. If a capability, dependency, or
+# interface is not currently implemented, this file says so explicitly
+# rather than omitting it — e.g. `persistence.required: false`, not
+# silence on the topic.
+#
+# Scope discipline (P1 non-goal): this contract does not describe the LLM
+# integration, database, Vehicle Health Record, CGM, RGM/RGG, or generic
+# machine-diagnostic engine discussed in the PGDR v2 roadmap. Those do not
+# exist in the current runner and are out of scope for this document.
+
+schema_version: 1
+generated_for_runner_version: "0.1.0"
+
+identity:
+  runner_id: pgdr
+  version: "0.1.0"
+  description: "Pre-Garage Diagnostic Runner — automotive domain, v0.1"
+
+runtime:
+  language: python
+  declared_minimum_python_version: "3.10"
+  verified_python_versions:
+    # Interpreters this runner has actually been exercised against in this
+    # project's own test/CI history. The declared minimum (3.10) is NOT
+    # independently verified below that — stated honestly as unverified.
+    - version: "3.12.3"
+      platform: linux
+      verified: true
+    - version: "3.14.2"
+      platform: macos
+      verified: true
+    - version: "3.10 - 3.11"
+      platform: unspecified
+      verified: false
+      note: "Meets the declared minimum in pyproject.toml but has not been run in this project's history."
+  package_requirements:
+    runtime:
+      - "pydantic>=2.0"
+      - "pyyaml>=6.0"
+      - "rich>=13.0"
+      - "click>=8.0"
+    test_only:
+      # NOT required to run PGDR itself — only used by the test suite
+      # (specifically tests/test_p0_packaging.py, which builds a real
+      # wheel as part of proving P0.1).
+      - "pytest>=7.0"
+      - "build>=1.0"
+
+packaged_resources:
+  # All 4 are REQUIRED. See `configuration.validation_requirements` for
+  # which ones get deep semantic validation vs. load-level validation only.
+  resources:
+    - name: safety_rules
+      file: safety_rules.yaml
+      required: true
+      rule_count: 20
+    - name: symptom_taxonomy
+      file: symptom_taxonomy.yaml
+      required: true
+    - name: questions
+      file: questions.yaml
+      required: true
+    - name: business_rules
+      file: business_rules.yaml
+      required: true
+  packaging_mechanism: "importlib.resources against the pgdr.config package"
+  override_mechanism: "PGDR_CONFIG_DIR environment variable (used by tests; not documented/recommended for production use)"
+
+startup:
+  canonical_command_installed: 'pgdr run --vir-id <id> --complaint "<text>"'
+  canonical_command_source_tree: 'python3 run_pgdr.py run --vir-id <id> --complaint "<text>"'
+  entrypoint: "pgdr.cli:main"
+  entrypoint_mechanism: "console_scripts (setuptools/hatchling entry point), installed by pip"
+
+configuration:
+  required_resources:
+    - safety_rules.yaml
+    - symptom_taxonomy.yaml
+    - questions.yaml
+    - business_rules.yaml
+  validation_requirements:
+    safety_rules.yaml:
+      level: semantic_schema
+      checks:
+        - "non-empty 'rules' list"
+        - "'default' block present"
+        - "every rule has a unique, non-empty 'id'"
+        - "every rule/default has non-empty 'conditions' (rules only), 'triage_level', 'driving_assessment', 'instruction', 'reason'"
+        - "'triage_level' is a valid TriageLevel enum member"
+        - "'driving_assessment' is a valid DrivingAssessment enum member"
+        - "'emergency_services'/'roadside_assistance', if present, are actual booleans (not truthy strings)"
+      failure_behavior: ConfigurationError, fail-closed
+    symptom_taxonomy.yaml:
+      level: load_only
+      checks: ["file present", "non-empty", "syntactically valid YAML", "top-level mapping"]
+      failure_behavior: ConfigurationError, fail-closed
+    questions.yaml:
+      level: load_only
+      checks: ["file present", "non-empty", "syntactically valid YAML", "top-level mapping"]
+      failure_behavior: ConfigurationError, fail-closed
+    business_rules.yaml:
+      level: load_only
+      checks: ["file present", "non-empty", "syntactically valid YAML", "top-level mapping"]
+      failure_behavior: ConfigurationError, fail-closed
+  note: >-
+    Whether symptom_taxonomy/questions/business_rules deserve the same
+    deep semantic validation as safety_rules is an explicitly DEFERRED
+    decision from P0 (see LOG_DEPLOY.md) — not yet decided as of P1, and
+    P1 does not resolve it.
+
+safety:
+  deterministic_safety_engine_required: true
+  safety_engine_depends_on_llm: false
+  safety_configuration_valid_required_for_readiness: true
+  fail_closed_requirement: true
+  fail_closed_behavior: >-
+    A safety configuration failure blocks PGDR from becoming READY and
+    is reported as an explicit technical failure (PGDR UNAVAILABLE /
+    NOT_READY). It never produces a fabricated safety verdict (e.g.
+    "do_not_drive") synthesized from the configuration error itself.
+  prohibited_output: "driving_assessment: safe_to_drive (does not exist as an enum value)"
+
+capabilities:
+  required:
+    - name: safety_engine
+      description: "Deterministic rule-based safety triage. No external dependency."
+    - name: complaint_parser
+      description: "Rule-based (keyword-matching) free-text extraction. v0.1 placeholder for a future LLM-backed implementation — no LLM currently integrated."
+    - name: diagnostic_engine
+      description: "System-family hypothesis generation from a static mapping table. No external dependency."
+    - name: report_builder
+      description: "Garage Preparation Report + User Summary construction. No external dependency."
+    - name: session_controller
+      description: "State machine orchestration across the above."
+  optional: []
+  # Currently empty and intentionally so — PGDR v0.1 has no genuinely
+  # optional runtime capability. Per-request media-analysis consent
+  # (`consent.media_analysis_allowed`) is a user choice on an individual
+  # request, not a system capability with its own availability state, and
+  # is therefore NOT listed here.
+
+network:
+  required_at_runtime: false
+  optional_at_runtime: false
+  prohibited: false
+  note: >-
+    PGDR performs no network calls during diagnostic execution. Network
+    access IS required at install time (pip installing dependencies from
+    PyPI) — this is an install-time concern, not a runtime one, and is
+    listed separately for clarity rather than conflated with runtime
+    network requirements.
+
+persistence:
+  required: false
+  current_implementation: "None. DiagnosticSession exists only in process memory for the duration of a single CLI invocation; nothing is written to disk or a database."
+
+interfaces:
+  cli:
+    available: true
+    implementation: "Click-based, entry point pgdr.cli:main"
+    commands: [run, readiness, resume]
+    note: "'resume' exists in code but only echoes a JSON file back — not a real session-resumption feature."
+  api:
+    available: false
+    note: >-
+      An HTTP API is described in the original AMD specification (pack 23)
+      as intended future scope, but is NOT implemented in the current
+      runner. No FastAPI/HTTP server exists in this codebase as of P1.
+
+liveness:
+  definition: "The Python interpreter started and `import pgdr` succeeded."
+  distinct_from_readiness: true
+  check_mechanism: "Implicit — if this code is executing, the process is live. No separate liveness probe exists (no long-running service; PGDR v0.1 is a single-invocation CLI, not a daemon)."
+
+readiness:
+  definition: "PGDR can safely accept diagnostic work: required configuration is valid, the safety engine is operational, and all required capabilities construct successfully."
+  check_mechanism: "pgdr.readiness.check_readiness() — see src/pgdr/readiness.py"
+  cli_command: "pgdr readiness [--json-output]"
+  exit_code_contract:
+    ready: 0
+    not_ready: 1
+  required_for_ready:
+    - packaged_resources_and_configuration
+    - safety_engine
+    - session_controller
+
+failure_semantics:
+  READY:
+    meaning: "All required checks passed. Safe to accept diagnostic work."
+  NOT_READY:
+    meaning: "At least one required check failed. Generic top-level state."
+  CONFIGURATION_ERROR:
+    meaning: "A required YAML resource was missing, empty, malformed, or (for safety_rules.yaml) failed semantic validation."
+    subtype_of: NOT_READY
+  SAFETY_ENGINE_UNAVAILABLE:
+    meaning: "SafetyEngine failed to construct, or constructed with zero rules loaded. Reported with priority over other failure reasons when multiple checks fail simultaneously, since it is the most operationally significant."
+    subtype_of: NOT_READY
+  CAPABILITY_UNAVAILABLE:
+    meaning: "A required capability failed to initialize for a reason OTHER than ConfigurationError (e.g. an unexpected exception during construction)."
+    subtype_of: NOT_READY
+
+verification:
+  readiness_mechanism_tests: "tests/test_p1_readiness.py"
+  packaging_artifact_tests: "tests/test_p0_packaging.py"
+  configuration_integrity_tests: "tests/test_p0_config_integrity.py"
+  diagnostic_behavior_tests: "tests/test_runner.py"
+  commands:
+    - "pytest tests/ -v                          # full suite"
+    - "pytest tests/ -v -m \"not packaging\"        # fast path, no network/wheel build"
+    - "pgdr readiness                             # human-readable readiness report"
+    - "pgdr readiness --json-output               # machine-readable readiness report"
+
+supported_execution_environments:
+  - description: "Local CLI invocation from an activated virtualenv (source tree or installed wheel)"
+    verified: true
+  - description: "pip-installed wheel via console_scripts entry point"
+    verified: true
+  - description: "Containerized (Docker) execution"
+    verified: false
+    note: "Not implemented, not tested, not currently needed — PGDR has no system dependencies beyond a Python interpreter and its 4 pip packages."
+  - description: "Long-running daemon / server process"
+    verified: false
+    note: "PGDR v0.1 is a single-invocation CLI, not a service. No such mode exists."
