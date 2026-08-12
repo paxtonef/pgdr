@@ -29,3 +29,8 @@ packages = ["src/pgdr"]
 "src/pgdr/config/symptom_taxonomy.yaml" = "pgdr/config/symptom_taxonomy.yaml"
 "src/pgdr/config/questions.yaml" = "pgdr/config/questions.yaml"
 "src/pgdr/config/business_rules.yaml" = "pgdr/config/business_rules.yaml"
+
+[tool.pytest.ini_options]
+markers = [
+    "packaging: builds a real wheel + fresh venv (P0.1 proof) — slower, needs network for pip install",
+]
