@@ -191,3 +191,108 @@ class ReportBuilder:
         ):
             return ReportStatus.COMPLETED_WITH_LIMITATIONS
         return ReportStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# P4 mandate §22 / P4-T15 — DiagnosticCaseState consumer.
+#
+# Purely additive: does not touch ReportBuilder or anything above this
+# line. Reuses the same GaragePreparationReport / UserSummary Pydantic
+# models and the same _URGENCY_COPY table as the v0.1 pipeline so
+# "OLD output ≈ NEW output" for equivalent scenarios, per the mandate's
+# own success criterion. The v0.1 ReportBuilder class and this function
+# are two independent producers of the same output schema — one reads
+# scattered runtime objects (DiagnosticSession), the other reads the
+# single-source-of-truth DiagnosticCaseState.
+# ---------------------------------------------------------------------------
+
+def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationReport"]:
+    """Builds (UserSummary, GaragePreparationReport) from a
+    DiagnosticCaseState. Import is deferred inside the function body to
+    avoid a module-level dependency from report_builder.py onto the P4
+    domain package for callers who only use the pre-P4 `ReportBuilder`
+    class."""
+    from pgdr.domain.analytical_state import DiagnosticCaseState  # noqa: F401 (type documentation only)
+
+    triage = state.safety_state.triage if state.safety_state else SafetyTriage()
+
+    raw_complaint_obs = next((o for o in state.observations if o.kind == "raw_complaint"), None)
+    complaint_text = str(raw_complaint_obs.value) if raw_complaint_obs else ""
+
+    active_hypotheses = sorted(
+        (h for h in state.hypotheses if h.active),
+        key=lambda h: (h.confidence if h.confidence is not None else 0.0),
+        reverse=True,
+    )
+
+    limitations = [
+        "Aucune inspection physique n'a été réalisée.",
+        "Ce document prépare le diagnostic mais ne remplace pas l'examen du véhicule par un professionnel.",
+    ]
+    if state.identity_context is not None and state.identity_context.ambiguity:
+        limitations.append(
+            "L'identité du véhicule est incertaine — le raisonnement spécifique au véhicule est limité "
+            "(PGDR-BR-001 / PGDR-ID-003)."
+        )
+
+    unresolved = [c.description for c in state.unresolved_contradictions()]
+    if not unresolved:
+        unresolved = [
+            "L'origine exacte du symptôme nécessite une inspection physique.",
+            "La reproduction du symptôme en atelier reste à confirmer.",
+        ]
+
+    garage_report = GaragePreparationReport(
+        vehicle={
+            "identity_resolution_id": state.identity_context.identity_ref if state.identity_context else None,
+            **(state.identity_context.attributes if state.identity_context else {}),
+        },
+        customer_reported_problem=complaint_text,
+        symptom_summary=[
+            {"kind": o.kind, "value": o.value, **o.context}
+            for o in state.observations if o.kind == "symptom"
+        ],
+        warning_indicators=[
+            {"label": o.value, **o.context}
+            for o in state.observations if o.kind == "warning_indicator"
+        ],
+        safety_information={
+            "triage_level": triage.level.value,
+            "critical_signal_detected": triage.level.value in ("emergency_stop", "do_not_drive"),
+            "statement": triage.user_instruction,
+            "driving_assessment": triage.driving_assessment.value,
+        },
+        systems_to_examine=[
+            {
+                "system_family": h.hypothesis_type,
+                "confidence": round(h.confidence, 3) if h.confidence is not None else None,
+                "description": h.description,
+            }
+            for h in active_hypotheses
+        ],
+        suggested_professional_checks=[f"Examiner le système : {h.hypothesis_type}" for h in active_hypotheses],
+        unresolved_questions=unresolved,
+        contradictions=[
+            {"id": c.id, "description": c.description, "resolved": c.resolved}
+            for c in state.contradictions
+        ],
+        limitations=limitations,
+    )
+
+    urgency_label, urgency_explanation = _URGENCY_COPY.get(
+        triage.level.value, _URGENCY_COPY[TriageLevel.MONITOR_AND_DOCUMENT.value]
+    )
+    user_summary = UserSummary(
+        urgency={"label": urgency_label, "explanation": urgency_explanation},
+        main_observations=[complaint_text] if complaint_text else [],
+        next_actions=[
+            "Conservez toute preuve disponible (photo, son, vidéo).",
+            "Prévenez le garage des symptômes décrits avant le rendez-vous.",
+            "Ne tentez pas de démonter ou de toucher des composants du véhicule.",
+        ],
+        disclaimer=[
+            "Ce document prépare le diagnostic mais ne remplace pas l'examen du véhicule par un professionnel qualifié.",
+            "Aucune réparation spécifique n'est recommandée avec certitude, et aucun coût n'est estimé.",
+        ],
+    )
+    return user_summary, garage_report
