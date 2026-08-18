@@ -12,6 +12,7 @@ from pgdr.complaint_parser import ComplaintParser
 from pgdr.config_loader import load_questions
 from pgdr.diagnostic import DiagnosticEngine, _HYPOTHESIS_MAP
 from pgdr.domain.analytical_state import DiagnosticCaseState
+from pgdr.domain.contradiction import DiagnosticContradiction
 from pgdr.domain.enums import EvidenceDirection, ObservationSource
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.hypothesis import DiagnosticHypothesis
@@ -19,6 +20,7 @@ from pgdr.domain.observation import Observation
 from pgdr.domain.question import DiagnosticQuestion
 from pgdr.enums import AnswerType, SymptomFamily
 from pgdr.models import InitialComplaint
+from pgdr.textnorm import normalize
 
 _SKIPPED_ANSWER_TYPES = {"media_upload"}  # evidence pipeline for media not wired in P4 — see notes
 
@@ -155,3 +157,42 @@ class AutomotiveDiagnosticDomain:
                 repeatable=False,
             ))
         return result
+
+    # -- extra: not part of the DiagnosticDomain Protocol (P4's §18 names
+    # 4 methods only) — contradiction detection is called explicitly by
+    # SessionController._finalize(), not by DiagnosticLoop. Faithfully
+    # ported from the legacy DiagnosticEngine.detect_contradictions() (P5
+    # mandate §9: "SOURCE REQUIRED" — this rule has one, unlike inventing
+    # new automotive knowledge would). -----------------------------------
+
+    def detect_contradictions(self, state: DiagnosticCaseState) -> list[DiagnosticContradiction]:
+        raw = next((o for o in state.observations if o.kind == "raw_complaint"), None)
+        if raw is None:
+            return []
+        text = normalize(str(raw.value))
+        contradictions: list[DiagnosticContradiction] = []
+
+        if ("ne demarre jamais" in text or "ne demarre plus" in text) and (
+            "roul" in text or "conduit" in text or "conduire" in text or "j'ai pu" in text
+        ):
+            contradictions.append(DiagnosticContradiction(
+                evidence_ids=[],
+                hypothesis_ids=[h.id for h in state.hypotheses],
+                description=(
+                    "Le texte indique que le véhicule ne démarre jamais / plus, mais aussi "
+                    "qu'il a roulé après l'apparition du problème."
+                ),
+            ))
+
+        symptom_observations = [o for o in state.observations if o.kind == "symptom"]
+        frequencies = {o.context.get("frequency") for o in symptom_observations}
+        if "constant" in frequencies and "rare" in frequencies:
+            contradictions.append(DiagnosticContradiction(
+                evidence_ids=[],
+                hypothesis_ids=[h.id for h in state.hypotheses],
+                description=(
+                    "Un symptôme est décrit comme constant tandis qu'un autre est décrit comme rare."
+                ),
+            ))
+
+        return contradictions
