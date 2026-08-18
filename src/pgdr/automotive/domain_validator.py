@@ -30,7 +30,9 @@ def _all_declared_hypothesis_types() -> set[str]:
 def validate_automotive_domain() -> None:
     """Raises ConfigurationError on the first violation found. Call once,
     at startup (SessionController.__init__ does this)."""
-    from pgdr.automotive.evidence_mapper import _DISCRIMINATING_RULES
+    from pgdr.automotive.evidence_mapper import (
+        _DISCRIMINATING_RULES, _DISCRIMINATING_WEIGHT, _PROVISIONAL_KEYWORD_RULES, _PROVISIONAL_WEIGHT,
+    )
 
     declared_types = _all_declared_hypothesis_types()
     question_ids = {q["question_id"] for q in load_questions().get("questions", [])}
@@ -63,3 +65,40 @@ def validate_automotive_domain() -> None:
                         f"hypothesis_type '{hypothesis_type}', which does not appear in any "
                         f"_HYPOTHESIS_MAP entry — dangling domain reference"
                     )
+    if not (0.0 <= _DISCRIMINATING_WEIGHT <= 1.0):
+        raise ConfigurationError(
+            f"AutomotiveEvidenceMapper: _DISCRIMINATING_WEIGHT ({_DISCRIMINATING_WEIGHT}) out of bounds [0,1]"
+        )
+
+    # P6 — provisional keyword-based rules get the same dangling-reference
+    # and weight-bounds checks. PROVISIONAL status (see p6_evidence_mapping_registry.md)
+    # is about evidentiary confidence, not about being exempt from
+    # structural configuration validation.
+    if not (0.0 <= _PROVISIONAL_WEIGHT <= 1.0):
+        raise ConfigurationError(
+            f"AutomotiveEvidenceMapper: _PROVISIONAL_WEIGHT ({_PROVISIONAL_WEIGHT}) out of bounds [0,1]"
+        )
+    for question_id, rules in _PROVISIONAL_KEYWORD_RULES.items():
+        if question_id not in question_ids:
+            raise ConfigurationError(
+                f"AutomotiveEvidenceMapper: provisional rule references unknown "
+                f"question_id '{question_id}' — no such question in questions.yaml"
+            )
+        for keywords, hypothesis_type, direction, rationale in rules:
+            if not keywords:
+                raise ConfigurationError(
+                    f"AutomotiveEvidenceMapper: provisional rule for {question_id} has no keywords"
+                )
+            if hypothesis_type not in declared_types:
+                raise ConfigurationError(
+                    f"AutomotiveEvidenceMapper: provisional rule for {question_id} targets "
+                    f"hypothesis_type '{hypothesis_type}', which does not appear in any "
+                    f"_HYPOTHESIS_MAP entry — dangling domain reference"
+                )
+            if not rationale or "PROVISIONAL" not in rationale:
+                raise ConfigurationError(
+                    f"AutomotiveEvidenceMapper: provisional rule for {question_id} -> "
+                    f"'{hypothesis_type}' must carry a rationale explicitly marked PROVISIONAL "
+                    f"(P6-T17: every mapping needs source/rationale metadata OR explicit "
+                    f"PROVISIONAL status)"
+                )

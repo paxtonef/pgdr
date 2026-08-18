@@ -21,6 +21,7 @@ from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.domain.enums import EvidenceDirection
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.question import DiagnosticAnswer, DiagnosticQuestion
+from pgdr.textnorm import normalize
 
 # question_id -> { answer_choice_text -> { hypothesis_type -> direction } }
 _DISCRIMINATING_RULES: dict[str, dict[str, dict[str, EvidenceDirection]]] = {
@@ -38,6 +39,31 @@ _DISCRIMINATING_RULES: dict[str, dict[str, dict[str, EvidenceDirection]]] = {
 
 _DISCRIMINATING_WEIGHT = 0.35
 
+# PROVISIONAL — weaker, support-only, free-text keyword matching. Unlike
+# _DISCRIMINATING_RULES (Q-COND-001, fully authored/validated), this rule
+# reuses symptom_taxonomy.yaml's own existing pneu/roue/crevaison/degonfle
+# -> tyre_or_wheel keyword association — genuine existing PGDR source
+# material — but applies it to a DIFFERENT observation channel (recent-
+# event free text, Q-EVT-002) than where that taxonomy is normally used
+# (the initial complaint). That extension itself is not independently
+# validated, so it is explicitly marked PROVISIONAL rather than presented
+# as equivalent-confidence to Q-COND-001. See P6 mandate §5's own
+# "explicit PROVISIONAL status" escape valve (P6-T17) and
+# docs/architecture/p6_evidence_mapping_registry.md for the full rationale.
+_PROVISIONAL_WEIGHT = 0.15
+_PROVISIONAL_KEYWORD_RULES: dict[str, list[tuple[list[str], str, EvidenceDirection, str]]] = {
+    "Q-EVT-002": [
+        (
+            ["pneu", "roue", "crevaison", "degonfle"],
+            "tyre_or_wheel",
+            EvidenceDirection.SUPPORTS,
+            "PROVISIONAL — l'entretien récent mentionne un pneu/une roue (vocabulaire repris de "
+            "symptom_taxonomy.yaml), ce qui est compatible avec un lien vers le système roue/pneumatique. "
+            "Non validé indépendamment — voir p6_evidence_mapping_registry.md.",
+        ),
+    ],
+}
+
 
 class AutomotiveEvidenceMapper:
     def from_answer(
@@ -49,6 +75,12 @@ class AutomotiveEvidenceMapper:
         rule = _DISCRIMINATING_RULES.get(question.id)
         if rule is not None:
             evidence = self._apply_discriminating_rule(rule, question, answer, state)
+            if evidence:
+                return evidence
+
+        provisional = _PROVISIONAL_KEYWORD_RULES.get(question.id)
+        if provisional is not None:
+            evidence = self._apply_provisional_keyword_rules(provisional, question, answer, state)
             if evidence:
                 return evidence
 
@@ -100,4 +132,36 @@ class AutomotiveEvidenceMapper:
                 rationale=f"La réponse à {question.id} ({', '.join(values)}) {verb} l'hypothèse '{h.hypothesis_type}'.",
                 source_rule_id=f"automotive.{question.id.lower().replace('-', '_')}_discriminator",
             ))
+        return evidence
+
+    @staticmethod
+    def _apply_provisional_keyword_rules(
+        rules: list[tuple[list[str], str, EvidenceDirection, str]],
+        question: DiagnosticQuestion,
+        answer: DiagnosticAnswer,
+        state: DiagnosticCaseState,
+    ) -> list[Evidence]:
+        """Free-text keyword matching (accent-insensitive, reusing the
+        same pgdr.textnorm.normalize() used throughout the codebase). See
+        the _PROVISIONAL_KEYWORD_RULES docstring above — weaker weight,
+        clearly labeled PROVISIONAL in the rationale, not equivalent-
+        confidence to a fully-authored _DISCRIMINATING_RULES entry."""
+        raw_text = answer.value if isinstance(answer.value, str) else str(answer.value)
+        text = normalize(raw_text)
+
+        evidence: list[Evidence] = []
+        for keywords, hypothesis_type, direction, rationale in rules:
+            if not any(normalize(kw) in text for kw in keywords):
+                continue
+            for h in state.hypotheses:
+                if h.hypothesis_type != hypothesis_type:
+                    continue
+                evidence.append(Evidence(
+                    observation_ids=list(answer.observation_ids_created),
+                    direction=direction,
+                    target_hypothesis_id=h.id,
+                    weight=_PROVISIONAL_WEIGHT,
+                    rationale=rationale,
+                    source_rule_id=f"automotive.{question.id.lower().replace('-', '_')}_provisional",
+                ))
         return evidence
