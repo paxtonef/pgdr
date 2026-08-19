@@ -1,18 +1,28 @@
-"""Diagnostic Reasoning Engine — PGDR v0.1 (AMD pack 12).
+"""Automotive symptom-family → hypothesis mapping — Domain Pack DATA.
+
+P7 note: prior to P7, this module also contained the `DiagnosticEngine`
+class (process_answers/generate_hypotheses/detect_contradictions
+instance methods). P7's legacy reachability audit
+(docs/architecture/p7_legacy_reachability_audit.md) found all three
+methods unreachable from production — superseded respectively by: no
+replacement (the fields they populated had no readers left once
+ReportBuilder's legacy methods were also confirmed unreachable),
+AutomotiveDiagnosticDomain.generate_hypotheses(), and
+AutomotiveDiagnosticDomain.detect_contradictions(). They were removed.
+The one genuinely production-reachable piece of that class
+(`_generic_entries`, the no-curated-entry fallback) was relocated to
+`automotive/domain_adapter.py` as `_generic_hypothesis_entries()`, its
+sole caller — not deleted.
+
+This module now contains only `_HYPOTHESIS_MAP` itself: automotive domain
+DATA, not analytical logic (P3's boundary classification).
 
 PGDR-HYP-003 / policy 20.3: only "compatible with" / "system to examine"
 language is allowed here — never an exact component failure claim.
 """
 from __future__ import annotations
 
-from pgdr.config_loader import load_business_rules
-from pgdr.enums import ClaimStatus, Confidence, SymptomFamily
-from pgdr.models import (
-    ContradictionImpact, ContradictionSeverity, DiagnosticContradiction,
-    DiagnosticHypothesis, DiagnosticSession, OperatingConditions,
-    ReproductionProfile, ResolutionAction, VehicleEvent,
-)
-from pgdr.textnorm import normalize
+from pgdr.enums import Confidence
 
 # family -> [(system_family, description, confidence, extra_support_tags)]
 # All descriptions use "compatible with" phrasing, never a definitive claim
@@ -93,117 +103,3 @@ _HYPOTHESIS_MAP: dict[str, list[tuple[str, str, Confidence, list[str]]]] = {
          Confidence.SPECULATIVE, ["symptome_non_classe"]),
     ],
 }
-
-
-class DiagnosticEngine:
-    def __init__(self) -> None:
-        self.config = load_business_rules()
-
-    def process_answers(self, session: DiagnosticSession) -> None:
-        """Folds submitted answers into operating_conditions / events / reproduction_profile."""
-        cond = OperatingConditions()
-        for ans in session.answers:
-            if ans.question_id == "Q-STATE-002" and isinstance(ans.value, str):
-                val = ans.value.lower()
-                if "froid" in val:
-                    cond.engine_state = "cold"
-                elif "chaud" in val:
-                    cond.engine_state = "hot"
-                elif "deux" in val:
-                    cond.engine_state = "both"
-            elif ans.question_id == "Q-COND-001":
-                choices = ans.value if isinstance(ans.value, list) else [str(ans.value)]
-                cond.vehicle_state = ", ".join(str(c) for c in choices)
-            elif ans.question_id == "Q-EVT-002" and ans.value:
-                session.events.append(VehicleEvent(
-                    event_type="recent_maintenance",
-                    description=str(ans.value),
-                    relation_to_symptom="before",
-                ))
-        session.operating_conditions = cond
-
-        if session.symptoms:
-            primary = next((s for s in session.symptoms if s.is_primary), session.symptoms[0])
-            session.reproduction_profile = ReproductionProfile(
-                reproducible=primary.frequency.value in ("constant", "often", "always"),
-                recurrence=primary.frequency.value,
-            )
-
-    def generate_hypotheses(self, session: DiagnosticSession) -> list[DiagnosticHypothesis]:
-        hypotheses: list[DiagnosticHypothesis] = []
-        primary = next((s for s in session.symptoms if s.is_primary), None)
-        if primary is None:
-            return hypotheses
-
-        entries = _HYPOTHESIS_MAP.get(primary.family.value)
-        if entries is None:
-            entries = self._generic_entries(primary.family)
-        high_safety_families = {"braking", "steering", "temperature_or_overheating"}
-
-        for system_family, description, confidence, tags in entries:
-            hypotheses.append(DiagnosticHypothesis(
-                system_family=system_family,
-                description=description,
-                confidence=confidence,
-                supporting_observations=[primary.user_description] + tags,
-                missing_information=["Inspection physique par un professionnel requise pour confirmation."],
-                recommended_professional_checks=[f"Examiner le système : {system_family}"],
-                safety_relevance="significant" if primary.family.value in high_safety_families else "low",
-                claim_status=ClaimStatus.COMPATIBLE if confidence != Confidence.SPECULATIVE else ClaimStatus.UNRESOLVED,
-            ))
-
-        max_h = self.config.get("thresholds", {}).get("max_hypotheses_garage_report", 8)
-        session.hypotheses = hypotheses[:max_h]
-        return session.hypotheses
-
-    @staticmethod
-    def _generic_entries(family: SymptomFamily) -> list[tuple[str, str, Confidence, list[str]]]:
-        """Fallback for any SymptomFamily without a curated entry in
-        _HYPOTHESIS_MAP. Ensures every recognized family still produces a
-        genuine 'system to examine' hypothesis instead of silently
-        degrading to 'unknown' — only complaints that match *no* keyword
-        at all (true SymptomFamily.UNKNOWN) should ever reach that state."""
-        if family == SymptomFamily.UNKNOWN:
-            return _HYPOTHESIS_MAP["unknown"]
-        return [(
-            family.value,
-            f"Les observations sont compatibles avec un problème concernant le système : {family.value}.",
-            Confidence.LOW,
-            [f"symptome_{family.value}"],
-        )]
-
-    def detect_contradictions(self, session: DiagnosticSession) -> None:
-        """AMD pack 13 — flags a small set of high-signal contradictions."""
-        contradictions: list[DiagnosticContradiction] = []
-        text = normalize(session.request.initial_complaint.free_text)
-
-        # "roul" catches roulé/rouler/roulé/roulant — any conjugation of "rouler" (to drive) —
-        # rather than one fixed inflected form, since users phrase this many ways.
-        if ("ne demarre jamais" in text or "ne demarre plus" in text) and (
-            "roul" in text or "conduit" in text or "conduire" in text or "j'ai pu" in text
-        ):
-            contradictions.append(DiagnosticContradiction(
-                fields=["starting", "vehicle_usage"],
-                descriptions=[
-                    "Le texte indique que le véhicule ne démarre jamais / plus.",
-                    "Le texte indique également que le véhicule a roulé après l'apparition du problème.",
-                ],
-                severity=ContradictionSeverity.HIGH,
-                impact=ContradictionImpact.HYPOTHESIS_UNCERTAINTY,
-                resolution_action=ResolutionAction.ASK_CLARIFICATION,
-            ))
-
-        freqs = {s.frequency.value for s in session.symptoms}
-        if "constant" in freqs and "rare" in freqs:
-            contradictions.append(DiagnosticContradiction(
-                fields=["frequency"],
-                descriptions=[
-                    "Un symptôme est décrit comme constant.",
-                    "Un autre symptôme est décrit comme rare.",
-                ],
-                severity=ContradictionSeverity.MEDIUM,
-                impact=ContradictionImpact.HYPOTHESIS_UNCERTAINTY,
-                resolution_action=ResolutionAction.REDUCE_CONFIDENCE,
-            ))
-
-        session.contradictions = contradictions

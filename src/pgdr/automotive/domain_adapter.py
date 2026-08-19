@@ -5,12 +5,18 @@ delegates to the UNMODIFIED ComplaintParser and the UNMODIFIED
 automotive knowledge — the mandate's own words: "construit à partir du
 comportement actuel," and P3's boundary work already established this
 table as the automotive Domain Pack's content, not engine logic.
+
+P7 note: `_generic_hypothesis_entries()` below was relocated here from
+the legacy `DiagnosticEngine._generic_entries()` staticmethod during P7's
+legacy retirement — it was the one piece of that now-removed class
+genuinely reachable from the production path (P7.1 audit finding), so it
+was moved rather than deleted.
 """
 from __future__ import annotations
 
 from pgdr.complaint_parser import ComplaintParser
 from pgdr.config_loader import load_questions
-from pgdr.diagnostic import DiagnosticEngine, _HYPOTHESIS_MAP
+from pgdr.diagnostic import _HYPOTHESIS_MAP
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.domain.contradiction import DiagnosticContradiction
 from pgdr.domain.enums import EvidenceDirection, ObservationSource
@@ -18,11 +24,34 @@ from pgdr.domain.evidence import Evidence
 from pgdr.domain.hypothesis import DiagnosticHypothesis
 from pgdr.domain.observation import Observation
 from pgdr.domain.question import DiagnosticQuestion
-from pgdr.enums import AnswerType, SymptomFamily
+from pgdr.enums import AnswerType, Confidence, SymptomFamily
 from pgdr.models import InitialComplaint
 from pgdr.textnorm import normalize
 
 _SKIPPED_ANSWER_TYPES = {"media_upload"}  # evidence pipeline for media not wired in P4 — see notes
+
+
+def _generic_hypothesis_entries(family: SymptomFamily) -> list[tuple[str, str, "Confidence", list[str]]]:
+    """P7 — relocated from the (now-removed) DiagnosticEngine._generic_entries
+    staticmethod. This is AutomotiveDiagnosticDomain.generate_hypotheses()'s
+    sole caller, and was the only production-reachable piece of the legacy
+    DiagnosticEngine class (P7.1 audit finding) — moved here rather than
+    removed, per the mandate's ADAPT/MOVE guidance for a still-needed
+    transformation living inside an otherwise-retired component.
+
+    Fallback for any SymptomFamily without a curated entry in
+    _HYPOTHESIS_MAP. Ensures every recognized family still produces a
+    genuine 'system to examine' hypothesis instead of silently degrading
+    to 'unknown' — only complaints that match *no* keyword at all (true
+    SymptomFamily.UNKNOWN) should ever reach that state."""
+    if family == SymptomFamily.UNKNOWN:
+        return _HYPOTHESIS_MAP["unknown"]
+    return [(
+        family.value,
+        f"Les observations sont compatibles avec un problème concernant le système : {family.value}.",
+        Confidence.LOW,
+        [f"symptome_{family.value}"],
+    )]
 
 
 class AutomotiveDiagnosticDomain:
@@ -84,7 +113,7 @@ class AutomotiveDiagnosticDomain:
 
         entries = _HYPOTHESIS_MAP.get(family.value)
         if entries is None:
-            entries = DiagnosticEngine._generic_entries(family)
+            entries = _generic_hypothesis_entries(family)
 
         return [
             DiagnosticHypothesis(

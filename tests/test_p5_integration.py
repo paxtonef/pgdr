@@ -84,12 +84,23 @@ def test_p5_t02_session_controller_uses_diagnostic_loop(controller):
 # P5-T03 — Legacy DiagnosticEngine is not authoritative
 # ---------------------------------------------------------------------------
 
-def test_p5_t03_legacy_diagnostic_engine_not_authoritative(controller, monkeypatch):
-    def _boom(*args, **kwargs):
-        raise AssertionError("legacy DiagnosticEngine method was called on the production path")
+def test_p5_t03_legacy_diagnostic_engine_not_authoritative(controller):
+    """P7 update: this test's original mechanism (monkeypatch
+    controller.diagnostic_engine's methods to raise, then confirm a
+    session completes without triggering them) proved the legacy engine
+    was unauthoritative — but relied on an attribute (controller.diagnostic_engine)
+    that P7's legacy retirement removed entirely, because the audit
+    (docs/architecture/p7_legacy_reachability_audit.md) found it had zero
+    reachability from any direction. The invariant this test protects —
+    "no legacy analytical component is reachable from production" — is
+    now proven structurally rather than behaviorally: the symbol doesn't
+    exist to be reachable at all. This is a stronger guarantee than the
+    original monkeypatch, not a weaker replacement for it."""
+    import pgdr.diagnostic as diagnostic_module
 
-    monkeypatch.setattr(controller.diagnostic_engine, "generate_hypotheses", _boom)
-    monkeypatch.setattr(controller.diagnostic_engine, "process_answers", _boom)
+    assert not hasattr(diagnostic_module, "DiagnosticEngine")
+    assert not hasattr(controller, "diagnostic_engine")
+    assert not hasattr(controller, "report_builder")
 
     req = _make_request("P5-T03", "La voiture tremble au ralenti")
     session = controller.start(req)

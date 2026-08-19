@@ -1,26 +1,24 @@
 """Session Controller — state machine per AMD pack 14.2, migrated in P5
 to delegate all analytical reasoning to the P4 engine
-(DiagnosticLoop + DiagnosticCaseState) instead of the legacy
-DiagnosticEngine.
+(DiagnosticLoop + DiagnosticCaseState), with the legacy analytical engine
+fully retired in P7 (see docs/architecture/p7_retirement_result.md).
 
 P5 migration invariant (mandate §2): there is exactly one authoritative
 analytical state for an active session — DiagnosticCaseState, held in
 `self._case_states` keyed by session_id. SessionController orchestrates;
-it does not reason. Per §3's explicit prohibition list, this class no
-longer:
-  - generates hypotheses itself (was: self.diagnostic_engine.generate_hypotheses)
-  - calculates hypothesis confidence
-  - interprets answer effects
-  - maintains a parallel question-selection algorithm (was: _select_questions)
-  - reconstructs analytical evidence
+it does not reason.
 
-`DiagnosticEngine` remains importable (kept as `self.diagnostic_engine`
-for backward-reference / diagnostics only — see
-docs/architecture/p5_legacy_deprecation.md) but is NEVER CALLED on this
-class's production path. Per P5.3 (§5), SafetyEngine is untouched and
-retains sole authority over the safety verdict — DiagnosticLoop only
-*consults* that verdict (via SafetyState.preempts_analysis), it never
-recomputes or reinterprets it.
+P7 update: `DiagnosticEngine` and `ReportBuilder` (the legacy classes
+this docstring used to describe as "kept but unauthoritative") no longer
+exist — P7's reachability audit found them genuinely unreachable from any
+direction (not merely unauthoritative) and removed them. The one
+production-reachable fragment of `DiagnosticEngine`
+(`_generic_entries`, the no-curated-hypothesis fallback) was relocated to
+`automotive/domain_adapter.py`, its sole caller, rather than deleted.
+Per P5.3, `SafetyEngine` remains untouched and retains sole authority
+over the safety verdict — `DiagnosticLoop` only *consults* that verdict
+(via `SafetyState.preempts_analysis`), it never recomputes or
+reinterprets it.
 """
 from __future__ import annotations
 
@@ -34,11 +32,10 @@ from pgdr.automotive.domain_validator import validate_automotive_domain
 from pgdr.automotive.evidence_mapper import AutomotiveEvidenceMapper
 from pgdr.complaint_parser import ComplaintParser
 from pgdr.config_loader import load_questions
-from pgdr.diagnostic import DiagnosticEngine
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.enums import ResolutionStatus, SessionState
 from pgdr.models import Answer, DiagnosticQuestion, DiagnosticSession, PreGarageDiagnosticRequest
-from pgdr.report_builder import ReportBuilder, build_result_from_case_state
+from pgdr.report_builder import build_result_from_case_state
 from pgdr.safety_engine import SafetyEngine
 
 
@@ -54,14 +51,6 @@ class SessionController:
 
         self.safety_engine = SafetyEngine()
         self.complaint_parser = ComplaintParser()
-        # DEPRECATED — retained only as a documented legacy reference.
-        # NOT called anywhere in this class's production path as of P5.
-        # See docs/architecture/p5_legacy_deprecation.md.
-        self.diagnostic_engine = DiagnosticEngine()
-        # DEPRECATED for the multi-object DiagnosticSession-driven
-        # ReportBuilder.build() path — retained for its _URGENCY_COPY /
-        # formatting helpers, not invoked directly by this class anymore.
-        self.report_builder = ReportBuilder()
 
         # P5 production path
         self._domain = AutomotiveDiagnosticDomain()

@@ -141,9 +141,9 @@ def _check_safety_engine() -> CapabilityCheck:
 def _check_session_controller() -> CapabilityCheck:
     """Required. Constructing a full SessionController exercises every
     required capability at once: ComplaintParser (symptom_taxonomy.yaml),
-    DiagnosticEngine (business_rules.yaml), the question bank
-    (questions.yaml), ReportBuilder, and SafetyEngine. This is PGDR's
-    complete set of required internal capabilities as of P1 — there are
+    the automotive Domain Pack (business_rules.yaml, questions.yaml,
+    domain evidence-mapping validation), and SafetyEngine. This is PGDR's
+    complete set of required internal capabilities as of P7 — there are
     no optional capabilities to check today (see
     runner_execution_contract.yaml `capabilities.optional`)."""
     from pgdr.session_controller import SessionController
