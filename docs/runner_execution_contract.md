@@ -27,7 +27,7 @@ differently:
 LIVENESS
 "Is the process alive?"
 → Trivially true if this Python code is executing at all.
-→ PGDR v0.1 is a single-invocation CLI, not a long-running service, so
+→ PGDR v2 is a single-invocation CLI, not a long-running service, so
   there is no separate liveness probe to run — there's no daemon to poll.
 
 READINESS
@@ -76,7 +76,7 @@ capabilities**:
 | `safety_engine` | `SafetyEngine()` constructs successfully and has at least one rule loaded. Tracked separately from the generic config check above because "is the safety envelope operational" is the single most important readiness question PGDR can answer — even though today, both checks happen to be driven by the same file. |
 | `session_controller` | A full `SessionController()` constructs successfully — this transitively exercises the complaint parser, diagnostic engine, question bank, and report builder, i.e. every remaining required capability at once. |
 
-There is no optional-capability list to show today because PGDR v0.1
+There is no optional-capability list to show today because PGDR v2
 genuinely doesn't have one. The readiness mechanism (`check_readiness()`)
 does support supplying additional checks marked `required=False` — this
 exists so the *mechanism itself* (specifically: "an optional check failing

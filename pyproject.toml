@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pgdr"
-version = "0.1.0"
+version = "2.0.0"
 description = "Pre-Garage Diagnostic Runner"
 requires-python = ">=3.10"
 dependencies = [
@@ -19,7 +19,7 @@ dependencies = [
     # `pip install pgdr-*.whl` fails loudly and immediately if ggm isn't
     # already available/co-installed, instead of succeeding and then
     # failing confusingly at import time. Install both wheels together:
-    #   pip install ggm-1.1.0-py3-none-any.whl pgdr-0.1.0-py3-none-any.whl
+    #   pip install ggm-1.1.0-py3-none-any.whl pgdr-2.0.0-py3-none-any.whl
     "ggm>=1.1.0",
 ]
 

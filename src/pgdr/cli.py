@@ -9,6 +9,7 @@ from rich.panel import Panel
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from pgdr import __version__
 from pgdr.enums import (
     DrivingStatus, ResolutionStatus, SessionState, TechnicalLevel, Urgency,
     VehicleLocation, VehicleState,
@@ -53,8 +54,9 @@ def _config_failure(exc: ConfigurationError) -> None:
 
 
 @click.group()
+@click.version_option(version=__version__, prog_name="pgdr")
 def main() -> None:
-    """Pre-Garage Diagnostic Runner (PGDR) v0.1"""
+    """Pre-Garage Diagnostic Runner (PGDR) v2"""
 
 
 @main.command()
@@ -76,7 +78,7 @@ def run(request_id, locale, vir_id, vir_status, complaint, location, vehicle_sta
         urgency, driving_status, technical_level, media_consent, storage_consent,
         json_output, non_interactive) -> None:
     """Start a diagnostic session from the command line."""
-    _header("Pre-Garage Diagnostic Runner v0.1")
+    _header(f"Pre-Garage Diagnostic Runner v{__version__}")
 
     request = PreGarageDiagnosticRequest(
         request_id=request_id,

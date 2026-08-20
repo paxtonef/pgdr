@@ -14,12 +14,12 @@
 # exist in the current runner and are out of scope for this document.
 
 schema_version: 1
-generated_for_runner_version: "0.1.0"
+generated_for_runner_version: "2.0.0"
 
 identity:
   runner_id: pgdr
-  version: "0.1.0"
-  description: "Pre-Garage Diagnostic Runner — automotive domain, v0.1"
+  version: "2.0.0"
+  description: "Pre-Garage Diagnostic Runner — automotive domain, v2.0.0"
 
 runtime:
   language: python
@@ -130,7 +130,7 @@ capabilities:
     - name: safety_engine
       description: "Deterministic rule-based safety triage. No external dependency."
     - name: complaint_parser
-      description: "Rule-based (keyword-matching) free-text extraction. v0.1 placeholder for a future LLM-backed implementation — no LLM currently integrated."
+      description: "Rule-based (keyword-matching) free-text extraction. v2 placeholder for a future LLM-backed implementation — no LLM currently integrated."
     - name: diagnostic_engine
       description: "System-family hypothesis generation from a static mapping table. No external dependency."
     - name: report_builder
@@ -138,7 +138,7 @@ capabilities:
     - name: session_controller
       description: "State machine orchestration across the above."
   optional: []
-  # Currently empty and intentionally so — PGDR v0.1 has no genuinely
+  # Currently empty and intentionally so — PGDR v2 has no genuinely
   # optional runtime capability. Per-request media-analysis consent
   # (`consent.media_analysis_allowed`) is a user choice on an individual
   # request, not a system capability with its own availability state, and
@@ -175,7 +175,7 @@ interfaces:
 liveness:
   definition: "The Python interpreter started and `import pgdr` succeeded."
   distinct_from_readiness: true
-  check_mechanism: "Implicit — if this code is executing, the process is live. No separate liveness probe exists (no long-running service; PGDR v0.1 is a single-invocation CLI, not a daemon)."
+  check_mechanism: "Implicit — if this code is executing, the process is live. No separate liveness probe exists (no long-running service; PGDR v2 is a single-invocation CLI, not a daemon)."
 
 readiness:
   definition: "PGDR can safely accept diagnostic work: required configuration is valid, the safety engine is operational, and all required capabilities construct successfully."
@@ -225,4 +225,4 @@ supported_execution_environments:
     note: "Not implemented, not tested, not currently needed — PGDR has no system dependencies beyond a Python interpreter and its 4 pip packages."
   - description: "Long-running daemon / server process"
     verified: false
-    note: "PGDR v0.1 is a single-invocation CLI, not a service. No such mode exists."
+    note: "PGDR v2 is a single-invocation CLI, not a service. No such mode exists."
