@@ -87,7 +87,26 @@ def built_wheel(tmp_path_factory):
 def fresh_venv_python(built_wheel, tmp_path_factory):
     """A brand-new venv with the built wheel (and its dependencies)
     installed — and nothing else. Never reuses the dev .venv; the whole
-    point is proving the artifact carries everything it needs on its own."""
+    point is proving the artifact carries everything it needs on its own.
+
+    P8 note: PGDR now has a genuine cross-repository runtime dependency
+    on the pinned `ggm` package (not published on PyPI, so it cannot be
+    listed as a normal pip dependency and resolved automatically). This
+    fixture installs it into the fresh venv from GGM_WHEEL_PATH if set;
+    if unset, the test is skipped with an explicit reason rather than
+    silently passing or failing — see docs/architecture/p8_findings.md
+    ("cross-repository packaging test gap") for why this is an honest
+    limitation of single-repo CI, not a bug."""
+    import os
+
+    ggm_wheel_path = os.environ.get("GGM_WHEEL_PATH")
+    if not ggm_wheel_path or not Path(ggm_wheel_path).exists():
+        pytest.skip(
+            "GGM_WHEEL_PATH not set (or file not found) — this packaging test "
+            "requires the pinned ggm wheel to be installed alongside pgdr's own "
+            "wheel in the fresh venv. See docs/architecture/p8_findings.md."
+        )
+
     venv_dir = tmp_path_factory.mktemp("venv")
     venv.EnvBuilder(with_pip=True).create(venv_dir)
     py = venv_dir / "bin" / "python"
@@ -95,10 +114,10 @@ def fresh_venv_python(built_wheel, tmp_path_factory):
         py = venv_dir / "Scripts" / "python.exe"  # Windows layout
 
     result = subprocess.run(
-        [str(py), "-m", "pip", "install", "-q", str(built_wheel)],
+        [str(py), "-m", "pip", "install", "-q", str(built_wheel), ggm_wheel_path],
         capture_output=True, text=True, timeout=300,
     )
-    assert result.returncode == 0, f"pip install of built wheel failed:\n{result.stderr}"
+    assert result.returncode == 0, f"pip install of built wheel(s) failed:\n{result.stderr}"
     return py
 
 

@@ -157,6 +157,72 @@ def _check_session_controller() -> CapabilityCheck:
         )
 
 
+def _check_ggm_consumption() -> CapabilityCheck:
+    """P8 mandate §7 — GGM_CONSUMPTION_READY. Required as of P8 (governance
+    defaults to enabled). Checks, in order: the three-axis declaration
+    resolves against real GGM (consumer available implicitly — resolution
+    itself imports and calls into the pinned ggm package), the resolved
+    manifest carries a mandatory kernel, and DECIDE/TRANSITION/CHECK_ESCALATION
+    are all enabled. 'Runtime integrity valid' is interpreted here as
+    'a GGMConsumer can actually be constructed' (DefaultGGMConsumer()) —
+    P8 does not perform a live DECIDE call at readiness time (that would
+    require a real candidate object neither readiness nor GGM's contract
+    needs at this layer); constructability is the honest boundary of what
+    can be checked without fabricating a request."""
+    from ggm.contract.interface import DefaultGGMConsumer
+    from ggm.contract.types import Operation
+
+    from pgdr.governance.consumption_profile import resolve_pgdr_consumption_manifest_or_raise
+    from pgdr.governance.errors import GovernanceUnavailableError
+
+    try:
+        manifest = resolve_pgdr_consumption_manifest_or_raise()
+    except GovernanceUnavailableError as exc:
+        return CapabilityCheck(
+            "ggm_consumption", True, CheckStatus.FAILED,
+            detail=str(exc), failure_reason=FailureReason.CONFIGURATION_ERROR,
+        )
+    except Exception as exc:
+        return CapabilityCheck(
+            "ggm_consumption", True, CheckStatus.FAILED,
+            detail=str(exc), failure_reason=_classify_exception(exc),
+        )
+
+    if not manifest.mandatory_kernel.kernel_version or not manifest.mandatory_kernel.mandatory_invariants:
+        return CapabilityCheck(
+            "ggm_consumption", True, CheckStatus.FAILED,
+            detail="resolved manifest carries no mandatory kernel",
+            failure_reason=FailureReason.CONFIGURATION_ERROR,
+        )
+
+    required_ops = {Operation.DECIDE.value, Operation.TRANSITION.value, Operation.CHECK_ESCALATION.value}
+    enabled_ops = set(manifest.operations_enabled)
+    if not required_ops <= enabled_ops:
+        missing = required_ops - enabled_ops
+        return CapabilityCheck(
+            "ggm_consumption", True, CheckStatus.FAILED,
+            detail=f"required operations not enabled by resolved manifest: {sorted(missing)}",
+            failure_reason=FailureReason.CONFIGURATION_ERROR,
+        )
+
+    try:
+        DefaultGGMConsumer()
+    except Exception as exc:
+        return CapabilityCheck(
+            "ggm_consumption", True, CheckStatus.FAILED,
+            detail=f"GGMConsumer could not be constructed: {type(exc).__name__}: {exc}",
+            failure_reason=FailureReason.CAPABILITY_UNAVAILABLE,
+        )
+
+    return CapabilityCheck(
+        "ggm_consumption", True, CheckStatus.OK,
+        detail=(
+            f"manifest {manifest.manifest_id} resolved, kernel {manifest.mandatory_kernel.kernel_version}, "
+            f"operations {sorted(enabled_ops)}"
+        ),
+    )
+
+
 def check_readiness(extra_checks: list[CapabilityCheck] | None = None) -> ReadinessReport:
     """Runs every required PGDR readiness check, plus any `extra_checks`
     supplied by a caller (used by tests to exercise the optional-check
@@ -166,6 +232,7 @@ def check_readiness(extra_checks: list[CapabilityCheck] | None = None) -> Readin
         _check_packaged_resources_and_configuration(),
         _check_safety_engine(),
         _check_session_controller(),
+        _check_ggm_consumption(),
     ]
     if extra_checks:
         checks.extend(extra_checks)

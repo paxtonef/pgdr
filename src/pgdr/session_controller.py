@@ -1,7 +1,9 @@
 """Session Controller — state machine per AMD pack 14.2, migrated in P5
 to delegate all analytical reasoning to the P4 engine
 (DiagnosticLoop + DiagnosticCaseState), with the legacy analytical engine
-fully retired in P7 (see docs/architecture/p7_retirement_result.md).
+fully retired in P7 (see docs/architecture/p7_retirement_result.md), and
+diagnostic output now governed by GGM before presentation as of P8 (see
+docs/architecture/p8_ggm_integration.md).
 
 P5 migration invariant (mandate §2): there is exactly one authoritative
 analytical state for an active session — DiagnosticCaseState, held in
@@ -19,8 +21,18 @@ Per P5.3, `SafetyEngine` remains untouched and retains sole authority
 over the safety verdict — `DiagnosticLoop` only *consults* that verdict
 (via `SafetyState.preempts_analysis`), it never recomputes or
 reinterprets it.
+
+P8 update: the analytical-path report (the non-safety-escalated case,
+`_finalize()`) now goes through `govern_and_build_result()` instead of
+calling `build_result_from_case_state()` directly — every active
+hypothesis is governed by GGM before it can appear in the final report.
+Per mandate §28, the SAFETY-ESCALATED path (`start()`'s early return) is
+explicitly NOT routed through governance — SafetyEngine's verdict remains
+independent of and unreachable by GGM, unchanged since P0.
 """
 from __future__ import annotations
+
+from ggm.contract.interface import DefaultGGMConsumer, GGMConsumer
 
 from pgdr.application.case_factory import DiagnosticCaseFactory
 from pgdr.application.case_state_updater import CaseStateUpdater
@@ -34,13 +46,18 @@ from pgdr.complaint_parser import ComplaintParser
 from pgdr.config_loader import load_questions
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.enums import ResolutionStatus, SessionState
+from pgdr.governance.adapter import GGMDiagnosticGovernanceAdapter
+from pgdr.governance.consumption_profile import resolve_pgdr_consumption_manifest_or_raise
+from pgdr.governance.errors import GovernanceUnavailableError
+from pgdr.governance.reporting import govern_and_build_result
+from pgdr.governance.trace import InMemoryGovernanceTraceStore
 from pgdr.models import Answer, DiagnosticQuestion, DiagnosticSession, PreGarageDiagnosticRequest
 from pgdr.report_builder import build_result_from_case_state
 from pgdr.safety_engine import SafetyEngine
 
 
 class SessionController:
-    def __init__(self) -> None:
+    def __init__(self, *, governance_enabled: bool = True, governance_consumer: GGMConsumer | None = None) -> None:
         # P5.29 / P5.28 — validate the domain's declarative relations
         # (evidence-mapping rules referencing real hypothesis types and
         # real question ids) at startup, fail-closed, before any session
@@ -68,6 +85,39 @@ class SessionController:
         self._category_by_question_id = {
             q["question_id"]: q["category"] for q in load_questions().get("questions", [])
         }
+
+        # P8 — governance. Mandate §32/§33: production default is
+        # enabled=True, no ungoverned fallback. If governance is required
+        # and either the PGDR consumption declaration fails to resolve
+        # against GGM, or the injected/default GGMConsumer cannot be
+        # constructed, this raises GovernanceUnavailableError
+        # (a ConfigurationError subclass) — caught by the exact same
+        # fail-closed CLI boundary P0 already established, no new catch
+        # site needed. governance_consumer defaults to DefaultGGMConsumer
+        # (mandate §30's documented dev/test backing — the pinned GGM
+        # package does not yet implement a bounded runtime; see
+        # docs/architecture/p8_findings.md, "P8A complete / P8B pending").
+        self.governance_enabled = governance_enabled
+        self._governance_trace_store = InMemoryGovernanceTraceStore()
+        self._governance_manifest = None
+        self._governance_port = None
+        if governance_enabled:
+            try:
+                manifest = resolve_pgdr_consumption_manifest_or_raise()
+                consumer = governance_consumer if governance_consumer is not None else DefaultGGMConsumer()
+            except GovernanceUnavailableError:
+                raise
+            except Exception as exc:  # fail closed (mandate §32) — never a silent ungoverned start
+                raise GovernanceUnavailableError(
+                    f"GGM consumer could not be constructed: {type(exc).__name__}: {exc}"
+                ) from exc
+            self._governance_manifest = manifest
+            self._governance_port = GGMDiagnosticGovernanceAdapter(
+                consumer,
+                manifest_id=manifest.manifest_id,
+                capability_profile_version=manifest.capability_profile_version,
+                trace_store=self._governance_trace_store,
+            )
 
     def start(self, request: PreGarageDiagnosticRequest) -> DiagnosticSession:
         session = DiagnosticSession(request=request)
@@ -192,7 +242,18 @@ class SessionController:
         session.log_transition(SessionState.CONTRADICTION_CHECK, SessionState.REASONING, "Contradictions checked")
         session.log_transition(SessionState.REASONING, SessionState.REPORT_GENERATION, "Hypotheses generated")
 
-        session.result = build_result_from_case_state(session.request.request_id, case_state)
+        # P8 — governance gate. Every active hypothesis is governed by GGM
+        # before it can appear in this report; the ORIGINAL case_state is
+        # never mutated by governance (see governance/reporting.py). The
+        # safety-escalated path in start() deliberately bypasses this
+        # entirely (mandate §28) and is untouched.
+        if self.governance_enabled and self._governance_port is not None:
+            result, _traces = govern_and_build_result(
+                session.request.request_id, case_state, self._governance_port,
+            )
+            session.result = result
+        else:
+            session.result = build_result_from_case_state(session.request.request_id, case_state)
         session.log_transition(SessionState.REPORT_GENERATION, SessionState.COMPLETED, "Report generated")
 
     def get_current_state(self, session: DiagnosticSession) -> dict:

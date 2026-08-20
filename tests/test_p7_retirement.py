@@ -265,7 +265,17 @@ pytestmark_packaging = pytest.mark.packaging
 
 @pytest.mark.packaging
 def test_p7_t09_wheel_build_install_scenario_after_retirement(tmp_path_factory):
+    import os
     import venv
+
+    # P8 note: same cross-repository dependency gap as P0's
+    # fresh_venv_python fixture — see docs/architecture/p8_findings.md.
+    ggm_wheel_path = os.environ.get("GGM_WHEEL_PATH")
+    if not ggm_wheel_path or not Path(ggm_wheel_path).exists():
+        pytest.skip(
+            "GGM_WHEEL_PATH not set (or file not found) — this packaging test "
+            "requires the pinned ggm wheel installed alongside pgdr's own wheel."
+        )
 
     dist_dir = tmp_path_factory.mktemp("dist")
     result = subprocess.run(
@@ -280,7 +290,7 @@ def test_p7_t09_wheel_build_install_scenario_after_retirement(tmp_path_factory):
     venv.EnvBuilder(with_pip=True).create(venv_dir)
     py = venv_dir / "bin" / "python"
     install = subprocess.run(
-        [str(py), "-m", "pip", "install", "-q", str(wheels[0])],
+        [str(py), "-m", "pip", "install", "-q", str(wheels[0]), ggm_wheel_path],
         capture_output=True, text=True, timeout=300,
     )
     assert install.returncode == 0, install.stderr
