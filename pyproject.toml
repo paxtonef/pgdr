@@ -12,15 +12,33 @@ dependencies = [
     "pyyaml>=6.0",
     "rich>=13.0",
     "click>=8.0",
-    # P8 — GGM Governed Consumption Integration. `ggm` is NOT on PyPI: it
-    # is the pinned GGM package (commit 4fda5974312f1949771fc4993ced4c98fe0d1ac0)
-    # supplied out-of-band (see docs/architecture/p8_ggm_integration.md).
+    # P8 / P2.2 migration — GGM Governed Consumption Integration. `ggm` is
+    # NOT on PyPI: it is the pinned GGM package supplied out-of-band (see
+    # docs/architecture/p8_ggm_integration.md and the PGDR -> GGM P2.2
+    # Pre-Implementation Evidence Note v1).
+    #
+    # Packaging Identity Freeze (this pin):
+    #   package version : ggm 1.2.0
+    #   source commit   : ac99750 (SUPPLIED target identity — the source
+    #                      archive contains no .git metadata, so this
+    #                      commit is not independently git-verifiable
+    #                      from the tree alone; see evidence note §1/§3)
+    #   wheel SHA-256   : 7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2
+    #   wheel file      : vendor/ggm-1.2.0-py3-none-any.whl
+    #
+    # Version "1.2.0" is an externally-assigned packaging version, not
+    # sourced from any canonical GGM version file (none exists in the
+    # supplied source). It must be confirmed or overridden by GGM's own
+    # canonical build/release process before being treated as
+    # authoritative beyond this migration. See vendor/GGM_PACKAGING_IDENTITY.md
+    # for the full freeze record.
+    #
     # Declared as a formal dependency anyway (rather than omitted) so
     # `pip install pgdr-*.whl` fails loudly and immediately if ggm isn't
     # already available/co-installed, instead of succeeding and then
     # failing confusingly at import time. Install both wheels together:
-    #   pip install ggm-1.1.0-py3-none-any.whl pgdr-2.0.0-py3-none-any.whl
-    "ggm>=1.1.0",
+    #   pip install ggm-1.2.0-py3-none-any.whl pgdr-2.0.0-py3-none-any.whl
+    "ggm>=1.2.0",
 ]
 
 [project.scripts]
