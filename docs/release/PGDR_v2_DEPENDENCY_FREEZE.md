@@ -7,60 +7,130 @@
 | `pyyaml` | `>=6.0` | PyPI | - | Required | loading the 4 governance/domain config YAMLs |
 | `rich` | `>=13.0` | PyPI | - | Required | CLI presentation (`cli.py`) |
 | `click` | `>=8.0` | PyPI | - | Required | CLI command structure (`cli.py`) |
-| `ggm` | `>=1.1.0` | Not on PyPI - pinned package, vendored as `vendor/ggm-1.1.0-py3-none-any.whl` | `4fda5974312f1949771fc4993ced4c98fe0d1ac0` | Required (governance defaults to enabled) | P8 - real GGM governance decisions before diagnostic presentation |
+| `ggm` | `>=1.2.0` | Not on PyPI — pinned package, vendored as `vendor/ggm-1.2.0-py3-none-any.whl` | target source `ac99750`; wheel SHA-256 `7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2` | Required (governance defaults to enabled) | P8 / P2.2 — GGM governance decisions plus canonical runtime materialization before diagnostic presentation |
 | `hatchling` | build-system only | PyPI | - | Required at build time only | wheel building |
 | `pytest`, `build` | dev/test only | PyPI | - | Optional (not a runtime dependency) | test suite, wheel-build tests |
 
-## GGM - governed as an external dependency, not PGDR code
+## GGM — governed as an external dependency, not PGDR code
 
-```
-package:           ggm
-version:            1.1.0 (PGDR-assigned wheel version; GGM's own internal
-                    RUNTIME_VERSION constant is "ggm/1.1" - a distinct,
-                    intentionally separate identity, see p8_ggm_integration.md)
-source commit:       4fda5974312f1949771fc4993ced4c98fe0d1ac0
-contract version:    1.2   (ggm.contract.types.CONTRACT_VERSION)
-resolver version:    1.3   (ggm.consumption.types.RESOLVER_VERSION)
-kernel version:      ggm/1.1   (ggm.consumption.CANONICAL_KERNEL_VERSION)
-wheel sha256:        f328aaa83f8f552fa40f11386f1eb461453af41acf53a1dd1ccf4bb7be7fe598
-wheel contents:       ggm/ subpackage only (contract, consumption, model,
-                    governance, invariants, persistence, profiles) - the
-                    pinned source repo's root-level P2.2 lab/evaluation
-                    scripts (semantic_provider.py, openai_semantic_provider.py,
-                    sgri_validator.py, etc.) are NOT included, verified
-                    by direct wheel-content inspection at build time
-packaging metadata:  a minimal pyproject.toml (name="ggm", version="1.1.0")
-                    was added to the pinned source purely to make it
-                    pip-installable - zero changes to any ggm/*.py file
-```
+    package:             ggm
+    package version:     1.2.0
+    source target:       ac99750
+                         This source identity is supplied/provisional rather
+                         than independently recoverable from the distributed
+                         source archive; see vendor/GGM_PACKAGING_IDENTITY.md.
+    contract version:    1.3
+    resolver version:    1.3
+    kernel version:      ggm/1.1
+    wheel sha256:        7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2
 
-## Why `ggm` is a formal (not optional) dependency
+    wheel contents:      installable ggm package including the public runtime
+                         materialization surface required by PGDR:
+                         contract, consumption, governance, invariants,
+                         materialization, model, persistence, profiles.
 
-`pip install pgdr-*.whl` fails loudly and immediately if `ggm` isn't
-already available or co-installed, rather than succeeding and then
-failing confusingly at import time (`session_controller.py` imports
-`ggm.contract.interface` at module load). This trade-off was made
-deliberately in P8 and is unchanged for the v2 freeze - see
-`docs/architecture/p8_findings.md`.
+    packaging identity:  package version 1.2.0 is the PGDR-consumed artifact
+                         identity for the P2.2 build. Source provenance and
+                         reproduction details are recorded in
+                         vendor/GGM_PACKAGING_IDENTITY.md.
+
+`ggm/1.1` is the canonical kernel/runtime identity and is intentionally
+distinct from the installable package version `1.2.0`.
+
+## Why `ggm` is a formal dependency
+
+`pip install pgdr-*.whl` fails loudly if the required GGM package is not
+available or co-installed.
+
+Governance is enabled by default and PGDR requires GGM before governed
+diagnostic presentation.
+
+PGDR now acquires its default GGM consumer through the canonical P2.2
+runtime materialization path:
+
+    PGDR consumption declaration
+        -> consumption resolution
+        -> RuntimeMaterializer
+        -> MaterializedGGMRuntime
+        -> runtime.consumer
+
+PGDR no longer constructs `DefaultGGMConsumer` directly in its default
+production path.
+
+## Runtime materialization dependency
+
+PGDR currently declares one required GGM operation:
+
+    DECIDE
+
+`TRANSITION` and `CHECK_ESCALATION` are not required by current PGDR
+behavior.
+
+The GGM P2.2 `RuntimeMaterializer` owns canonical-state validation,
+constructor dependency resolution, machinery selection, and bounded
+runtime construction.
+
+For the PGDR DECIDE-only manifest, verified materialization requires:
+
+- GovernanceDecisionEngine
+- ProfileResolver
+
+and does not require:
+
+- TransitionEngine
+- EscalationDetector
+- ClaimStore
+
+PGDR SHALL therefore not pin or reproduce this internal machinery
+composition as part of its own integration contract.
 
 ## Reproducibility
 
-Given the same `ggm` wheel (verified by the sha256 above) and the same
-PGDR source, `resolve_pgdr_consumption_manifest()` is deterministic:
-`manifest_id` is derived via `uuid5` from the three declared axes, not
-randomly generated - the same manifest ID results from re-resolution on
-any machine with the same pinned inputs. Confirmed live, not merely
-asserted (`test_p8_t02_t03_t04_consumption_resolves_with_kernel_and_operations`
-and the resolver's own `test_t05_same_input_resolves_to_semantically_identical_manifest`
-in GGM's own test suite).
+Given the same vendored GGM wheel and the same PGDR source,
+`resolve_pgdr_consumption_manifest()` is deterministic.
+
+`manifest_id` is derived deterministically from the declared consumption
+axes.
+
+The canonical P2.2 materialization path has additionally been verified
+against the vendored GGM 1.2.0 artifact through the complete PGDR test
+suite:
+
+    163 passed
+    0 failed
+    0 skipped
+
+with:
+
+    GGM_WHEEL_PATH=vendor/ggm-1.2.0-py3-none-any.whl
+
+## What is explicitly pinned
+
+PGDR pins the following GGM dependency properties:
+
+- installable GGM package artifact: `ggm-1.2.0-py3-none-any.whl`
+- wheel SHA-256
+- target source identity recorded as `ac99750`
+- public consumption contract required by PGDR
+- public runtime materialization capability
+- DECIDE as the required PGDR GGM operation
+- embedded/offline/standalone consumption requirements
 
 ## What is explicitly NOT pinned
 
-- The specific `GGMConsumer` implementation (`DefaultGGMConsumer` today)
-  - injected via `GGMConsumer` Protocol, swappable without a PGDR code
-  change once GGM ships a bounded/embedded runtime (P8B, see
-  `PGDR_v2_DEFERRED_CAPABILITIES.md`).
-- Exact patch versions of `pydantic`/`pyyaml`/`rich`/`click` - minimum
-  versions only, per standard practice for a library-shaped package
-  (PGDR is consumed via `install.sh` end-to-end, not published to a
-  shared index where stricter pinning would matter more).
+PGDR does not pin GGM's internal machinery composition beyond the public
+contract required to satisfy its consumption declaration.
+
+In particular, PGDR does not own or pin:
+
+- internal engine constructor dependencies
+- internal machinery selection
+- presence of TransitionEngine when DECIDE does not require it
+- presence of EscalationDetector when DECIDE does not require it
+- ClaimStore when persistence is not required
+
+Those are provider-owned properties resolved by GGM RuntimeMaterializer.
+
+Exact patch versions of `pydantic`, `pyyaml`, `rich`, and `click` are also
+not pinned; PGDR retains minimum-version constraints for those ordinary
+library dependencies.
