@@ -20,7 +20,7 @@ nothing but consolidate everything.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install vendor/ggm-1.1.0-py3-none-any.whl   # pinned GGM package, not on PyPI
+pip install vendor/ggm-1.2.0-py3-none-any.whl   # pinned GGM package, not on PyPI
 pip install -r requirements.txt
 
 python3 run_pgdr.py run --vir-id VIR-001 --complaint "La voiture tremble au ralenti"
@@ -32,7 +32,7 @@ python3 run_pgdr.py --version
 
 ```bash
 .venv/bin/pytest tests/ -v -m "not packaging"                                          # fast, source tree only
-GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.1.0-py3-none-any.whl" .venv/bin/pytest tests/ -v    # full suite incl. wheel/packaging
+GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" .venv/bin/pytest tests/ -v    # full suite incl. wheel/packaging
 ```
 
 157/157 tests passing as of this release — see

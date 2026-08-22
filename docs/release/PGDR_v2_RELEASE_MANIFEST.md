@@ -11,10 +11,10 @@ used anywhere in this document.
 | | |
 |---|---|
 | Implementation | `pyproject.toml` (hatchling), `install.sh` (self-contained installer, vendors the pinned GGM wheel) |
-| Authoritative component | `pyproject.toml` force-include of 4 config YAMLs; `vendor/ggm-1.1.0-py3-none-any.whl` |
+| Authoritative component | `pyproject.toml` force-include of 4 config YAMLs; `vendor/ggm-1.2.0-py3-none-any.whl` |
 | Test evidence | `test_p0_packaging.py` (11 tests), `test_p7_t09_wheel_build_install_scenario_after_retirement`, `test_p8_t30_cli_regression_with_governance_enabled` |
 | Status | **ACTIVE** |
-| Version/dependency | Python >=3.10; pydantic>=2.0, pyyaml>=6.0, rich>=13.0, click>=8.0, ggm>=1.1.0 |
+| Version/dependency | Python >=3.10; pydantic>=2.0, pyyaml>=6.0, rich>=13.0, click>=8.0, ggm>=1.2.0 |
 
 ## Configuration Integrity
 
