@@ -32,7 +32,7 @@ independent of and unreachable by GGM, unchanged since P0.
 """
 from __future__ import annotations
 
-from ggm.contract.interface import DefaultGGMConsumer, GGMConsumer
+from ggm.contract.interface import GGMConsumer
 
 from pgdr.application.case_factory import DiagnosticCaseFactory
 from pgdr.application.case_state_updater import CaseStateUpdater
@@ -47,7 +47,10 @@ from pgdr.config_loader import load_questions
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.enums import ResolutionStatus, SessionState
 from pgdr.governance.adapter import GGMDiagnosticGovernanceAdapter
-from pgdr.governance.consumption_profile import resolve_pgdr_consumption_manifest_or_raise
+from pgdr.governance.consumption_profile import (
+    materialize_pgdr_runtime_or_raise,
+    resolve_pgdr_consumption_manifest_or_raise,
+)
 from pgdr.governance.errors import GovernanceUnavailableError
 from pgdr.governance.reporting import govern_and_build_result
 from pgdr.governance.trace import InMemoryGovernanceTraceStore
@@ -89,22 +92,35 @@ class SessionController:
         # P8 — governance. Mandate §32/§33: production default is
         # enabled=True, no ungoverned fallback. If governance is required
         # and either the PGDR consumption declaration fails to resolve
-        # against GGM, or the injected/default GGMConsumer cannot be
-        # constructed, this raises GovernanceUnavailableError
-        # (a ConfigurationError subclass) — caught by the exact same
-        # fail-closed CLI boundary P0 already established, no new catch
-        # site needed. governance_consumer defaults to DefaultGGMConsumer
-        # (mandate §30's documented dev/test backing — the pinned GGM
-        # package does not yet implement a bounded runtime; see
-        # docs/architecture/p8_findings.md, "P8A complete / P8B pending").
+        # against GGM, or the runtime cannot be materialized / the
+        # injected GGMConsumer cannot be constructed, this raises
+        # GovernanceUnavailableError (a ConfigurationError subclass) —
+        # caught by the exact same fail-closed CLI boundary P0 already
+        # established, no new catch site needed.
+        #
+        # P2.2 migration (evidence note §12/§13): production now
+        # materializes a bounded GGM runtime via
+        # materialize_pgdr_runtime_or_raise() and consumes
+        # runtime.consumer, instead of constructing DefaultGGMConsumer()
+        # directly — DefaultGGMConsumer instantiates GGM's full engine
+        # set regardless of which operations PGDR actually enabled, while
+        # RuntimeMaterializer builds only the machinery DECIDE requires
+        # (structural minimality). governance_consumer remains the
+        # explicit injection seam for tests/development (mandate §30) —
+        # when supplied, it is used as-is and no runtime is materialized.
         self.governance_enabled = governance_enabled
         self._governance_trace_store = InMemoryGovernanceTraceStore()
         self._governance_manifest = None
         self._governance_port = None
         if governance_enabled:
             try:
-                manifest = resolve_pgdr_consumption_manifest_or_raise()
-                consumer = governance_consumer if governance_consumer is not None else DefaultGGMConsumer()
+                if governance_consumer is not None:
+                    manifest = resolve_pgdr_consumption_manifest_or_raise()
+                    consumer = governance_consumer
+                else:
+                    runtime = materialize_pgdr_runtime_or_raise()
+                    manifest = runtime.manifest
+                    consumer = runtime.consumer
             except GovernanceUnavailableError:
                 raise
             except Exception as exc:  # fail closed (mandate §32) — never a silent ungoverned start

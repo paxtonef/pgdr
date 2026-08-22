@@ -1,9 +1,26 @@
 """P8 mandate §5-6 — PGDR's three-axis GGM consumption declaration and its
 resolution into a ResolvedConsumptionManifest.
 
-Every value declared below was verified against the pinned GGM package
-(commit 4fda5974312f1949771fc4993ced4c98fe0d1ac0), not guessed from the
-mandate's prose:
+P2.2 migration (see PGDR -> GGM P2.2 Pre-Implementation Evidence Note v1,
+gate items 8/9/13): PGDR now declares and requires exactly `DECIDE`.
+`TRANSITION` and `CHECK_ESCALATION` were previously declared-but-unused
+(P8 v1 called only DECIDE from day one — mandate §14) purely to satisfy
+GovernanceDecisionEngine's historical constructor, which mechanically
+required live TransitionEngine/EscalationDetector instances regardless of
+which operations were actually enabled. GGM P2.2 repaired that coupling
+(transition_engine/escalation_detector are now optional constructor
+dependencies) and ships RuntimeMaterializer, which builds only the
+machinery an enabled operation set actually needs (structural
+minimality). With the coupling gone, there is no remaining reason for
+PGDR to over-declare operations it never calls — see the evidence note
+§9 ("PGDR has no remaining evidence-based reason to declare TRANSITION /
+CHECK_ESCALATION solely to make DECIDE constructible").
+
+Every value declared below was verified against the GGM P2.2 source tree
+(target commit ac99750 — see the evidence note §1/§3 for the identity
+caveat: this is the supplied target identity, not independently
+git-verifiable from the source archive), not guessed from any mandate's
+prose:
 
   - "ggm.base"/"1.0" is the actual profile_id/version returned by
     ggm.profiles.build_default_profiles() (confirmed by reading
@@ -34,6 +51,11 @@ from ggm.consumption import (
     ResolvedConsumptionManifest,
 )
 from ggm.contract.types import Operation
+from ggm.materialization import (
+    MaterializedGGMRuntime,
+    RuntimeMaterializationError,
+    RuntimeMaterializer,
+)
 
 from pgdr.governance.errors import GovernanceUnavailableError
 
@@ -48,17 +70,19 @@ GOVERNANCE_PROFILE_SELECTION = GovernanceProfileSelection(
 )
 
 # -- Axis 2: what GGM machinery PGDR requires --------------------------------
-# All three contract operations are DECLARED as required (enabling them in
-# the resolved manifest), even though P8 v1's adapter only actually CALLS
-# DECIDE (mandate §14) — TRANSITION/CHECK_ESCALATION are enabled-but-unused
-# today, per mandate §22/§23's instruction not to invent a use case just
-# because the operation exists. audit_requirements lists what PGDR reads
-# out of every GovernanceResult/ConsumptionError for its trace (mandate
-# §25/§26) — not a request FOR GGM to compute anything extra.
+# Exactly DECIDE is declared as required (P8's adapter has only ever
+# CALLED DECIDE — mandate §14). Prior to GGM P2.2, TRANSITION and
+# CHECK_ESCALATION were also declared solely to satisfy
+# GovernanceDecisionEngine's historical constructor coupling (see module
+# docstring); P2.2's constructor repair plus RuntimeMaterializer's
+# structural-minimality guarantee (evidence note §9/§10) removed that
+# need, so they are no longer requested. audit_requirements lists what
+# PGDR reads out of every GovernanceResult/ConsumptionError for its trace
+# (mandate §25/§26) — not a request FOR GGM to compute anything extra.
 GGM_CAPABILITY_PROFILE = GGMCapabilityProfile(
     capability_profile_id="pgdr",
     capability_profile_version="1.0",
-    operations_required=[Operation.DECIDE.value, Operation.TRANSITION.value, Operation.CHECK_ESCALATION.value],
+    operations_required=[Operation.DECIDE.value],
     mandatory_kernel_version=CANONICAL_KERNEL_VERSION,
     persistence_required=False,
     audit_requirements=["rules_applied", "profile_trace", "runtime_version", "request_correlation"],
@@ -121,3 +145,36 @@ def resolve_pgdr_consumption_manifest_or_raise(consumer_id: str = "pgdr") -> Res
             f"{result.error_type.value} — {result.details}"
         )
     return result
+
+
+def materialize_pgdr_runtime_or_raise(consumer_id: str = "pgdr") -> MaterializedGGMRuntime:
+    """P2.2 migration — the fail-closed entry point that replaces
+    constructing `DefaultGGMConsumer()` directly (evidence note §12/§13's
+    revised readiness/runtime flow):
+
+        resolve_pgdr_consumption_manifest_or_raise()
+                v
+        RuntimeMaterializer().materialize(manifest)
+                v
+        RuntimeMaterializationError? -> GovernanceUnavailableError
+        else                        -> MaterializedGGMRuntime
+
+    Used by both SessionController.__init__() (to obtain
+    runtime.consumer for GGMDiagnosticGovernanceAdapter) and
+    readiness.py's ggm_consumption check, so both share exactly one
+    materialization path — no second ad hoc construction of
+    RuntimeMaterializer elsewhere in PGDR.
+
+    Raises GovernanceUnavailableError (never returns a
+    RuntimeMaterializationError) — same fail-closed contract as
+    resolve_pgdr_consumption_manifest_or_raise (mandate §32, "No
+    ungoverned fallback").
+    """
+    manifest = resolve_pgdr_consumption_manifest_or_raise(consumer_id=consumer_id)
+    materialized = RuntimeMaterializer().materialize(manifest)
+    if isinstance(materialized, RuntimeMaterializationError):
+        raise GovernanceUnavailableError(
+            f"PGDR resolved consumption manifest failed to materialize into a GGM runtime: "
+            f"{materialized.error_type.value} — {materialized.details}"
+        )
+    return materialized

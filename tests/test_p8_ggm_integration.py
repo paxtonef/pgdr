@@ -134,7 +134,15 @@ def test_p8_t01_no_forbidden_ggm_imports_in_governance_package():
 
 
 def test_p8_t01b_only_contract_and_consumption_ggm_modules_imported():
-    allowed_prefixes = ("ggm.contract", "ggm.consumption", "ggm.model")
+    # P2.2 migration: consumption_profile.py additionally imports
+    # RuntimeMaterializer/MaterializedGGMRuntime/RuntimeMaterializationError
+    # from ggm.materialization — the one canonical resolved-manifest ->
+    # bounded-runtime path (evidence note §4/§6/§7) — to obtain
+    # runtime.consumer instead of constructing DefaultGGMConsumer()
+    # directly. This is still exactly the public GGM consumption surface
+    # (never an internal engine — see _FORBIDDEN_GGM_SYMBOLS above), so it
+    # is added to the allowed prefixes rather than treated as a violation.
+    allowed_prefixes = ("ggm.contract", "ggm.consumption", "ggm.model", "ggm.materialization")
     for py_file in GOVERNANCE_PACKAGE.rglob("*.py"):
         tree = ast.parse(py_file.read_text(), filename=str(py_file))
         for node in ast.walk(tree):
@@ -150,12 +158,16 @@ def test_p8_t01b_only_contract_and_consumption_ggm_modules_imported():
 # ---------------------------------------------------------------------------
 
 def test_p8_t02_t03_t04_consumption_resolves_with_kernel_and_operations():
+    # P2.2 migration: PGDR now declares/requires exactly DECIDE (evidence
+    # note §9 — GGM P2.2's constructor-coupling repair removed the only
+    # reason PGDR had to over-declare TRANSITION/CHECK_ESCALATION), and
+    # the GGM P2.2 source is contract v1.3 (evidence note §8).
     manifest = resolve_pgdr_consumption_manifest_or_raise()
     assert manifest.manifest_id
     assert manifest.mandatory_kernel.kernel_version
     assert manifest.mandatory_kernel.mandatory_invariants
-    assert set(manifest.operations_enabled) == {"DECIDE", "TRANSITION", "CHECK_ESCALATION"}
-    assert manifest.contract_version == "1.2"
+    assert set(manifest.operations_enabled) == {"DECIDE"}
+    assert manifest.contract_version == "1.3"
 
 
 # ---------------------------------------------------------------------------
@@ -422,11 +434,15 @@ def test_p8_t27_t28_readiness_false_and_fail_closed_when_ggm_unavailable(monkeyp
     def _broken_resolve(*args, **kwargs):
         raise GovernanceUnavailableError("simulated GGM unavailability")
 
-    # session_controller.py does `from ... import resolve_pgdr_consumption_manifest_or_raise`
+    # session_controller.py does `from ... import materialize_pgdr_runtime_or_raise`
     # at module load time (a direct name binding), so the patch target for
     # SessionController construction must be the name as bound in
-    # session_controller's own namespace.
-    monkeypatch.setattr(sc_module, "resolve_pgdr_consumption_manifest_or_raise", _broken_resolve)
+    # session_controller's own namespace. P2.2 migration: SessionController
+    # now obtains its consumer by materializing a bounded runtime rather
+    # than resolving the manifest and constructing DefaultGGMConsumer()
+    # directly (see governance/consumption_profile.py,
+    # materialize_pgdr_runtime_or_raise).
+    monkeypatch.setattr(sc_module, "materialize_pgdr_runtime_or_raise", _broken_resolve)
     with pytest.raises(GovernanceUnavailableError):
         SessionController()
 

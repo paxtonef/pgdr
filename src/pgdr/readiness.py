@@ -159,24 +159,40 @@ def _check_session_controller() -> CapabilityCheck:
 
 def _check_ggm_consumption() -> CapabilityCheck:
     """P8 mandate §7 — GGM_CONSUMPTION_READY. Required as of P8 (governance
-    defaults to enabled). Checks, in order: the three-axis declaration
-    resolves against real GGM (consumer available implicitly — resolution
-    itself imports and calls into the pinned ggm package), the resolved
-    manifest carries a mandatory kernel, and DECIDE/TRANSITION/CHECK_ESCALATION
-    are all enabled. 'Runtime integrity valid' is interpreted here as
-    'a GGMConsumer can actually be constructed' (DefaultGGMConsumer()) —
-    P8 does not perform a live DECIDE call at readiness time (that would
-    require a real candidate object neither readiness nor GGM's contract
-    needs at this layer); constructability is the honest boundary of what
-    can be checked without fabricating a request."""
-    from ggm.contract.interface import DefaultGGMConsumer
+    defaults to enabled).
+
+    P2.2 migration (evidence note §13's revised readiness flow): the
+    manual "inspect mandatory invariant IDs" / "require TRANSITION" /
+    "require CHECK_ESCALATION" / "construct DefaultGGMConsumer" checks
+    below are replaced by the two-question bounded flow the evidence note
+    establishes as sufficient —
+
+        RuntimeMaterializer().materialize(manifest)
+                v
+        RuntimeMaterializationError? -> NOT READY
+                v
+        DECIDE in runtime.operations_enabled? -> READY
+
+    — because RuntimeMaterializer itself already re-verifies contract
+    version, kernel version, mandatory invariant identity, and profile
+    references against live canonical GGM state before it will produce a
+    runtime at all (evidence note §10, "GGM provider ownership
+    verified"); duplicating those checks here would just re-implement
+    materializer-owned validation. 'Runtime integrity valid' is
+    interpreted here as 'the bounded runtime materializes successfully' —
+    strictly stronger than the previous 'a GGMConsumer can be
+    constructed' check, since materialization also proves the specific
+    manifest PGDR declared is buildable, not just that some consumer
+    class is instantiable. Readiness still does not perform a live DECIDE
+    call (no fabricated request needed at this layer).
+    """
     from ggm.contract.types import Operation
 
-    from pgdr.governance.consumption_profile import resolve_pgdr_consumption_manifest_or_raise
+    from pgdr.governance.consumption_profile import materialize_pgdr_runtime_or_raise
     from pgdr.governance.errors import GovernanceUnavailableError
 
     try:
-        manifest = resolve_pgdr_consumption_manifest_or_raise()
+        runtime = materialize_pgdr_runtime_or_raise()
     except GovernanceUnavailableError as exc:
         return CapabilityCheck(
             "ggm_consumption", True, CheckStatus.FAILED,
@@ -188,37 +204,18 @@ def _check_ggm_consumption() -> CapabilityCheck:
             detail=str(exc), failure_reason=_classify_exception(exc),
         )
 
-    if not manifest.mandatory_kernel.kernel_version or not manifest.mandatory_kernel.mandatory_invariants:
+    if Operation.DECIDE.value not in {op.value for op in runtime.operations_enabled}:
         return CapabilityCheck(
             "ggm_consumption", True, CheckStatus.FAILED,
-            detail="resolved manifest carries no mandatory kernel",
+            detail=f"DECIDE not enabled by materialized runtime: {sorted(op.value for op in runtime.operations_enabled)}",
             failure_reason=FailureReason.CONFIGURATION_ERROR,
-        )
-
-    required_ops = {Operation.DECIDE.value, Operation.TRANSITION.value, Operation.CHECK_ESCALATION.value}
-    enabled_ops = set(manifest.operations_enabled)
-    if not required_ops <= enabled_ops:
-        missing = required_ops - enabled_ops
-        return CapabilityCheck(
-            "ggm_consumption", True, CheckStatus.FAILED,
-            detail=f"required operations not enabled by resolved manifest: {sorted(missing)}",
-            failure_reason=FailureReason.CONFIGURATION_ERROR,
-        )
-
-    try:
-        DefaultGGMConsumer()
-    except Exception as exc:
-        return CapabilityCheck(
-            "ggm_consumption", True, CheckStatus.FAILED,
-            detail=f"GGMConsumer could not be constructed: {type(exc).__name__}: {exc}",
-            failure_reason=FailureReason.CAPABILITY_UNAVAILABLE,
         )
 
     return CapabilityCheck(
         "ggm_consumption", True, CheckStatus.OK,
         detail=(
-            f"manifest {manifest.manifest_id} resolved, kernel {manifest.mandatory_kernel.kernel_version}, "
-            f"operations {sorted(enabled_ops)}"
+            f"manifest {runtime.manifest_id} materialized, kernel {runtime.mandatory_kernel.kernel_version}, "
+            f"operations {sorted(op.value for op in runtime.operations_enabled)}"
         ),
     )
 

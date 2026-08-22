@@ -167,7 +167,11 @@ def test_rc05_ggm_unavailable_fails_closed(monkeypatch):
     def _broken_resolve(*args, **kwargs):
         raise GovernanceUnavailableError("simulated GGM unavailability")
 
-    monkeypatch.setattr(sc_module, "resolve_pgdr_consumption_manifest_or_raise", _broken_resolve)
+    # P2.2 migration: SessionController obtains its consumer via
+    # materialize_pgdr_runtime_or_raise() (bounded-runtime materialization),
+    # not resolve_pgdr_consumption_manifest_or_raise() directly — see
+    # governance/consumption_profile.py.
+    monkeypatch.setattr(sc_module, "materialize_pgdr_runtime_or_raise", _broken_resolve)
 
     with pytest.raises(GovernanceUnavailableError):
         SessionController()  # no ungoverned SessionController is ever produced
