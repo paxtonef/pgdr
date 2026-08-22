@@ -75,9 +75,8 @@ genuinely unenforced today. Documented since P7
 
 ## Governance requires a network-free but package-present GGM install
 
-PGDR does not implement a bounded/embedded GGM runtime itself (P8B,
-deferred - see `PGDR_v2_DEFERRED_CAPABILITIES.md`). It uses GGM's
-`DefaultGGMConsumer` reference implementation, injected via dependency
-injection. This runs fully offline (no network calls), but requires the
-`ggm` package to be installed alongside PGDR - see
-`PGDR_v2_DEPENDENCY_FREEZE.md`.
+PGDR materializes a bounded GGM runtime via `RuntimeMaterializer`
+(GGM P2.2) rather than using `DefaultGGMConsumer` directly — see
+`PGDR_v2_DEFERRED_CAPABILITIES.md` for the P8B history. This still runs
+fully offline (no network calls), and still requires the `ggm` package
+to be installed alongside PGDR - see `PGDR_v2_DEPENDENCY_FREEZE.md`.

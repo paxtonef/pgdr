@@ -1,19 +1,28 @@
 # P8 Findings
 
-## P8A/P8B split - the pinned GGM package has no bounded runtime yet
+## P8A/P8B split - RESOLVED as of GGM P2.2
 
-The developer pack's own README says it plainly: "bounded-runtime
-construction and embedded/remote adapters are not yet implemented." P8
-therefore integrates against `DefaultGGMConsumer` (GGM's reference
-implementation, wired via the exact construction pattern GGM's own tests
-use), taken through dependency injection specifically so a future
-`BoundedEmbeddedGGMConsumer` can be substituted with zero changes to
-PGDR's own code once GGM ships one — the `GGMConsumer` Protocol is the
-seam, not `DefaultGGMConsumer`.
+P8 originally integrated against `DefaultGGMConsumer` (GGM's reference
+implementation) because the pinned package's own README stated plainly
+that "bounded-runtime construction and embedded/remote adapters are not
+yet implemented." `DefaultGGMConsumer` was taken through dependency
+injection specifically so a future bounded runtime could be substituted
+later — the `GGMConsumer` Protocol was always the seam, not
+`DefaultGGMConsumer` itself.
+
+GGM P2.2 shipped that bounded runtime (`RuntimeMaterializer` /
+`MaterializedGGMRuntime`), and PGDR has been migrated to consume it.
+CORRECTION to the original prediction below: this was NOT a zero-code-
+change swap. `RuntimeMaterializer().materialize(manifest)` requires an
+explicit resolve -> materialize call PGDR did not previously make;
+`session_controller.py`, `governance/consumption_profile.py`, and
+`readiness.py` were all modified. The `GGMConsumer` Protocol injection
+seam itself (`governance_consumer` parameter) was unaffected and remains
+the swap point for tests/development.
 
 ```
 P8A - Consumer-contract integration:     COMPLETE
-P8B - Bounded/embedded runtime:          WAITING ON GGM
+P8B - Bounded/embedded runtime:          COMPLETE (GGM P2.2, RuntimeMaterializer)
 ```
 
 ## A genuine discrepancy caught before coding, not after

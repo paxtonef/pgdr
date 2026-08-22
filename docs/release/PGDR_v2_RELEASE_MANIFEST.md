@@ -95,8 +95,8 @@ used anywhere in this document.
 | Implementation | `governance/` package (7 modules): `consumption_profile.py`, `port.py`, `object_mapper.py`, `adapter.py`, `trace.py`, `reporting.py`, `errors.py` |
 | Authoritative component | `GGMDiagnosticGovernanceAdapter` (sole caller of `GGMConsumer.evaluate()`); `DiagnosticCaseState` never mutated by governance (deep-copy gate) |
 | Test evidence | `test_p8_ggm_integration.py` (23 tests incl. signature, BLOCK/REPAIR/ESCALATE/ConsumptionError handling, AST-scanned import boundary) |
-| Status | **ACTIVE** (P8A - consumer-contract integration) / **DEFERRED** (P8B - bounded/embedded GGM runtime; see `PGDR_v2_DEFERRED_CAPABILITIES.md`) |
-| Version/dependency | GGM commit `4fda5974312f1949771fc4993ced4c98fe0d1ac0`, contract v1.2, runtime `ggm/1.1` |
+| Status | **ACTIVE** (P8A - consumer-contract integration) / **ACTIVE** (P8B - bounded/embedded GGM runtime, delivered via GGM P2.2 `RuntimeMaterializer`; see `PGDR_v2_DEFERRED_CAPABILITIES.md`) |
+| Version/dependency | GGM package `1.2.0`, target source commit `ac99750`, contract v1.3, resolver v1.3, kernel/runtime `ggm/1.1`, wheel SHA-256 `7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2` (full provenance: `PGDR_v2_DEPENDENCY_FREEZE.md`) |
 
 ## Summary
 

@@ -76,8 +76,11 @@ never PGDR's own reasoning to govern in the first place.
 
 - Does not implement GGM locally — every governance decision comes from
   a real `GGMConsumer.evaluate()` call.
-- Does not build a bounded/embedded GGM runtime — the pinned package
-  doesn't provide one yet (see `p8_findings.md`, "P8A/P8B split").
+- Did not originally build/consume a bounded/embedded GGM runtime — the
+  pinned package did not provide one at P8 time. UPDATE: GGM P2.2
+  shipped `RuntimeMaterializer`, and PGDR now materializes and consumes
+  a bounded runtime by default (see `p8_findings.md`, "P8A/P8B split",
+  and `PGDR_v2_DEPENDENCY_FREEZE.md`).
 - Does not attempt to execute `repair_instruction` — REPAIR is treated
   as not-presentable in P8 v1 (mandate's own sanctioned conservative
   choice, §18).
