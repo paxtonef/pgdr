@@ -30,7 +30,7 @@ _DISCRIMINATING_RULES: dict[str, dict[str, dict[str, EvidenceDirection]]] = {
             "engine_running": EvidenceDirection.SUPPORTS,
             "tyre_or_wheel": EvidenceDirection.CONTRADICTS,
         },
-        "vitesse stabilisée": {
+        "à vitesse stabilisée": {
             "tyre_or_wheel": EvidenceDirection.SUPPORTS,
             "engine_running": EvidenceDirection.CONTRADICTS,
         },

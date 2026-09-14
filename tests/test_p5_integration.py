@@ -203,7 +203,7 @@ def test_p5_t10_t11_observation_creates_evidence_that_updates_hypothesis(control
     evidence_before = len(case_state.evidence)
 
     q = session.pending_questions[0]
-    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
 
     assert len(case_state.evidence) > evidence_before
@@ -225,7 +225,7 @@ def test_p5_t12_updated_hypothesis_affects_next_question(controller):
         guard += 1
         q = session.pending_questions[0]
         seen_ids.append(q.question_id)
-        val = ["vitesse stabilisée"] if q.question_id == "Q-COND-001" else "je ne sais pas"
+        val = ["à vitesse stabilisée"] if q.question_id == "Q-COND-001" else "je ne sais pas"
         session = controller.submit_answer(session, Answer(question_id=q.question_id, value=val))
 
     assert seen_ids.count("Q-COND-001") == 1
@@ -363,7 +363,7 @@ def test_p5_t21_signature_adaptive_product_path(controller):
     h2 = next(h for h in case_state.hypotheses if h.hypothesis_type == "tyre_or_wheel")
     before = (h1.confidence, h2.confidence)
 
-    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
 
     h1_after = next(h for h in case_state.hypotheses if h.id == h1.id)
@@ -389,8 +389,8 @@ def test_domain_enrichment_q_cond_001_semantics_are_correct():
     rule = _DISCRIMINATING_RULES["Q-COND-001"]
     assert rule["au ralenti / démarrage"]["engine_running"] == EvidenceDirection.SUPPORTS
     assert rule["au ralenti / démarrage"]["tyre_or_wheel"] == EvidenceDirection.CONTRADICTS
-    assert rule["vitesse stabilisée"]["tyre_or_wheel"] == EvidenceDirection.SUPPORTS
-    assert rule["vitesse stabilisée"]["engine_running"] == EvidenceDirection.CONTRADICTS
+    assert rule["à vitesse stabilisée"]["tyre_or_wheel"] == EvidenceDirection.SUPPORTS
+    assert rule["à vitesse stabilisée"]["engine_running"] == EvidenceDirection.CONTRADICTS
 
 
 # ---------------------------------------------------------------------------

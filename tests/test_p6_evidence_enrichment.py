@@ -93,7 +93,7 @@ def test_p6_t03_t04_mapped_supports_and_contradicts_produce_evidence(controller)
     session = _drive(controller, session, "Q-COND-001")
 
     q = session.pending_questions[0]
-    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
 
     supports = [e for e in case_state.evidence if e.direction == EvidenceDirection.SUPPORTS]
@@ -213,7 +213,7 @@ def test_p6_t11_multi_hypothesis_discriminating_answer_opposite_directions(contr
     before = (h1.confidence, h2.confidence)
 
     q = session.pending_questions[0]
-    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
     h1_after = next(h for h in case_state.hypotheses if h.id == h1.id)
     h2_after = next(h for h in case_state.hypotheses if h.id == h2.id)
@@ -282,7 +282,7 @@ def test_p6_signature_two_step_adaptive_discrimination(controller):
     h2 = next(h for h in case_state.hypotheses if h.hypothesis_type == "tyre_or_wheel")
     step1_before = (h1.confidence, h2.confidence)
 
-    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
     h1_mid = next(h for h in case_state.hypotheses if h.id == h1.id).confidence
     h2_mid = next(h for h in case_state.hypotheses if h.id == h2.id).confidence

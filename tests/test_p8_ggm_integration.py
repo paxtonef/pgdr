@@ -484,7 +484,7 @@ def test_p8_t29_p6_two_step_scenario_still_holds_with_governance_live():
         q = session.pending_questions[0]
         session = controller.submit_answer(session, Answer(question_id=q.question_id, value="je ne sais pas"))
     q1 = session.pending_questions[0]
-    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["à vitesse stabilisée"]))
     session = _drive_to_completion(controller, session)
     assert session.result is not None
 

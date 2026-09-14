@@ -168,7 +168,7 @@ def test_p7_t05_every_score_change_has_corresponding_evidence(controller):
     before = {h.id: h.confidence for h in case_state.hypotheses}
 
     q = session.pending_questions[0]
-    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
     after = {h.id: h.confidence for h in case_state.hypotheses}
 
@@ -240,7 +240,7 @@ def test_p7_t08_p6_two_step_discrimination_survives_retirement(controller):
     h2 = next(h for h in case_state.hypotheses if h.hypothesis_type == "tyre_or_wheel")
     step1_before = h2.confidence
 
-    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["vitesse stabilisée"]))
+    session = controller.submit_answer(session, Answer(question_id=q1.question_id, value=["à vitesse stabilisée"]))
     case_state = controller._case_states[session.session_id]
     h2_mid = next(h for h in case_state.hypotheses if h.id == h2.id).confidence
     assert h2_mid != step1_before

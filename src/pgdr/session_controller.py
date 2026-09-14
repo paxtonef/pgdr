@@ -224,7 +224,14 @@ class SessionController:
             return []
 
         nq = result.next_question
-        category = self._category_by_question_id.get(nq.domain_ref or "", None) or "clarification"
+        # Repair (post-mandate review): _category_by_question_id is keyed
+        # by question_id (e.g. "Q-EVI-001") -- the lookup must use nq.id
+        # (the same value, per automotive/domain_adapter.py's
+        # `id=raw["question_id"]`), not nq.domain_ref (e.g.
+        # "evidence_availability"), which never matches any key. The old
+        # code silently defaulted every question's category to
+        # "clarification" regardless of its real category.
+        category = self._category_by_question_id.get(nq.id, None) or "clarification"
         reason = (
             f"Cible {len(nq.target_hypothesis_ids)} hypothèse(s) active(s)."
             if nq.target_hypothesis_ids else ""

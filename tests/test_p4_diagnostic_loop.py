@@ -94,7 +94,7 @@ def test_p4_t04_contradicting_evidence_remains_attached(loop):
     state = loop.start("La voiture tremble au ralenti")
     state, result = _drive_to_question(loop, state, "Q-COND-001")
     assert result.next_question is not None and result.next_question.id == "Q-COND-001"
-    state = loop.submit_answer(state, result.next_question, ["vitesse stabilisée"])
+    state = loop.submit_answer(state, result.next_question, ["à vitesse stabilisée"])
 
     contradicting = [e for e in state.evidence if e.direction == EvidenceDirection.CONTRADICTS]
     assert contradicting
@@ -115,7 +115,7 @@ def test_p4_t05_t06_answer_generates_observation_and_evidence(loop):
     obs_count_before = len(state.observations)
     evd_count_before = len(state.evidence)
 
-    state = loop.submit_answer(state, q, ["vitesse stabilisée"])
+    state = loop.submit_answer(state, q, ["à vitesse stabilisée"])
 
     assert len(state.observations) == obs_count_before + 1
     new_obs = state.observations[-1]
@@ -134,7 +134,7 @@ def test_p4_t07_new_evidence_changes_hypothesis_confidence(loop):
     state, result = _drive_to_question(loop, state, "Q-COND-001")
     before = {h.id: h.confidence for h in state.hypotheses}
 
-    state = loop.submit_answer(state, result.next_question, ["vitesse stabilisée"])
+    state = loop.submit_answer(state, result.next_question, ["à vitesse stabilisée"])
 
     after = {h.id: h.confidence for h in state.hypotheses}
     assert before != after
@@ -388,7 +388,7 @@ def test_p4_t17_signature_qa_changes_reasoning_not_only_report(loop):
     state, result = _drive_to_question(loop, state, "Q-COND-001")
     assert result.next_question is not None and result.next_question.id == "Q-COND-001"
 
-    state = loop.submit_answer(state, result.next_question, ["vitesse stabilisée"])
+    state = loop.submit_answer(state, result.next_question, ["à vitesse stabilisée"])
     h1_after = next(h for h in state.hypotheses if h.id == h1.id)
     h2_after = next(h for h in state.hypotheses if h.id == h2.id)
 
