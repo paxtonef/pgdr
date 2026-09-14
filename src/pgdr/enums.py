@@ -188,6 +188,17 @@ class Confidence(str, Enum):
     SPECULATIVE = "speculative"
 
 
+class Deadline(str, Enum):
+    """Driver-facing urgency deadline — categorical, never numeric, per
+    PGDR Driver Diagnostic Execution Mandate v0 §4: 'do not create false
+    precision.' Derived only from TriageLevel (see report_builder.py's
+    _DEADLINE_BY_TRIAGE), never from diagnostic confidence."""
+    IMMEDIATE = "immediate"
+    PROMPT_PROFESSIONAL_ASSESSMENT = "prompt_professional_assessment"
+    SHORT_TERM_ASSESSMENT = "short_term_assessment"
+    MONITORING = "monitoring"
+
+
 class ClaimStatus(str, Enum):
     POSSIBLE = "possible"
     COMPATIBLE = "compatible"

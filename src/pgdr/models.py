@@ -9,11 +9,12 @@ from pydantic import BaseModel, Field
 
 from pgdr.enums import (
     AnswerType, ClaimStatus, Confidence, ContradictionImpact,
-    ContradictionSeverity, DrivingAssessment, DrivingStatus, EventRelation,
-    EvidenceSource, Frequency, QuestionCategory, ReportStatus,
-    ResolutionAction, ResolutionStatus, Reproducibility, RiskLevel,
-    SessionState, Severity, SymptomFamily, TechnicalLevel, TriageLevel,
-    Urgency, VehicleLocation, VehicleState, WarningBehavior, WarningColor,
+    ContradictionSeverity, Deadline, DrivingAssessment, DrivingStatus,
+    EventRelation, EvidenceSource, Frequency, QuestionCategory,
+    ReportStatus, ResolutionAction, ResolutionStatus, Reproducibility,
+    RiskLevel, SessionState, Severity, SymptomFamily, TechnicalLevel,
+    TriageLevel, Urgency, VehicleLocation, VehicleState, WarningBehavior,
+    WarningColor,
 )
 
 
@@ -247,14 +248,37 @@ class GaragePreparationReport(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Pack 19 — User summary
+# Pack 19 — User summary (extended by PGDR Driver Diagnostic Execution
+# Mandate v0 — see D01/§9. All new fields are additive; the four
+# pre-existing fields keep their exact original shape, so no existing
+# PreGarageDiagnosticResult consumer breaks (mandate §19).
 # ---------------------------------------------------------------------------
+
+class PlausibleCause(BaseModel):
+    """A single driver-facing entry in the plausible-cause space (mandate
+    §9.E / §11). Reuses the existing hypothesis's own description and
+    epistemic status verbatim — no new claim is invented here, only
+    translated to a human-facing label at the presentation boundary."""
+    label: str
+    description: str
+    confidence: Confidence
+    claim_status: ClaimStatus
+
 
 class UserSummary(BaseModel):
     urgency: dict[str, str] = Field(default_factory=dict)
     main_observations: list[str] = Field(default_factory=list)
     next_actions: list[str] = Field(default_factory=list)
     disclaimer: list[str] = Field(default_factory=list)
+
+    # -- Driver Diagnostic extension (mandate D01/§9) --------------------
+    situation_explanation: str = ""
+    safety_level: TriageLevel = TriageLevel.MONITOR_AND_DOCUMENT
+    driveability: DrivingAssessment = DrivingAssessment.NOT_ASSESSED
+    urgency_deadline: Deadline = Deadline.MONITORING
+    diagnostic_confidence: Optional[Confidence] = None
+    plausible_causes: list[PlausibleCause] = Field(default_factory=list)
+    remaining_uncertainty: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

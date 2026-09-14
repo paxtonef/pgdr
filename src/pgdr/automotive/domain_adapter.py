@@ -28,7 +28,12 @@ from pgdr.enums import AnswerType, Confidence, SymptomFamily
 from pgdr.models import InitialComplaint
 from pgdr.textnorm import normalize
 
-_SKIPPED_ANSWER_TYPES = {"media_upload"}  # evidence pipeline for media not wired in P4 — see notes
+_SKIPPED_ANSWER_TYPES: set[str] = set()
+# PGDR Driver Diagnostic Execution Mandate v0 §7: media_upload is no
+# longer skipped. Q-EVI-002 (already gated behind Q-EVI-001==true, already
+# risk_level=low, "vehicle stationary only") is now reachable; a submitted
+# media answer becomes a real, retained Evidence record (see
+# automotive/evidence_mapper.py) rather than being silently dropped.
 
 
 def _generic_hypothesis_entries(family: SymptomFamily) -> list[tuple[str, str, "Confidence", list[str]]]:
@@ -184,6 +189,7 @@ class AutomotiveDiagnosticDomain:
                 domain_ref=raw.get("target"),
                 choices=raw.get("choices"),
                 repeatable=False,
+                is_evidence_acquisition=bool(raw.get("evidence_acquisition", False)),
             ))
         return result
 

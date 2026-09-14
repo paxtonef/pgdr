@@ -14,8 +14,8 @@ sole production reporting path since P5). Removed.
 """
 from __future__ import annotations
 
-from pgdr.enums import ReportStatus, TriageLevel
-from pgdr.models import GaragePreparationReport, PreGarageDiagnosticResult, SafetyTriage, UserSummary
+from pgdr.enums import ClaimStatus, Confidence, Deadline, ReportStatus, TriageLevel
+from pgdr.models import GaragePreparationReport, PlausibleCause, PreGarageDiagnosticResult, SafetyTriage, UserSummary
 
 _URGENCY_COPY = {
     TriageLevel.EMERGENCY_STOP.value: (
@@ -43,6 +43,179 @@ _URGENCY_COPY = {
         "Continuez à observer et documenter le symptôme jusqu'au prochain contrôle.",
     ),
 }
+
+# ---------------------------------------------------------------------------
+# PGDR Driver Diagnostic Execution Mandate v0 — Driver Diagnostic content.
+#
+# All of what follows is additive presentation content re-expressing
+# already-computed state (safety triage, hypotheses, contradictions,
+# limitations). Nothing here recomputes a decision SafetyEngine or the
+# analytical engine already made — per mandate §14: presentation content
+# may phrase an already-computed decision, it must not determine one.
+# ---------------------------------------------------------------------------
+
+# Mandate §4: categorical deadline, derived ONLY from TriageLevel — never
+# from diagnostic confidence, hypothesis state, or evidence. Same
+# presentation-boundary pattern _URGENCY_COPY above already established.
+_DEADLINE_BY_TRIAGE = {
+    TriageLevel.EMERGENCY_STOP.value: Deadline.IMMEDIATE,
+    TriageLevel.DO_NOT_DRIVE.value: Deadline.IMMEDIATE,
+    TriageLevel.LIMITED_MOVEMENT_ONLY.value: Deadline.PROMPT_PROFESSIONAL_ASSESSMENT,
+    TriageLevel.PROMPT_INSPECTION.value: Deadline.PROMPT_PROFESSIONAL_ASSESSMENT,
+    TriageLevel.STANDARD_APPOINTMENT.value: Deadline.SHORT_TERM_ASSESSMENT,
+    TriageLevel.MONITOR_AND_DOCUMENT.value: Deadline.MONITORING,
+}
+
+# Mandate §9.A / §11: human-facing labels for internal system-family
+# identifiers — covers every value _HYPOTHESIS_MAP or the generic
+# SymptomFamily fallback (automotive/domain_adapter.py's
+# _generic_hypothesis_entries) can produce. A missing entry falls back to
+# a plain, still-non-identifier phrase (_label_for_system_family) rather
+# than ever leaking a raw internal token like "engine_running" to the
+# driver.
+_SYSTEM_FAMILY_LABELS = {
+    "starting": "le démarrage du véhicule",
+    "engine_running": "le fonctionnement du moteur",
+    "acceleration": "l'accélération",
+    "power_loss": "une perte de puissance",
+    "braking": "le système de freinage",
+    "steering": "la direction",
+    "suspension": "la suspension",
+    "transmission": "la transmission",
+    "electrical": "le système électrique",
+    "battery_or_charging": "la batterie ou le système de charge",
+    "temperature_or_overheating": "la température du moteur",
+    "fluid_leak": "une fuite de fluide",
+    "smoke": "une émission de fumée",
+    "smell": "une odeur inhabituelle",
+    "noise": "un bruit inhabituel",
+    "vibration": "une vibration",
+    "warning_light": "un voyant du tableau de bord",
+    "fuel_consumption": "la consommation de carburant",
+    "tyre_or_wheel": "les pneus ou les roues",
+    "climate_control": "la climatisation",
+    "visibility": "la visibilité",
+    "body_or_structure": "la carrosserie ou la structure du véhicule",
+    "charging_system_ev": "le système de charge du véhicule électrique",
+    "unknown": "un problème non identifié précisément",
+}
+
+
+def _label_for_system_family(hypothesis_type: str) -> str:
+    return _SYSTEM_FAMILY_LABELS.get(hypothesis_type, f"le système : {hypothesis_type}")
+
+
+def _build_situation_explanation(triage: "SafetyTriage", active_hypotheses: list, has_warning_context: bool) -> str:
+    """Mandate §9.A / §10: a coherent plain-language explanation, never a
+    complaint echo, never a raw internal identifier. Preserves uncertainty
+    explicitly when more than one hypothesis is active (§10 — 'evidence
+    suggests primarily X, while Y remains possible')."""
+    urgency_label, _ = _URGENCY_COPY.get(
+        triage.level.value, _URGENCY_COPY[TriageLevel.MONITOR_AND_DOCUMENT.value]
+    )
+    if not active_hypotheses:
+        base = f"Situation classée « {urgency_label} »."
+    else:
+        leading = _label_for_system_family(active_hypotheses[0].hypothesis_type)
+        base = f"Situation classée « {urgency_label} ». Les éléments recueillis orientent vers {leading}."
+        if len(active_hypotheses) > 1:
+            base += " D'autres causes restent possibles, sans qu'aucune ne soit exclue à ce stade."
+    if has_warning_context:
+        base += (
+            " Un voyant ou message du tableau de bord a été signalé et fait partie des éléments pris en compte."
+        )
+    return base
+
+
+def _build_plausible_causes(active_hypotheses: list) -> list["PlausibleCause"]:
+    """Mandate §9.E / §11: rank reuses the existing confidence-sorted
+    active_hypotheses list (unmodified) — nothing is re-derived here.
+    Numerical scores are bucketed via the same _bucket_confidence already
+    used by the legacy Garage-Handoff hypothesis translation (§11: 'Do NOT
+    invent numerical probabilities not supported by PGDR')."""
+    causes = []
+    for h in active_hypotheses:
+        causes.append(PlausibleCause(
+            label=_label_for_system_family(h.hypothesis_type),
+            description=h.description,
+            confidence=_bucket_confidence(h.confidence),
+            claim_status=_claim_status_for(h.confidence),
+        ))
+    return causes
+
+
+def _build_remaining_uncertainty(unresolved_questions: list[str], limitations: list[str]) -> list[str]:
+    """Mandate §9.G: deduplicated union of the Garage Handoff's own
+    unresolved_questions and limitations — reused, not recomputed twice."""
+    seen: set[str] = set()
+    combined: list[str] = []
+    for item in [*unresolved_questions, *limitations]:
+        if item not in seen:
+            seen.add(item)
+            combined.append(item)
+    return combined
+
+
+def _build_next_actions(
+    triage: "SafetyTriage",
+    active_hypotheses: list,
+    unresolved_contradictions: list,
+    has_warning_context: bool,
+    evidence_already_acquired: bool,
+) -> list[str]:
+    """Mandate §9.F: case-dependent, never a fixed generic list. Priority:
+    emergency call -> the already safety-reviewed user_instruction verbatim
+    -> roadside assistance if flagged -> evidence request only while still
+    useful (mirrors the selector's own Tier-0 gate, so the driver is never
+    asked for evidence already received) -> up to two contradiction
+    clarifications -> standing evidence-preservation cautions -> a garage-
+    notification reminder if any hypothesis exists."""
+    actions: list[str] = []
+    if triage.emergency_services_required:
+        actions.append("Appelez les secours immédiatement.")
+    if triage.user_instruction:
+        actions.append(triage.user_instruction)
+    if triage.roadside_assistance_recommended:
+        actions.append("Faites appel à une assistance dépannage.")
+    if has_warning_context and not evidence_already_acquired and not triage.emergency_services_required:
+        actions.append(
+            "Si possible et sans danger, prenez une photo du voyant ou du tableau de bord (véhicule à l'arrêt)."
+        )
+    for contradiction in unresolved_contradictions[:2]:
+        actions.append(f"Précisez si possible : {contradiction.description}")
+    actions.append("Conservez toute preuve disponible (photo, son, vidéo).")
+    actions.append("Ne tentez pas de démonter ou de toucher des composants du véhicule.")
+    if active_hypotheses:
+        actions.append("Prévenez le garage des symptômes décrits avant le rendez-vous.")
+    return actions
+
+
+def _claim_status_for(confidence_score) -> "ClaimStatus":
+    """Extracted from what was previously inline logic duplicated in
+    _translate_hypotheses — one shared rule, used by both the Driver
+    Diagnostic's plausible_causes and the legacy Garage-Handoff hypothesis
+    translation below."""
+    return ClaimStatus.COMPATIBLE if confidence_score and confidence_score > 0 else ClaimStatus.UNRESOLVED
+
+
+def _build_professional_checks(active_hypotheses: list) -> list[str]:
+    """Mandate §13: a professional check should indicate what should be
+    checked AND, where more than one hypothesis is active, what competing
+    hypothesis it helps discriminate against — by human-facing label, not
+    raw hypothesis_type. Reuses only relationships already present in
+    state.hypotheses; invents no new workshop procedure."""
+    checks = []
+    for h in active_hypotheses:
+        others = [o for o in active_hypotheses if o.hypothesis_type != h.hypothesis_type]
+        label = _label_for_system_family(h.hypothesis_type)
+        if others:
+            other_labels = ", ".join(_label_for_system_family(o.hypothesis_type) for o in others)
+            checks.append(
+                f"Examiner {label} — permet de discriminer par rapport aux hypothèses concurrentes : {other_labels}."
+            )
+        else:
+            checks.append(f"Examiner {label} — seule hypothèse active pour ce cas.")
+    return checks
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +267,11 @@ def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationRepor
             "La reproduction du symptôme en atelier reste à confirmer.",
         ]
 
+    has_warning_context = any(o.kind == "warning_indicator" for o in state.observations)
+    evidence_already_acquired = any(
+        e.source_rule_id == "automotive.media_evidence_acquired" for e in state.evidence
+    )
+
     garage_report = GaragePreparationReport(
         vehicle={
             "identity_resolution_id": state.identity_context.identity_ref if state.identity_context else None,
@@ -122,7 +300,7 @@ def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationRepor
             }
             for h in active_hypotheses
         ],
-        suggested_professional_checks=[f"Examiner le système : {h.hypothesis_type}" for h in active_hypotheses],
+        suggested_professional_checks=_build_professional_checks(active_hypotheses),
         unresolved_questions=unresolved,
         contradictions=[
             {"id": c.id, "description": c.description, "resolved": c.resolved}
@@ -134,18 +312,34 @@ def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationRepor
     urgency_label, urgency_explanation = _URGENCY_COPY.get(
         triage.level.value, _URGENCY_COPY[TriageLevel.MONITOR_AND_DOCUMENT.value]
     )
+    deadline = _DEADLINE_BY_TRIAGE.get(triage.level.value, Deadline.MONITORING)
+    diagnostic_confidence = (
+        _bucket_confidence(active_hypotheses[0].confidence) if active_hypotheses else None
+    )
+
     user_summary = UserSummary(
         urgency={"label": urgency_label, "explanation": urgency_explanation},
         main_observations=[complaint_text] if complaint_text else [],
-        next_actions=[
-            "Conservez toute preuve disponible (photo, son, vidéo).",
-            "Prévenez le garage des symptômes décrits avant le rendez-vous.",
-            "Ne tentez pas de démonter ou de toucher des composants du véhicule.",
-        ],
+        next_actions=_build_next_actions(
+            triage=triage,
+            active_hypotheses=active_hypotheses,
+            unresolved_contradictions=state.unresolved_contradictions(),
+            has_warning_context=has_warning_context,
+            evidence_already_acquired=evidence_already_acquired,
+        ),
         disclaimer=[
             "Ce document prépare le diagnostic mais ne remplace pas l'examen du véhicule par un professionnel qualifié.",
             "Aucune réparation spécifique n'est recommandée avec certitude, et aucun coût n'est estimé.",
         ],
+        situation_explanation=_build_situation_explanation(
+            triage=triage, active_hypotheses=active_hypotheses, has_warning_context=has_warning_context,
+        ),
+        safety_level=triage.level,
+        driveability=triage.driving_assessment,
+        urgency_deadline=deadline,
+        diagnostic_confidence=diagnostic_confidence,
+        plausible_causes=_build_plausible_causes(active_hypotheses),
+        remaining_uncertainty=_build_remaining_uncertainty(unresolved, limitations),
     )
     return user_summary, garage_report
 
@@ -191,7 +385,6 @@ def _translate_hypotheses(state) -> list:
     analytical_score) -> old pgdr.models.DiagnosticHypothesis (fixed
     Confidence enum + supporting_observations text), for legacy schema
     compatibility."""
-    from pgdr.enums import ClaimStatus
     from pgdr.models import DiagnosticHypothesis as LegacyHypothesis
 
     evidence_by_id = {e.id: e for e in state.evidence}
@@ -217,7 +410,7 @@ def _translate_hypotheses(state) -> list:
             missing_information=["Inspection physique par un professionnel requise pour confirmation."],
             recommended_professional_checks=[f"Examiner le système : {h.hypothesis_type}"],
             safety_relevance="unknown",
-            claim_status=ClaimStatus.COMPATIBLE if h.confidence and h.confidence > 0 else ClaimStatus.UNRESOLVED,
+            claim_status=_claim_status_for(h.confidence),
         ))
     return translated
 

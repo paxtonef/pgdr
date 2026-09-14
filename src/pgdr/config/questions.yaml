@@ -76,6 +76,7 @@ questions:
     required: false
     risk_level: none
     selection_reason: "Évaluation de la disponibilité de preuves."
+    evidence_acquisition: true
 
   - question_id: Q-EVI-002
     target: dashboard_photo
@@ -86,6 +87,7 @@ questions:
     risk_level: low
     selection_reason: "Preuve visuelle du voyant — collecte sûre uniquement à l'arrêt."
     ask_if: "Q-EVI-001==true"
+    evidence_acquisition: true
 
   - question_id: Q-CLAR-001
     target: contradiction_check

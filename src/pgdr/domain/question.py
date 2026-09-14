@@ -33,6 +33,12 @@ class DiagnosticQuestion(BaseModel):
     choices: list[str] | None = None
     active: bool = True
     repeatable: bool = False
+    is_evidence_acquisition: bool = False
+    """PGDR Driver Diagnostic Execution Mandate v0 §5/§8 (Decision D02,
+    Option C): a structural marker, additive, set from questions.yaml's
+    own `evidence_acquisition: true` flag. Lets DeterministicQuestionSelector
+    prioritize high-information evidence acquisition (Tier 0) without any
+    change to the EVIDENCE_COLLECTION state machine."""
 
 
 class DiagnosticAnswer(BaseModel):

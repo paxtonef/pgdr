@@ -39,6 +39,15 @@ _DISCRIMINATING_RULES: dict[str, dict[str, dict[str, EvidenceDirection]]] = {
 
 _DISCRIMINATING_WEIGHT = 0.35
 
+# PGDR Driver Diagnostic Execution Mandate v0 §7: a submitted media answer
+# must become real, retained Evidence, not be discarded. Deliberately
+# NEUTRAL / zero-weight — this release requests, receives, and preserves
+# the evidence reference with full provenance; it does NOT interpret the
+# media's content (automatic dashboard-light recognition is explicitly a
+# later capability, §7/§15). One record per hypothesis the question
+# targeted (mandate §7's "provenance... case association").
+MEDIA_EVIDENCE_SOURCE_RULE_ID = "automotive.media_evidence_acquired"
+
 # PROVISIONAL — weaker, support-only, free-text keyword matching. Unlike
 # _DISCRIMINATING_RULES (Q-COND-001, fully authored/validated), this rule
 # reuses symptom_taxonomy.yaml's own existing pneu/roue/crevaison/degonfle
@@ -72,6 +81,9 @@ class AutomotiveEvidenceMapper:
         answer: DiagnosticAnswer,
         state: DiagnosticCaseState,
     ) -> list[Evidence]:
+        if question.answer_type == "media_upload":
+            return self._apply_media_evidence_rule(question, answer, state)
+
         rule = _DISCRIMINATING_RULES.get(question.id)
         if rule is not None:
             evidence = self._apply_discriminating_rule(rule, question, answer, state)
@@ -98,6 +110,29 @@ class AutomotiveEvidenceMapper:
                     f"discrimination automobile définie pour cette question."
                 ),
                 source_rule_id=None,
+            )
+            for h in state.hypotheses
+            if h.id in question.target_hypothesis_ids
+        ]
+
+    @staticmethod
+    def _apply_media_evidence_rule(
+        question: DiagnosticQuestion,
+        answer: DiagnosticAnswer,
+        state: DiagnosticCaseState,
+    ) -> list[Evidence]:
+        reference = answer.value if isinstance(answer.value, str) else str(answer.value)
+        return [
+            Evidence(
+                observation_ids=list(answer.observation_ids_created),
+                direction=EvidenceDirection.NEUTRAL,
+                target_hypothesis_id=h.id,
+                weight=0.0,
+                rationale=(
+                    f"Preuve reçue en réponse à {question.id} ({question.text}) — référence : {reference}. "
+                    f"Aucune interprétation automatique du contenu n'est effectuée à ce stade."
+                ),
+                source_rule_id=MEDIA_EVIDENCE_SOURCE_RULE_ID,
             )
             for h in state.hypotheses
             if h.id in question.target_hypothesis_ids
