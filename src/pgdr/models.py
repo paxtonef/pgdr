@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from pgdr.domain.media import PrimaryDiagnosticMedia
 from pgdr.enums import (
     AnswerType, ClaimStatus, Confidence, ContradictionImpact,
     ContradictionSeverity, Deadline, DrivingAssessment, DrivingStatus,
@@ -302,6 +303,18 @@ class PreGarageDiagnosticRequest(BaseModel):
     initial_complaint: InitialComplaint
     user_context: UserContext = Field(default_factory=UserContext)
     evidence: list[Evidence] = Field(default_factory=list)
+    primary_diagnostic_media: Optional[PrimaryDiagnosticMedia] = None
+    """Block B1 (VIR_PHOTO_PGDR_BUILD_DECOMPOSITION_v1, PGDR_BLOCK_B1_
+    PRIMARY_DIAGNOSTIC_MEDIA_CONTRACT_v0 §5): the canonical, explicit
+    diagnostic-input surface for raw dashboard media, deliberately
+    distinct from `evidence` above (Evidence is a scored, targeted,
+    already-formal concept -- this field carries only raw, uninterpreted
+    input, exactly matching the frozen semantics: media_reference ->
+    Evidence(...) and media_reference -> InitialComplaint(...) are both
+    forbidden). Chosen as the smallest existing canonical request surface
+    that already represents diagnostic input, per §5's own instruction to
+    inspect existing models before adding a new one -- no new request
+    model was created."""
     consent: Consent
 
 

@@ -55,12 +55,16 @@ from pgdr.governance.errors import GovernanceUnavailableError
 from pgdr.governance.reporting import govern_and_build_result
 from pgdr.governance.trace import InMemoryGovernanceTraceStore
 from pgdr.models import Answer, DiagnosticQuestion, DiagnosticSession, PreGarageDiagnosticRequest
+from pgdr.ports.dashboard_interpretation import DashboardInterpretationPort
 from pgdr.report_builder import build_result_from_case_state
 from pgdr.safety_engine import SafetyEngine
 
 
 class SessionController:
-    def __init__(self, *, governance_enabled: bool = True, governance_consumer: GGMConsumer | None = None) -> None:
+    def __init__(
+        self, *, governance_enabled: bool = True, governance_consumer: GGMConsumer | None = None,
+        dashboard_interpretation_port: DashboardInterpretationPort | None = None,
+    ) -> None:
         # P5.29 / P5.28 — validate the domain's declarative relations
         # (evidence-mapping rules referencing real hypothesis types and
         # real question ids) at startup, fail-closed, before any session
@@ -80,6 +84,14 @@ class SessionController:
         )
         self._case_factory = DiagnosticCaseFactory(self._loop)
         self._case_states: dict[str, DiagnosticCaseState] = {}
+
+        # Block B1 (§11): the minimum wiring necessary to establish the
+        # Port boundary cleanly. Stored, and ONLY stored -- never invoked
+        # anywhere in this class for B1. start() does not call
+        # self._dashboard_interpretation_port.interpret(...); the
+        # diagnostic reasoning loop is not modified to consume
+        # interpretation results. That wiring belongs to a later B slice.
+        self._dashboard_interpretation_port = dashboard_interpretation_port
 
         # Only used to recover a question's original QuestionCategory for
         # the legacy pgdr.models.DiagnosticQuestion shape (session.pending_questions) —
