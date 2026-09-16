@@ -98,7 +98,7 @@ class TestB2K04ApplicabilityUncertaintyPreserved:
         adapter = PeugeotDashboardKnowledgeAdapter()
         result = adapter.get_dashboard_reference_set(_test_vehicle())  # no first_registration_date
         assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
-        assert len(result.candidate_documents) == 2
+        assert len(result.candidate_documents) == 1  # the single known Peugeot handbook, unresolved
         assert result.entries == []  # no entries returned while uncertain -- never guessed
 
     def test_first_registration_date_resolves_the_same_ambiguity(self):
@@ -135,17 +135,19 @@ class TestB2K06ProvenancePreserved:
             assert entry.applicability.document_id
             assert entry.applicability.source_locator
 
-    def test_placeholder_source_authority_is_never_claimed_official(self):
-        """§8/§14 of the B2-K mandate: this POC's own fixture must never
-        claim to be verified manufacturer-official content, since no real
-        source was actually consulted."""
+    def test_verified_content_is_tagged_manufacturer_official(self):
+        """Correction pass: the fixture now transcribes content actually
+        supplied from the official Peugeot handbook (document
+        9999_9999_326_en-GB.pdf). SourceAuthority must reflect that --
+        MANUFACTURER_OFFICIAL, not UNVERIFIED_PLACEHOLDER."""
         from pgdr.domain.dashboard_knowledge import SourceAuthority
         adapter = PeugeotDashboardKnowledgeAdapter()
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
         for doc in result.candidate_documents:
-            assert doc.source_authority == SourceAuthority.UNVERIFIED_PLACEHOLDER
+            assert doc.source_authority == SourceAuthority.MANUFACTURER_OFFICIAL
+            assert doc.document_id == "9999_9999_326_en-GB"
 
 
 class TestB2K07IndicatorStateDistinction:
@@ -163,15 +165,46 @@ class TestB2K07IndicatorStateDistinction:
 
 
 class TestB2K08MultiSignalPattern:
-    def test_scr_warning_and_range_message_reference_each_other(self):
+    def test_adblue_states_a_through_d_are_distinct_entries(self):
+        """The verified source distinguishes four AdBlue states with
+        materially different range/message/instruction content -- must
+        not be collapsed into one symbol/one meaning."""
         adapter = PeugeotDashboardKnowledgeAdapter()
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
-        warning = next(e for e in result.entries if e.entry_id == "scr-additive-level-warning")
-        message = next(e for e in result.entries if e.entry_id == "scr-range-countdown-message")
-        assert message.entry_id in warning.combined_with_entry_ids
-        assert warning.entry_id in message.combined_with_entry_ids
+        adblue_entries = {e.entry_id: e for e in result.entries if e.entry_id.startswith("adblue-level-state-")}
+        assert set(adblue_entries) == {
+            "adblue-level-state-a", "adblue-level-state-b",
+            "adblue-level-state-c", "adblue-level-state-d",
+        }
+        meanings = {e.documented_meaning for e in adblue_entries.values()}
+        instructions = {e.documented_instruction for e in adblue_entries.values()}
+        assert len(meanings) == 4
+        assert len(instructions) == 4
+
+    def test_scr_confirmed_countdown_combines_three_lamps_and_escalation_states(self):
+        """The verified source's confirmed/countdown phase is a genuine
+        combination of the AdBlue lamp, the Service lamp, and the Engine
+        self-diagnostics lamp -- represented via combined_with_entry_ids,
+        never flattened into one entry."""
+        adapter = PeugeotDashboardKnowledgeAdapter()
+        result = adapter.get_dashboard_reference_set(
+            _test_vehicle(first_registration_date="2020-09-15")
+        )
+        countdown = next(e for e in result.entries if e.entry_id == "scr-malfunction-confirmed-countdown")
+        assert "service-warning-lamp-fixed" in countdown.combined_with_entry_ids
+        assert "engine-diag-fixed" in countdown.combined_with_entry_ids
+        assert "scr-malfunction-detected" in countdown.combined_with_entry_ids
+        assert "scr-starting-prevented" in countdown.combined_with_entry_ids
+
+    def test_scr_starting_prevented_message_matches_supplied_source(self):
+        adapter = PeugeotDashboardKnowledgeAdapter()
+        result = adapter.get_dashboard_reference_set(
+            _test_vehicle(first_registration_date="2020-09-15")
+        )
+        prevented = next(e for e in result.entries if e.entry_id == "scr-starting-prevented")
+        assert prevented.displayed_message == "Emissions control fault: Starting prevented"
 
 
 class TestB2K09UnsupportedVehicleGetsNoPeugeotKnowledge:
@@ -185,10 +218,26 @@ class TestB2K09UnsupportedVehicleGetsNoPeugeotKnowledge:
 
 
 class TestB2K10MissingDocumentationState:
-    def test_year_outside_all_known_windows_is_explicit(self):
+    def test_unsupported_vehicle_family_is_documentation_not_available(self):
+        """The genuinely reachable DOCUMENTATION_NOT_AVAILABLE state in
+        the corrected, source-driven design: a vehicle this adapter's POC
+        scope was never authorized to cover at all."""
+        adapter = PeugeotDashboardKnowledgeAdapter()
+        result = adapter.get_dashboard_reference_set(
+            _test_vehicle(manufacturer="Peugeot", model="208", generation="II")
+        )
+        assert result.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
+        assert result.entries == []
+
+    def test_production_year_alone_is_never_sufficient_even_when_unusual(self):
+        """Per the verified source's own stated rule (handbook issue-period
+        applicability corresponds to first registration, not production
+        year), an unusual production year with no first-registration date
+        must still be reported as uncertain -- never silently resolved,
+        and never silently rejected as unavailable either."""
         adapter = PeugeotDashboardKnowledgeAdapter()
         result = adapter.get_dashboard_reference_set(_test_vehicle(production_year=2035))
-        assert result.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
+        assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
         assert result.entries == []
 
 
