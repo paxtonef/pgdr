@@ -28,14 +28,38 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ApplicabilityStatus(str, Enum):
-    """The six states §17 (of the B2-K mandate) requires -- never
-    collapsed into a generic failure."""
+    """The six states §17 of the original B2-K mandate require -- never
+    collapsed into a generic failure. Extended by the Knowledge
+    Persistence mandate (§10) with three more values that are genuinely
+    new (persistence/freshness concepts the original applicability
+    decision had no need for) -- reusing this single enum rather than
+    introducing a parallel "KnowledgeStatus" type, per that mandate's own
+    explicit instruction to reuse an existing equivalent rather than
+    duplicate. The mandate's own VERIFIED_KNOWLEDGE_AVAILABLE /
+    KNOWLEDGE_NOT_AVAILABLE / KNOWLEDGE_APPLICABILITY_UNCERTAIN map
+    directly onto REFERENCE_SET_AVAILABLE / DOCUMENTATION_NOT_AVAILABLE /
+    DOCUMENT_APPLICABILITY_UNCERTAIN below -- no new members needed for
+    those three."""
     VEHICLE_IDENTITY_INSUFFICIENT = "vehicle_identity_insufficient"
     DOCUMENTATION_NOT_AVAILABLE = "documentation_not_available"
     MULTIPLE_DOCUMENTS_APPLICABLE = "multiple_documents_applicable"
     DOCUMENT_APPLICABILITY_UNCERTAIN = "document_applicability_uncertain"
     DASHBOARD_REFERENCE_NOT_FOUND = "dashboard_reference_not_found"
     REFERENCE_SET_AVAILABLE = "reference_set_available"
+    # --- Knowledge Persistence mandate additions (§10) ---
+    KNOWLEDGE_STALE = "knowledge_stale"
+    SOURCE_UPDATE_REQUIRED = "source_update_required"
+    SOURCE_UNAVAILABLE = "source_unavailable"
+
+
+class KnowledgeLifecycleStatus(str, Enum):
+    """§8.B: distinguishes knowledge currently usable from knowledge
+    retained only historically. Mirrors cpl.runner_artifacts' own
+    artifact_status convention in spirit (CREATED/VALIDATED/SUPERSEDED/
+    REJECTED) without reusing that table (forbidden -- see the Knowledge
+    Persistence Investigation's own finding on execution_id coupling)."""
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
 
 
 class SourceAuthority(str, Enum):
@@ -137,7 +161,22 @@ class ApplicabilityPeriod(BaseModel):
 
 class ManufacturerDocumentReference(BaseModel):
     """§10.A. A specific manufacturer document/edition a Dashboard
-    Reference Set's entries may be drawn from."""
+    Reference Set's entries may be drawn from.
+
+    Extended by the Knowledge Persistence mandate (§8) with the minimum
+    lifecycle semantics required for persistent, versioned manufacturer
+    knowledge -- all three optional/defaulted so every pre-persistence
+    B2-K construction site remains valid unchanged:
+      lifecycle_status: currently usable vs historically retained (§8.B)
+      verified_at: when this generation was last confirmed against its
+        source (§8.C) -- an explicit freshness marker, not itself a
+        staleness POLICY (this domain type states facts; deciding a
+        generation IS stale, and what to do about it, is repository/
+        adapter-level reasoning, not encoded here)
+      supersedes_document_id: the document_id of the generation this one
+        replaces, if any (§9) -- append-only in spirit: superseding never
+        deletes or mutates the prior record
+    """
     model_config = ConfigDict(frozen=True)
 
     manufacturer: str
@@ -147,6 +186,9 @@ class ManufacturerDocumentReference(BaseModel):
     applicability_period: Optional[ApplicabilityPeriod] = None
     source_authority: SourceAuthority
     source_locator: str
+    lifecycle_status: KnowledgeLifecycleStatus = KnowledgeLifecycleStatus.ACTIVE
+    verified_at: Optional[str] = None
+    supersedes_document_id: Optional[str] = None
 
 
 class DashboardReferenceEntry(BaseModel):

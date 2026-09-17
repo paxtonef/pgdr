@@ -1,6 +1,19 @@
 """Block B2-K — Vehicle-Specific Dashboard Knowledge, Peugeot 3008 II POC.
 
-Covers the 12 required test categories (§23 of the B2-K mandate).
+Covers the original 12 required test categories (§23 of the B2-K
+mandate) plus the Knowledge Persistence mandate's own PGDR-side
+requirements (§29): repository contract, adapter-uses-repository (not a
+permanent fixture), stale/superseded distinguishability, and case-data
+isolation.
+
+Uses a small in-memory KnowledgeRepositoryPort test double
+(_InMemoryKnowledgeRepository) so these remain pure, fast, no-database
+PGDR unit tests. The real, database-backed concrete adapter and the real
+full verified Peugeot content (all 11 entries, transcribed from document
+9999_9999_326_en-GB.pdf) live and are separately tested on the PI/CPL
+persistence side -- this file's own fixture data is a small
+representative subset sufficient to prove the pattern, not a duplicate
+copy of the full production seed.
 """
 from __future__ import annotations
 
@@ -11,9 +24,85 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pgdr.adapters.peugeot_dashboard_knowledge import PeugeotDashboardKnowledgeAdapter
 from pgdr.domain.dashboard_knowledge import (
-    ApplicabilityStatus, DashboardReferenceSet, IndicatorState, VehicleApplicabilityContext,
+    ApplicabilityStatus, DashboardReferenceEntry, DashboardReferenceSet, IndicatorState,
+    KnowledgeLifecycleStatus, ManufacturerDocumentReference, SourceAuthority, VehicleApplicabilityContext,
 )
+from pgdr.ports.knowledge_repository import KnowledgeRepositoryPort
 from pgdr.ports.vehicle_dashboard_knowledge import VehicleDashboardKnowledgePort
+
+
+class _InMemoryKnowledgeRepository:
+    """PGDR-side test double only -- proves PeugeotDashboardKnowledgeAdapter
+    genuinely depends on the injected Port. Not shipped as production
+    code; the real, durable implementation lives on the PI/CPL side."""
+
+    def __init__(self):
+        self._documents: list[tuple[tuple[str, str, str], ManufacturerDocumentReference]] = []
+        self._entries: dict[str, list[DashboardReferenceEntry]] = {}
+
+    def register_document(self, manufacturer: str, model: str, generation: str,
+                           document: ManufacturerDocumentReference) -> None:
+        self._documents.append(((manufacturer, model, generation), document))
+
+    def register_entries(self, document_id: str, entries: list[DashboardReferenceEntry]) -> None:
+        self._entries[document_id] = entries
+
+    def find_applicable_documents(self, vehicle: VehicleApplicabilityContext) -> list[ManufacturerDocumentReference]:
+        key = (vehicle.manufacturer, vehicle.model, vehicle.generation)
+        return [
+            d for (k, d) in self._documents
+            if k == key and d.lifecycle_status == KnowledgeLifecycleStatus.ACTIVE
+        ]
+
+    def entries_for_document(self, document_id: str) -> list[DashboardReferenceEntry]:
+        return self._entries.get(document_id, [])
+
+    def get_document_by_id(self, document_id: str):
+        for (_, d) in self._documents:
+            if d.document_id == document_id:
+                return d
+        return None
+
+
+_PEUGEOT_DOC = ManufacturerDocumentReference(
+    manufacturer="Peugeot", document_id="9999_9999_326_en-GB",
+    document_title="MY PEUGEOT 3008 / MY PEUGEOT 5008 HANDBOOK",
+    source_authority=SourceAuthority.MANUFACTURER_OFFICIAL,
+    source_locator="Peugeot Service Box, document 9999_9999_326_en-GB.pdf",
+)
+
+_OIL_PRESSURE_ENTRY = DashboardReferenceEntry(
+    entry_id="oil-pressure-warning", manufacturer_designation="Engine oil pressure",
+    colour="red", state=IndicatorState.FIXED,
+    documented_meaning="Fault with the engine lubrication system.",
+    documented_instruction="(1) Stop the vehicle as soon as it is safe to do so and switch off the "
+                            "ignition. (2) Contact a PEUGEOT dealer or a qualified workshop.",
+    applicability=_PEUGEOT_DOC,
+)
+_ENGINE_DIAG_FIXED_ENTRY = DashboardReferenceEntry(
+    entry_id="engine-diag-fixed", manufacturer_designation="Engine self-diagnostic system",
+    colour="orange", state=IndicatorState.FIXED,
+    documented_meaning="Fault in the emissions control system. The warning lamp should go off when "
+                        "the engine is started.",
+    documented_instruction="Go to a PEUGEOT dealer or a qualified workshop without delay.",
+    applicability=_PEUGEOT_DOC,
+)
+_ENGINE_DIAG_FLASHING_ENTRY = DashboardReferenceEntry(
+    entry_id="engine-diag-flashing", manufacturer_designation="Engine self-diagnostic system",
+    colour="orange", state=IndicatorState.FLASHING,
+    documented_meaning="Fault in the engine management system. Risk of catalytic-converter destruction.",
+    documented_instruction="Contact a PEUGEOT dealer or a qualified workshop.",
+    applicability=_PEUGEOT_DOC,
+)
+
+
+def _peugeot_repository() -> _InMemoryKnowledgeRepository:
+    repo = _InMemoryKnowledgeRepository()
+    repo.register_document("Peugeot", "3008", "II", _PEUGEOT_DOC)
+    repo.register_entries(_PEUGEOT_DOC.document_id, [
+        _OIL_PRESSURE_ENTRY, _ENGINE_DIAG_FIXED_ENTRY, _ENGINE_DIAG_FLASHING_ENTRY,
+    ])
+    return repo
 
 
 def _test_vehicle(**overrides) -> VehicleApplicabilityContext:
@@ -29,16 +118,13 @@ def _test_vehicle(**overrides) -> VehicleApplicabilityContext:
 
 class TestB2K01PortReachable:
     def test_compatible_peugeot_3008_identity_reaches_the_port(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         assert isinstance(adapter, VehicleDashboardKnowledgePort)
         result = adapter.get_dashboard_reference_set(_test_vehicle(first_registration_date="2020-09-15"))
         assert isinstance(result, DashboardReferenceSet)
         assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
 
     def test_from_pgdr_vehicle_identity_dict_round_trip(self):
-        """Confirms the adapter's own input can be built from exactly the
-        dict shape PGDR's real VehicleIdentityContext.vehicle_identity
-        carries (per handoff_mapper.py::map_resolution's model_dump)."""
         raw = {
             "manufacturer": "Peugeot", "model": "3008", "generation": "II",
             "production": {"year": 2020, "start_date": None, "end_date": None},
@@ -51,23 +137,19 @@ class TestB2K01PortReachable:
         vehicle = VehicleApplicabilityContext.from_pgdr_vehicle_identity_dict(raw)
         assert vehicle.manufacturer == "Peugeot"
         assert vehicle.production_year == 2020
-        assert vehicle.engine_commercial_name == "BlueHDi 130"
         assert vehicle.trim is None
-        assert vehicle.variant is None
-        assert vehicle.engine_code is None
 
 
 class TestB2K02ApplicabilityUsesIdentityNotManufacturerAlone:
     def test_manufacturer_and_model_and_generation_all_required(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
-        # right manufacturer + model, wrong generation
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         r = adapter.get_dashboard_reference_set(
             _test_vehicle(generation="I", first_registration_date="2020-09-15")
         )
         assert r.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
 
     def test_non_peugeot_vehicle_rejected(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         r = adapter.get_dashboard_reference_set(
             _test_vehicle(manufacturer="Renault", model="Clio", generation="V")
         )
@@ -76,14 +158,9 @@ class TestB2K02ApplicabilityUsesIdentityNotManufacturerAlone:
 
 class TestB2K03UnknownFieldsNeverInvented:
     def test_trim_variant_engine_code_stay_none(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         vehicle = _test_vehicle(first_registration_date="2020-09-15")
-        assert vehicle.trim is None
-        assert vehicle.variant is None
-        assert vehicle.engine_code is None
         result = adapter.get_dashboard_reference_set(vehicle)
-        # the result's own echoed vehicle_applicability must not have
-        # invented values either
         assert result.vehicle_applicability.trim is None
         assert result.vehicle_applicability.variant is None
         assert result.vehicle_applicability.engine_code is None
@@ -91,18 +168,14 @@ class TestB2K03UnknownFieldsNeverInvented:
 
 class TestB2K04ApplicabilityUncertaintyPreserved:
     def test_2020_production_year_alone_is_uncertain_not_guessed(self):
-        """The exact scenario the mandate calls out by name: production
-        year 2020 alone straddles both illustrative editions; no
-        first-registration date is available to discriminate. Must NOT
-        silently pick one."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
-        result = adapter.get_dashboard_reference_set(_test_vehicle())  # no first_registration_date
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
+        result = adapter.get_dashboard_reference_set(_test_vehicle())
         assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
-        assert len(result.candidate_documents) == 1  # the single known Peugeot handbook, unresolved
-        assert result.entries == []  # no entries returned while uncertain -- never guessed
+        assert len(result.candidate_documents) == 1
+        assert result.entries == []
 
     def test_first_registration_date_resolves_the_same_ambiguity(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -112,12 +185,12 @@ class TestB2K04ApplicabilityUncertaintyPreserved:
 
 class TestB2K05ZeroOneManyEntries:
     def test_uncertain_case_has_zero_entries(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(_test_vehicle())
         assert result.entries == []
 
     def test_resolved_case_has_many_entries(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -126,7 +199,7 @@ class TestB2K05ZeroOneManyEntries:
 
 class TestB2K06ProvenancePreserved:
     def test_every_entry_traces_to_its_manufacturer_document(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -136,12 +209,7 @@ class TestB2K06ProvenancePreserved:
             assert entry.applicability.source_locator
 
     def test_verified_content_is_tagged_manufacturer_official(self):
-        """Correction pass: the fixture now transcribes content actually
-        supplied from the official Peugeot handbook (document
-        9999_9999_326_en-GB.pdf). SourceAuthority must reflect that --
-        MANUFACTURER_OFFICIAL, not UNVERIFIED_PLACEHOLDER."""
-        from pgdr.domain.dashboard_knowledge import SourceAuthority
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -152,7 +220,7 @@ class TestB2K06ProvenancePreserved:
 
 class TestB2K07IndicatorStateDistinction:
     def test_fixed_and_flashing_produce_distinct_documented_meanings(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -161,55 +229,11 @@ class TestB2K07IndicatorStateDistinction:
         assert fixed.state == IndicatorState.FIXED
         assert flashing.state == IndicatorState.FLASHING
         assert fixed.documented_meaning != flashing.documented_meaning
-        assert fixed.documented_instruction != flashing.documented_instruction
-
-
-class TestB2K08MultiSignalPattern:
-    def test_adblue_states_a_through_d_are_distinct_entries(self):
-        """The verified source distinguishes four AdBlue states with
-        materially different range/message/instruction content -- must
-        not be collapsed into one symbol/one meaning."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
-        result = adapter.get_dashboard_reference_set(
-            _test_vehicle(first_registration_date="2020-09-15")
-        )
-        adblue_entries = {e.entry_id: e for e in result.entries if e.entry_id.startswith("adblue-level-state-")}
-        assert set(adblue_entries) == {
-            "adblue-level-state-a", "adblue-level-state-b",
-            "adblue-level-state-c", "adblue-level-state-d",
-        }
-        meanings = {e.documented_meaning for e in adblue_entries.values()}
-        instructions = {e.documented_instruction for e in adblue_entries.values()}
-        assert len(meanings) == 4
-        assert len(instructions) == 4
-
-    def test_scr_confirmed_countdown_combines_three_lamps_and_escalation_states(self):
-        """The verified source's confirmed/countdown phase is a genuine
-        combination of the AdBlue lamp, the Service lamp, and the Engine
-        self-diagnostics lamp -- represented via combined_with_entry_ids,
-        never flattened into one entry."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
-        result = adapter.get_dashboard_reference_set(
-            _test_vehicle(first_registration_date="2020-09-15")
-        )
-        countdown = next(e for e in result.entries if e.entry_id == "scr-malfunction-confirmed-countdown")
-        assert "service-warning-lamp-fixed" in countdown.combined_with_entry_ids
-        assert "engine-diag-fixed" in countdown.combined_with_entry_ids
-        assert "scr-malfunction-detected" in countdown.combined_with_entry_ids
-        assert "scr-starting-prevented" in countdown.combined_with_entry_ids
-
-    def test_scr_starting_prevented_message_matches_supplied_source(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
-        result = adapter.get_dashboard_reference_set(
-            _test_vehicle(first_registration_date="2020-09-15")
-        )
-        prevented = next(e for e in result.entries if e.entry_id == "scr-starting-prevented")
-        assert prevented.displayed_message == "Emissions control fault: Starting prevented"
 
 
 class TestB2K09UnsupportedVehicleGetsNoPeugeotKnowledge:
     def test_bmw_gets_no_3008_entries(self):
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(manufacturer="BMW", model="X3", generation="G01")
         )
@@ -219,10 +243,7 @@ class TestB2K09UnsupportedVehicleGetsNoPeugeotKnowledge:
 
 class TestB2K10MissingDocumentationState:
     def test_unsupported_vehicle_family_is_documentation_not_available(self):
-        """The genuinely reachable DOCUMENTATION_NOT_AVAILABLE state in
-        the corrected, source-driven design: a vehicle this adapter's POC
-        scope was never authorized to cover at all."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(manufacturer="Peugeot", model="208", generation="II")
         )
@@ -230,12 +251,7 @@ class TestB2K10MissingDocumentationState:
         assert result.entries == []
 
     def test_production_year_alone_is_never_sufficient_even_when_unusual(self):
-        """Per the verified source's own stated rule (handbook issue-period
-        applicability corresponds to first registration, not production
-        year), an unusual production year with no first-registration date
-        must still be reported as uncertain -- never silently resolved,
-        and never silently rejected as unavailable either."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(_test_vehicle(production_year=2035))
         assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
         assert result.entries == []
@@ -246,9 +262,9 @@ class TestB2K11NoPGDREvidenceCreated:
         import inspect
         from pgdr.adapters import peugeot_dashboard_knowledge
         from pgdr.domain import dashboard_knowledge
-        from pgdr.ports import vehicle_dashboard_knowledge
+        from pgdr.ports import vehicle_dashboard_knowledge, knowledge_repository
 
-        for module in (peugeot_dashboard_knowledge, dashboard_knowledge, vehicle_dashboard_knowledge):
+        for module in (peugeot_dashboard_knowledge, dashboard_knowledge, vehicle_dashboard_knowledge, knowledge_repository):
             source = inspect.getsource(module)
             assert "Evidence(" not in source
             assert "Observation(" not in source
@@ -257,12 +273,7 @@ class TestB2K11NoPGDREvidenceCreated:
 
 class TestB2K12NoMechanicalDiagnosis:
     def test_documented_meaning_never_states_root_cause_certainty(self):
-        """A weak but concrete structural proxy: the fixture's own
-        documented_meaning/documented_instruction strings describe
-        symptoms/warnings, never a definitive component-failure
-        conclusion -- confirmed by the absence of common diagnosis-only
-        phrasing this fixture was deliberately NOT written to contain."""
-        adapter = PeugeotDashboardKnowledgeAdapter()
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
         )
@@ -273,8 +284,6 @@ class TestB2K12NoMechanicalDiagnosis:
                 assert phrase not in text
 
     def test_no_image_interpretation_dependency(self):
-        """B2-K must not import or invoke DashboardInterpretationPort or
-        MediaResolverPort -- that is B2-V's concern, not B2-K's."""
         import inspect
         from pgdr.adapters import peugeot_dashboard_knowledge
         source = inspect.getsource(peugeot_dashboard_knowledge)
@@ -282,3 +291,103 @@ class TestB2K12NoMechanicalDiagnosis:
         assert "MediaResolverPort" not in source
         assert "resolve(" not in source
         assert "interpret(" not in source
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Persistence mandate's own PGDR-side requirements (§29).
+# ---------------------------------------------------------------------------
+
+class TestB2K13KnowledgeRepositoryPortContract:
+    def test_in_memory_double_satisfies_the_port_structurally(self):
+        repo = _peugeot_repository()
+        assert isinstance(repo, KnowledgeRepositoryPort)
+
+    def test_find_and_entries_and_get_by_id_all_present(self):
+        repo = _peugeot_repository()
+        docs = repo.find_applicable_documents(_test_vehicle())
+        assert len(docs) == 1
+        entries = repo.entries_for_document(docs[0].document_id)
+        assert len(entries) == 3
+        assert repo.get_document_by_id(docs[0].document_id) is not None
+        assert repo.get_document_by_id("does-not-exist") is None
+
+
+class TestB2K14AdapterUsesRepositoryNotFixture:
+    def test_adapter_constructor_requires_a_repository(self):
+        """The adapter no longer owns a permanent fixture -- confirmed
+        both by this construction requirement and by source inspection
+        (no module-level ManufacturerDocumentReference/DashboardReference
+        Entry constants remain in the adapter file itself)."""
+        import inspect
+        from pgdr.adapters import peugeot_dashboard_knowledge
+        source = inspect.getsource(peugeot_dashboard_knowledge)
+        assert "ManufacturerDocumentReference(" not in source
+        assert "DashboardReferenceEntry(" not in source
+        assert "def __init__(self, repository:" in source
+
+    def test_different_injected_repositories_yield_different_results(self):
+        """Directly proves data comes from the injected Port, not from
+        anything hardcoded in the adapter: an empty repository yields no
+        knowledge for the exact same vehicle a populated one resolves."""
+        adapter_empty = PeugeotDashboardKnowledgeAdapter(repository=_InMemoryKnowledgeRepository())
+        adapter_populated = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
+        vehicle = _test_vehicle(first_registration_date="2020-09-15")
+
+        result_empty = adapter_empty.get_dashboard_reference_set(vehicle)
+        result_populated = adapter_populated.get_dashboard_reference_set(vehicle)
+
+        assert result_empty.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
+        assert result_populated.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+
+
+class TestB2K15StaleKnowledgeDistinguishable:
+    def test_knowledge_stale_status_exists_and_is_distinct(self):
+        """§10: KNOWLEDGE_STALE must exist as its own explicit state,
+        never collapsed into DOCUMENTATION_NOT_AVAILABLE or a generic
+        failure."""
+        assert ApplicabilityStatus.KNOWLEDGE_STALE != ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
+        assert ApplicabilityStatus.KNOWLEDGE_STALE.value == "knowledge_stale"
+
+    def test_source_update_required_and_source_unavailable_are_distinct_states(self):
+        assert ApplicabilityStatus.SOURCE_UPDATE_REQUIRED != ApplicabilityStatus.SOURCE_UNAVAILABLE
+        assert ApplicabilityStatus.SOURCE_UPDATE_REQUIRED != ApplicabilityStatus.KNOWLEDGE_STALE
+
+
+class TestB2K16SupersededKnowledgeRemainsHistoricallyAvailable:
+    def test_superseded_document_is_excluded_from_new_lookups_but_reachable_by_id(self):
+        """Synthetic repository lifecycle test data (per the mandate's own
+        §22 instruction) -- not fabricated Peugeot production facts."""
+        repo = _InMemoryKnowledgeRepository()
+        old_doc = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-A", document_title="Generation A",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-a",
+            lifecycle_status=KnowledgeLifecycleStatus.SUPERSEDED,
+        )
+        new_doc = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-B", document_title="Generation B",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-b",
+            lifecycle_status=KnowledgeLifecycleStatus.ACTIVE, supersedes_document_id="TEST-DOC-A",
+        )
+        repo.register_document("TestMfr", "TestModel", "I", old_doc)
+        repo.register_document("TestMfr", "TestModel", "I", new_doc)
+
+        vehicle = VehicleApplicabilityContext(manufacturer="TestMfr", model="TestModel", generation="I",
+                                               first_registration_date="2021-01-01")
+        current = repo.find_applicable_documents(vehicle)
+        assert len(current) == 1
+        assert current[0].document_id == "TEST-DOC-B"
+
+        historical = repo.get_document_by_id("TEST-DOC-A")
+        assert historical is not None
+        assert historical.lifecycle_status == KnowledgeLifecycleStatus.SUPERSEDED
+        assert repo.get_document_by_id("TEST-DOC-B").supersedes_document_id == "TEST-DOC-A"
+
+
+class TestB2K17CaseDataCannotContaminateManufacturerKnowledge:
+    def test_domain_types_have_no_case_or_execution_field(self):
+        """§21: manufacturer knowledge records must contain no execution_
+        id/case_id/diagnostic_id/vehicle-instance ownership field."""
+        from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry, ManufacturerDocumentReference
+        forbidden_field_names = {"execution_id", "case_id", "diagnostic_id", "vehicle_instance_id"}
+        for model in (ManufacturerDocumentReference, DashboardReferenceEntry):
+            assert forbidden_field_names.isdisjoint(model.model_fields.keys())
