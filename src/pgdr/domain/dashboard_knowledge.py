@@ -29,37 +29,61 @@ from pydantic import BaseModel, ConfigDict, Field
 
 class ApplicabilityStatus(str, Enum):
     """The six states §17 of the original B2-K mandate require -- never
-    collapsed into a generic failure. Extended by the Knowledge
-    Persistence mandate (§10) with three more values that are genuinely
-    new (persistence/freshness concepts the original applicability
-    decision had no need for) -- reusing this single enum rather than
-    introducing a parallel "KnowledgeStatus" type, per that mandate's own
-    explicit instruction to reuse an existing equivalent rather than
-    duplicate. The mandate's own VERIFIED_KNOWLEDGE_AVAILABLE /
-    KNOWLEDGE_NOT_AVAILABLE / KNOWLEDGE_APPLICABILITY_UNCERTAIN map
-    directly onto REFERENCE_SET_AVAILABLE / DOCUMENTATION_NOT_AVAILABLE /
-    DOCUMENT_APPLICABILITY_UNCERTAIN below -- no new members needed for
-    those three."""
+    collapsed into a generic failure. Applicability/result semantics
+    only: whether a document/vehicle lookup resolved, and to what.
+
+    PRE-INTEGRATION REPAIR NOTE: the Knowledge Persistence mandate's
+    first pass incorrectly added three knowledge-freshness values here
+    (KNOWLEDGE_STALE, SOURCE_UPDATE_REQUIRED, SOURCE_UNAVAILABLE). That
+    was a semantic defect -- applicability ("is this document applicable
+    to this vehicle?") and freshness ("is this document's content still
+    trustworthy?") are independent axes. A document can be APPLICABLE
+    and STALE at once, or UNCERTAIN and VERIFIED_CURRENT at once. Those
+    three values have been removed from this enum and now live on
+    KnowledgeFreshnessStatus below, exposed per-document via
+    ManufacturerDocumentReference.freshness_status -- orthogonal to
+    whatever ApplicabilityStatus a DashboardReferenceSet lookup reaches."""
     VEHICLE_IDENTITY_INSUFFICIENT = "vehicle_identity_insufficient"
     DOCUMENTATION_NOT_AVAILABLE = "documentation_not_available"
     MULTIPLE_DOCUMENTS_APPLICABLE = "multiple_documents_applicable"
     DOCUMENT_APPLICABILITY_UNCERTAIN = "document_applicability_uncertain"
     DASHBOARD_REFERENCE_NOT_FOUND = "dashboard_reference_not_found"
     REFERENCE_SET_AVAILABLE = "reference_set_available"
-    # --- Knowledge Persistence mandate additions (§10) ---
-    KNOWLEDGE_STALE = "knowledge_stale"
-    SOURCE_UPDATE_REQUIRED = "source_update_required"
-    SOURCE_UNAVAILABLE = "source_unavailable"
 
 
 class KnowledgeLifecycleStatus(str, Enum):
-    """§8.B: distinguishes knowledge currently usable from knowledge
-    retained only historically. Mirrors cpl.runner_artifacts' own
-    artifact_status convention in spirit (CREATED/VALIDATED/SUPERSEDED/
-    REJECTED) without reusing that table (forbidden -- see the Knowledge
-    Persistence Investigation's own finding on execution_id coupling)."""
+    """§8.B: distinguishes knowledge currently usable (authoritative for
+    new lookups) from knowledge retained only historically. Mirrors
+    cpl.runner_artifacts' own artifact_status convention in spirit
+    (CREATED/VALIDATED/SUPERSEDED/REJECTED) without reusing that table
+    (forbidden -- see the Knowledge Persistence Investigation's own
+    finding on execution_id coupling).
+
+    Independent of KnowledgeFreshnessStatus below: SUPERSEDED != STALE.
+    A SUPERSEDED generation was replaced by a newer one and is retained
+    only for historical lookup; a STALE generation is still the current
+    ACTIVE generation for its applicability, but its content has not
+    been reconfirmed against its source recently enough to be trusted
+    without review. The two states answer different questions and must
+    never be collapsed into each other."""
     ACTIVE = "active"
     SUPERSEDED = "superseded"
+
+
+class KnowledgeFreshnessStatus(str, Enum):
+    """PRE-INTEGRATION REPAIR: the minimum separate typed knowledge
+    freshness/source semantics, independent of both ApplicabilityStatus
+    (a lookup-result concept) and KnowledgeLifecycleStatus (a historical-
+    authority concept). Governs whether a document generation's content
+    is currently trusted as-is, without inferring this from verified_at
+    alone -- verified_at is evidence of WHEN verification occurred; this
+    enum is the actual governed decision about what that evidence means,
+    set explicitly by whoever performs or reviews verification, never
+    computed automatically from a timestamp comparison."""
+    VERIFIED_CURRENT = "verified_current"
+    STALE = "stale"
+    SOURCE_UPDATE_REQUIRED = "source_update_required"
+    SOURCE_UNAVAILABLE = "source_unavailable"
 
 
 class SourceAuthority(str, Enum):
@@ -176,6 +200,12 @@ class ManufacturerDocumentReference(BaseModel):
       supersedes_document_id: the document_id of the generation this one
         replaces, if any (§9) -- append-only in spirit: superseding never
         deletes or mutates the prior record
+      freshness_status: the governed freshness decision (§ PRE-INTEGRATION
+        REPAIR) -- independent of verified_at (a timestamp of when
+        verification occurred) and independent of lifecycle_status
+        (historical authority). Never computed from verified_at by this
+        domain type or any code that constructs it; always an explicit
+        value supplied by whoever performed or reviewed verification.
     """
     model_config = ConfigDict(frozen=True)
 
@@ -189,6 +219,7 @@ class ManufacturerDocumentReference(BaseModel):
     lifecycle_status: KnowledgeLifecycleStatus = KnowledgeLifecycleStatus.ACTIVE
     verified_at: Optional[str] = None
     supersedes_document_id: Optional[str] = None
+    freshness_status: KnowledgeFreshnessStatus = KnowledgeFreshnessStatus.VERIFIED_CURRENT
 
 
 class DashboardReferenceEntry(BaseModel):

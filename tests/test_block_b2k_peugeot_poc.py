@@ -340,20 +340,153 @@ class TestB2K14AdapterUsesRepositoryNotFixture:
         assert result_populated.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
 
 
-class TestB2K15StaleKnowledgeDistinguishable:
-    def test_knowledge_stale_status_exists_and_is_distinct(self):
-        """§10: KNOWLEDGE_STALE must exist as its own explicit state,
-        never collapsed into DOCUMENTATION_NOT_AVAILABLE or a generic
-        failure."""
-        assert ApplicabilityStatus.KNOWLEDGE_STALE != ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
-        assert ApplicabilityStatus.KNOWLEDGE_STALE.value == "knowledge_stale"
+class TestB2K15KnowledgeFreshnessIsIndependentOfApplicability:
+    """PRE-INTEGRATION REPAIR §10 A-D: freshness and applicability are
+    independent axes. A document can be applicable while STALE, or while
+    requiring source update/unavailable -- these are never encoded into
+    ApplicabilityStatus, which stays applicability/result-only."""
 
-    def test_source_update_required_and_source_unavailable_are_distinct_states(self):
-        assert ApplicabilityStatus.SOURCE_UPDATE_REQUIRED != ApplicabilityStatus.SOURCE_UNAVAILABLE
-        assert ApplicabilityStatus.SOURCE_UPDATE_REQUIRED != ApplicabilityStatus.KNOWLEDGE_STALE
+    def _repo_with_freshness(self, freshness) -> _InMemoryKnowledgeRepository:
+        doc = ManufacturerDocumentReference(
+            manufacturer="Peugeot", document_id="FRESH-TEST-DOC", document_title="Freshness test doc",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator",
+            freshness_status=freshness,
+        )
+        repo = _InMemoryKnowledgeRepository()
+        repo.register_document("Peugeot", "3008", "II", doc)
+        repo.register_entries(doc.document_id, [
+            DashboardReferenceEntry(
+                entry_id="test-entry", manufacturer_designation="Test indicator",
+                documented_meaning="Test meaning.", applicability=doc,
+            ),
+        ])
+        return repo
+
+    def test_a_applicable_and_verified_current(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        repo = self._repo_with_freshness(KnowledgeFreshnessStatus.VERIFIED_CURRENT)
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
+        result = adapter.get_dashboard_reference_set(_test_vehicle(first_registration_date="2020-09-15"))
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert result.candidate_documents[0].freshness_status == KnowledgeFreshnessStatus.VERIFIED_CURRENT
+
+    def test_b_applicable_and_stale(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        repo = self._repo_with_freshness(KnowledgeFreshnessStatus.STALE)
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
+        result = adapter.get_dashboard_reference_set(_test_vehicle(first_registration_date="2020-09-15"))
+        # Applicability is unaffected by staleness -- still resolves.
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert result.candidate_documents[0].freshness_status == KnowledgeFreshnessStatus.STALE
+
+    def test_c_applicable_and_source_update_required(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        repo = self._repo_with_freshness(KnowledgeFreshnessStatus.SOURCE_UPDATE_REQUIRED)
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
+        result = adapter.get_dashboard_reference_set(_test_vehicle(first_registration_date="2020-09-15"))
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert result.candidate_documents[0].freshness_status == KnowledgeFreshnessStatus.SOURCE_UPDATE_REQUIRED
+
+    def test_d_applicable_and_source_unavailable(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        repo = self._repo_with_freshness(KnowledgeFreshnessStatus.SOURCE_UNAVAILABLE)
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=repo)
+        result = adapter.get_dashboard_reference_set(_test_vehicle(first_registration_date="2020-09-15"))
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert result.candidate_documents[0].freshness_status == KnowledgeFreshnessStatus.SOURCE_UNAVAILABLE
+
+    def test_freshness_values_are_not_present_on_applicability_status(self):
+        """Structural confirmation the repair actually happened: none of
+        the four freshness values exist as ApplicabilityStatus members."""
+        applicability_values = {m.value for m in ApplicabilityStatus}
+        assert "knowledge_stale" not in applicability_values
+        assert "source_update_required" not in applicability_values
+        assert "source_unavailable" not in applicability_values
 
 
-class TestB2K16SupersededKnowledgeRemainsHistoricallyAvailable:
+class TestB2K16SupersededIsNotStale:
+    """§10 E/F: SUPERSEDED (lifecycle) and STALE (freshness) are
+    different axes and must never be treated as equivalent."""
+
+    def test_e_superseded_document_remains_historically_retrievable(self):
+        repo = _InMemoryKnowledgeRepository()
+        old_doc = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-A", document_title="Generation A",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-a",
+            lifecycle_status=KnowledgeLifecycleStatus.SUPERSEDED,
+        )
+        new_doc = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-B", document_title="Generation B",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-b",
+            lifecycle_status=KnowledgeLifecycleStatus.ACTIVE, supersedes_document_id="TEST-DOC-A",
+        )
+        repo.register_document("TestMfr", "TestModel", "I", old_doc)
+        repo.register_document("TestMfr", "TestModel", "I", new_doc)
+
+        historical = repo.get_document_by_id("TEST-DOC-A")
+        assert historical is not None
+        assert historical.lifecycle_status == KnowledgeLifecycleStatus.SUPERSEDED
+
+    def test_f_superseded_is_not_equivalent_to_stale(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        # A SUPERSEDED document can perfectly well have been
+        # VERIFIED_CURRENT at the moment it was superseded -- the two
+        # axes are independent, confirmed by constructing exactly that
+        # combination without any validation error or forced coupling.
+        superseded_but_was_current = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-A", document_title="Generation A",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-a",
+            lifecycle_status=KnowledgeLifecycleStatus.SUPERSEDED,
+            freshness_status=KnowledgeFreshnessStatus.VERIFIED_CURRENT,
+        )
+        assert superseded_but_was_current.lifecycle_status == KnowledgeLifecycleStatus.SUPERSEDED
+        assert superseded_but_was_current.freshness_status == KnowledgeFreshnessStatus.VERIFIED_CURRENT
+        # And the reverse: an ACTIVE (non-superseded) document can be STALE.
+        active_but_stale = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-C", document_title="Generation C",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-c",
+            lifecycle_status=KnowledgeLifecycleStatus.ACTIVE,
+            freshness_status=KnowledgeFreshnessStatus.STALE,
+        )
+        assert active_but_stale.lifecycle_status == KnowledgeLifecycleStatus.ACTIVE
+        assert active_but_stale.freshness_status == KnowledgeFreshnessStatus.STALE
+
+
+class TestB2K17VerifiedAtDoesNotDetermineFreshness:
+    def test_g_verified_at_alone_does_not_determine_freshness_state(self):
+        """§10 G: verified_at is evidence of when verification occurred,
+        never itself the governed freshness decision. Two documents with
+        the identical verified_at timestamp can legitimately carry
+        different freshness_status values -- nothing in the domain type
+        derives one from the other."""
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        same_timestamp = "2020-01-01T00:00:00+00:00"
+        doc_current = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-X", document_title="Doc X",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-x",
+            verified_at=same_timestamp, freshness_status=KnowledgeFreshnessStatus.VERIFIED_CURRENT,
+        )
+        doc_stale = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-Y", document_title="Doc Y",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-y",
+            verified_at=same_timestamp, freshness_status=KnowledgeFreshnessStatus.STALE,
+        )
+        assert doc_current.verified_at == doc_stale.verified_at
+        assert doc_current.freshness_status != doc_stale.freshness_status
+
+    def test_default_freshness_is_verified_current_not_inferred(self):
+        """Confirms the default value is an explicit constant, not a
+        computation involving verified_at (which defaults to None here)."""
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        doc = ManufacturerDocumentReference(
+            manufacturer="TestMfr", document_id="TEST-DOC-Z", document_title="Doc Z",
+            source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-z",
+        )
+        assert doc.verified_at is None
+        assert doc.freshness_status == KnowledgeFreshnessStatus.VERIFIED_CURRENT
+
+
+class TestB2K18SupersededKnowledgeRemainsHistoricallyAvailable:
     def test_superseded_document_is_excluded_from_new_lookups_but_reachable_by_id(self):
         """Synthetic repository lifecycle test data (per the mandate's own
         §22 instruction) -- not fabricated Peugeot production facts."""
@@ -383,7 +516,7 @@ class TestB2K16SupersededKnowledgeRemainsHistoricallyAvailable:
         assert repo.get_document_by_id("TEST-DOC-B").supersedes_document_id == "TEST-DOC-A"
 
 
-class TestB2K17CaseDataCannotContaminateManufacturerKnowledge:
+class TestB2K19CaseDataCannotContaminateManufacturerKnowledge:
     def test_domain_types_have_no_case_or_execution_field(self):
         """§21: manufacturer knowledge records must contain no execution_
         id/case_id/diagnostic_id/vehicle-instance ownership field."""
