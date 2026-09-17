@@ -17,7 +17,7 @@ from pgdr.models import (
     VehicleIdentityContext,
 )
 from pgdr.ports.dashboard_interpretation import (
-    DashboardInterpretationPort, DashboardInterpretationResult, InterpretationProvenance,
+    DashboardInterpretationPort, DashboardInterpretationResult, InterpretationProvenance, MatchStatus,
 )
 from pgdr.session_controller import SessionController
 
@@ -111,10 +111,18 @@ class TestB1AC03NoQEvi002Dependency:
 class TestB1AC04InterpretationPortContractExists:
     def test_port_and_result_types_exist_and_are_typed(self):
         """B1-AC04: a typed Dashboard Interpretation Port exists with a
-        typed interpretation-result contract."""
+        typed interpretation-result contract. Updated for the B2-V
+        extension (observation_confidence/match_status are now required;
+        confidence/identification remain as optional B1-era compat
+        fields)."""
+        from pgdr.ports.dashboard_interpretation import MatchStatus
         assert hasattr(DashboardInterpretationPort, "interpret")
         result = DashboardInterpretationResult(
             observation="yellow engine-shaped dashboard symbol",
+            observation_confidence=Confidence.HIGH,
+            match_status=MatchStatus.MATCH,
+            matched_reference_entry_id="engine-diag-flashing",
+            match_confidence=Confidence.HIGH,
             identification="engine management warning",
             confidence=Confidence.HIGH,
             provenance=InterpretationProvenance(media_reference="media-ref-ac04"),
@@ -132,13 +140,21 @@ class TestB1AC04InterpretationPortContractExists:
     def test_port_is_runtime_checkable_protocol(self):
         """A concrete adapter can be structurally verified against the
         Port without inheriting from it -- matching the existing
-        ports/diagnostic_domain.py convention exactly."""
+        ports/diagnostic_domain.py convention exactly. Updated for the
+        B2-V signature: interpret(media: ResolvedMedia, reference_set:
+        DashboardReferenceSet) -> list[DashboardInterpretationResult]."""
+        from pgdr.domain.dashboard_knowledge import DashboardReferenceSet, ApplicabilityStatus, VehicleApplicabilityContext
+        from pgdr.ports.dashboard_interpretation import MatchStatus
+        from pgdr.ports.media_resolver import ResolvedMedia
+        from pgdr.domain.media import MediaType as _MediaType
+
         class _FakeAdapter:
-            def interpret(self, media: PrimaryDiagnosticMedia) -> DashboardInterpretationResult:
-                return DashboardInterpretationResult(
-                    observation="x", confidence=Confidence.SPECULATIVE,
+            def interpret(self, media: ResolvedMedia, reference_set: DashboardReferenceSet) -> list[DashboardInterpretationResult]:
+                return [DashboardInterpretationResult(
+                    observation="x", observation_confidence=Confidence.SPECULATIVE,
+                    match_status=MatchStatus.NO_MATCH,
                     provenance=InterpretationProvenance(media_reference=media.reference),
-                )
+                )]
         assert isinstance(_FakeAdapter(), DashboardInterpretationPort)
 
 
@@ -151,12 +167,13 @@ class TestB1AC05NoInterpretationExecuted:
         calls = []
 
         class _SpyPort:
-            def interpret(self, media: PrimaryDiagnosticMedia) -> DashboardInterpretationResult:
+            def interpret(self, media, reference_set) -> list[DashboardInterpretationResult]:
                 calls.append(media)
-                return DashboardInterpretationResult(
-                    observation="should never happen", confidence=Confidence.HIGH,
+                return [DashboardInterpretationResult(
+                    observation="should never happen", observation_confidence=Confidence.HIGH,
+                    match_status=MatchStatus.NO_MATCH, confidence=Confidence.HIGH,
                     provenance=InterpretationProvenance(media_reference=media.reference),
-                )
+                )]
 
         controller = SessionController(governance_enabled=False, dashboard_interpretation_port=_SpyPort())
         media = PrimaryDiagnosticMedia(reference="media-ref-ac05")
