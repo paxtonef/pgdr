@@ -54,7 +54,7 @@ from pgdr.ports.media_resolver import ResolvedMedia
 # ---------------------------------------------------------------------------
 
 _TEST_DOC = ManufacturerDocumentReference(
-    manufacturer="TestMfr", document_id="TEST-B2R1-DOC", document_title="Test handbook",
+    manufacturer="TestMfr", document_id="TEST-DOC-A", document_title="Test handbook",
     source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator",
 )
 
@@ -192,7 +192,10 @@ class TestR06SourceRuleIdIdentifiesTheRule:
         provider = _ScriptedVisualProvider(planned_results=[_match_result()])
         intake = build_diagnostic_intake(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
         _apply_and_insert(domain, intake, updater, state)
-        assert state.evidence[0].source_rule_id == "automotive.dashboard.testmfr_engine_diag_flashing"
+        # B2-R2 renamed this rule's id to _r1_poc when a second,
+        # deliberately-converging rule (_r2_poc) was added to prove
+        # multi-rule coexistence -- see test_block_b2r2_production_rule_identity.py.
+        assert state.evidence[0].source_rule_id == "automotive.dashboard.testmfr_engine_diag_flashing_r1_poc"
 
 
 class TestR07ScorerProducesNonNoneConfidence:
@@ -203,8 +206,10 @@ class TestR07ScorerProducesNonNoneConfidence:
         intake = build_diagnostic_intake(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
         _apply_and_insert(domain, intake, updater, state)
         assert state.hypotheses[0].confidence is not None
-        # DeterministicHypothesisScorer: _BASELINE(0.3) + support(0.3) - 0 = 0.6
-        assert state.hypotheses[0].confidence == pytest.approx(0.6)
+        # B2-R2 added a second, converging POC rule (CONTRADICTS, weight
+        # 0.2) targeting the same hypothesis, for multi-rule coverage --
+        # DeterministicHypothesisScorer: _BASELINE(0.3) + support(0.3) - contradict(0.2) = 0.4
+        assert state.hypotheses[0].confidence == pytest.approx(0.4)
         assert state.evidence[0].id in state.hypotheses[0].supporting_evidence_ids
 
 
@@ -228,8 +233,13 @@ class TestR09SecondApplicationNoSecondEvidence:
         provider = _ScriptedVisualProvider(planned_results=[_match_result()])
         intake = build_diagnostic_intake(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
         _apply_and_insert(domain, intake, updater, state)
+        evidence_count_after_first_call = len(state.evidence)
         _apply_and_insert(domain, intake, updater, state)
-        assert len(state.evidence) == 1
+        # B2-R2 ships two converging POC rules for this selector, so one
+        # call legitimately produces 2 Evidence records (R1 + R2) -- the
+        # idempotency property under test is that a SECOND call adds
+        # none of them again, not that the total is 1.
+        assert len(state.evidence) == evidence_count_after_first_call
 
 
 class TestR10SecondApplicationDoesNotInflateScore:
@@ -249,20 +259,20 @@ class TestR11OneFactMultipleHypothesesNoDomainRefCollision:
     allowance) -- no second production rule is added for this."""
 
     def test_domain_ref_differs_for_two_hypothesis_types_from_the_same_fact(self):
-        ref_h1 = _dashboard_diagnostic_domain_ref("TestMfr", "engine-diag-flashing", "engine_running")
-        ref_h2 = _dashboard_diagnostic_domain_ref("TestMfr", "engine-diag-flashing", "electrical")
+        ref_h1 = _dashboard_diagnostic_domain_ref("TestMfr", "TEST-DOC-A", "engine-diag-flashing", "engine_running")
+        ref_h2 = _dashboard_diagnostic_domain_ref("TestMfr", "TEST-DOC-A", "engine-diag-flashing", "electrical")
         assert ref_h1 != ref_h2
 
     def test_domain_ref_is_stable_for_the_same_fact_and_hypothesis_type(self):
-        ref_a = _dashboard_diagnostic_domain_ref("TestMfr", "engine-diag-flashing", "engine_running")
-        ref_b = _dashboard_diagnostic_domain_ref("TestMfr", "engine-diag-flashing", "engine_running")
+        ref_a = _dashboard_diagnostic_domain_ref("TestMfr", "TEST-DOC-A", "engine-diag-flashing", "engine_running")
+        ref_b = _dashboard_diagnostic_domain_ref("TestMfr", "TEST-DOC-A", "engine-diag-flashing", "engine_running")
         assert ref_a == ref_b
 
     def test_domain_ref_namespaced_away_from_primary_symptom_values(self):
         """Primary-symptom domain_ref values are bare SymptomFamily
         strings (e.g. 'vibration') -- never containing a colon; the
         'b2r_dashboard:' prefix guarantees no accidental collision."""
-        ref = _dashboard_diagnostic_domain_ref("TestMfr", "engine-diag-flashing", "engine_running")
+        ref = _dashboard_diagnostic_domain_ref("TestMfr", "TEST-DOC-A", "engine-diag-flashing", "engine_running")
         assert ref.startswith("b2r_dashboard:")
         assert ref != "vibration"
         assert ref != "engine_running"

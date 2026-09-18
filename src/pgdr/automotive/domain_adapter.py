@@ -27,13 +27,78 @@ available_questions()/detect_contradictions() are byte-for-byte
 unchanged by this pass (confirmed by diff: only additions, zero
 modified lines in any pre-existing method).
 
-_DASHBOARD_DIAGNOSTIC_RULES below is ONE controlled TEST/POC rule
-(TestMfr/engine-diag-flashing, the same fixture already exercised
-throughout the B2-V/B2-D/B2-C test suites) -- not real Peugeot
-diagnostic knowledge, and not a rule engine/framework. Same
-authored-data-constant pattern _DISCRIMINATING_RULES/
-_PROVISIONAL_KEYWORD_RULES already use in automotive/evidence_mapper.py,
-applied to a new fact origin.
+BLOCK B2-R2 EXTENSION (this pass) -- Production Rule Identity &
+Multi-Rule Semantics, closing the two bounded debts B2-R1 deliberately
+left open, per the accepted B2-R2 investigation:
+
+  A. Production manufacturer-fact identity. The B2-R1 selector
+     (manufacturer, entry_id) is concretely unsafe: the exact same
+     entry_id string ("engine-diag-flashing") already exists,
+     independently authored, under BOTH the TestMfr test fixtures AND
+     the real Peugeot fixture in this very repository
+     (test_block_b2k_peugeot_poc.py) -- entry_id alone (even paired
+     with manufacturer) cannot survive document supersession, since a
+     new document generation always gets its OWN document_id (confirmed
+     by the existing TEST-DOC-A/TEST-DOC-B supersession test pattern;
+     .edition is never read anywhere in logic, so document_id is the
+     ONLY field that actually functions as a version anchor). The
+     selector is now (manufacturer, document_id, entry_id) -- fail-
+     closed by construction: a rule authored against one document_id
+     structurally cannot match a different one, superseding or not,
+     without an explicit new rule-table entry.
+
+  B. Production hypothesis identity. _dashboard_diagnostic_domain_ref
+     now incorporates document_id too, for the same reason -- the fact
+     origin (now version-safe) fully participates in hypothesis
+     identity, preserving "one fact -> 0/1/N hypotheses" (hypothesis_type
+     still in the key) and "two facts sharing a hypothesis_type remain
+     two separate hypotheses, never merged" (established by the
+     investigation as what EXISTING PGDR semantics already imply --
+     the primary-symptom path's own _HYPOTHESIS_MAP already treats two
+     different SymptomFamily origins producing the same hypothesis_type
+     as two separate DiagnosticHypothesis instances, and the Q&A
+     discriminator is itself built to match "any currently-active
+     hypothesis of this hypothesis_type", plural, not assuming exactly
+     one).
+
+  C. Multi-rule Evidence idempotency. B2-R1's fingerprint
+     (target_hypothesis_id, observation_ids) could not distinguish TWO
+     DIFFERENT rules converging on the SAME hypothesis from the SAME
+     observation -- a second rule's legitimate, distinct contribution
+     would have been silently, incorrectly suppressed as a false
+     "duplicate" of the first. rule_id now participates in the
+     fingerprint: (rule_id, target_hypothesis_id, observation_ids).
+     This identity deliberately excludes direction/weight (rule
+     CONTENT, not identity -- already fully determined once rule_id is
+     known) and excludes documented_meaning/rationale (never identity,
+     per B2-R1's own existing discipline).
+
+  D. Source-authority eligibility. Nothing upstream of this capability
+     currently gates on source_authority (confirmed: B2-V/B2-D/B2-C all
+     transport it faithfully but never read it for a decision) -- a
+     local guard here, entry.applicability.source_authority ==
+     SourceAuthority.MANUFACTURER_OFFICIAL, is now required before any
+     rule may fire, so UNVERIFIED_PLACEHOLDER content can never
+     bootstrap a manufacturer-identified diagnostic hypothesis.
+
+freshness_status and lifecycle_status remain deliberately UNUSED by
+this capability -- per the investigation, blocking a same-session,
+already-governed exact entry merely because its document is now
+SUPERSEDED would conflate current-production-eligibility (an upstream,
+forward-looking B2-K/repository concern, already gated by
+find_applicable_documents' own ACTIVE-only filter) with fact validity
+(a backward-looking, already-resolved question); and the production
+policy for STALE/SOURCE_UPDATE_REQUIRED/SOURCE_UNAVAILABLE is
+explicitly undecided, not invented here.
+
+_DASHBOARD_DIAGNOSTIC_RULES below now ships TWO controlled TEST/POC
+rules (still TestMfr, still not real Peugeot knowledge) -- the second
+exists SOLELY to exercise the critical multi-rule collision this pass
+closes: both rules target the exact SAME (manufacturer, document_id,
+entry_id) selector AND the same hypothesis_type, so they converge on
+the SAME DiagnosticHypothesis instance from the SAME Observation --
+the one case B2-R1's own fingerprint could not have told apart from a
+real duplicate.
 """
 from __future__ import annotations
 
@@ -43,7 +108,7 @@ from pgdr.config_loader import load_questions
 from pgdr.diagnostic import _HYPOTHESIS_MAP
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.domain.contradiction import DiagnosticContradiction
-from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry
+from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry, SourceAuthority
 from pgdr.domain.enums import EvidenceDirection, ObservationSource
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.hypothesis import DiagnosticHypothesis
@@ -60,55 +125,96 @@ _SKIPPED_ANSWER_TYPES: set[str] = set()
 # media answer becomes a real, retained Evidence record (see
 # automotive/evidence_mapper.py) rather than being silently dropped.
 
-# BLOCK B2-R1 -- ONE controlled TEST/POC automotive diagnostic relevance
-# rule, in the same authored-data-constant style as _HYPOTHESIS_MAP /
-# _DISCRIMINATING_RULES / _PROVISIONAL_KEYWORD_RULES. Keyed on a
-# structured (manufacturer, entry_id) selector -- never entry_id alone
-# (B2-R1 §6, and the prior investigation's own §E finding that entry_id
-# alone is not version-/manufacturer-safe), never documented_meaning
-# text (§17/§18). Each selector maps to a LIST of rule specs -- so ONE
-# manufacturer fact can structurally drive multiple hypotheses (§8) even
-# though this slice ships only one -- each spec is
-# (hypothesis_type, description, EvidenceDirection, weight, rule_id).
+# BLOCK B2-R1/B2-R2 -- controlled TEST/POC automotive diagnostic
+# relevance rules, in the same authored-data-constant style as
+# _HYPOTHESIS_MAP / _DISCRIMINATING_RULES / _PROVISIONAL_KEYWORD_RULES.
+# Keyed on a production-safe, structured (manufacturer, document_id,
+# entry_id) selector (B2-R2 §3) -- never entry_id alone (concretely
+# unsafe: see module docstring), never documented_meaning text
+# (§17/§18/§30). Each selector maps to a LIST of rule specs -- so ONE
+# manufacturer fact can structurally drive multiple hypotheses -- each
+# spec is (hypothesis_type, description, EvidenceDirection, weight,
+# rule_id). rule_id values here are validated non-empty and unique by
+# _validate_dashboard_diagnostic_rule_ids() below / R2-32/R2-33.
 #
-# TestMfr/engine-diag-flashing is the SAME test fixture already used
-# throughout test_block_b2v_visual_interpretation.py /
-# test_block_b2d_diagnostic_intake.py / test_block_b2c_reference_context.py
-# -- deliberately test/POC knowledge, never presented as real Peugeot
-# diagnostic content (§5).
-_DASHBOARD_DIAGNOSTIC_RULES: dict[tuple[str, str], list[tuple[str, str, "EvidenceDirection", float, str]]] = {
-    ("TestMfr", "engine-diag-flashing"): [
+# ("TestMfr", "TEST-DOC-A", "engine-diag-flashing") is the SAME test
+# fixture already used throughout test_block_b2v_visual_interpretation.py /
+# test_block_b2d_diagnostic_intake.py / test_block_b2c_reference_context.py /
+# test_block_b2r1_diagnostic_relevance.py -- deliberately test/POC
+# knowledge, never presented as real Peugeot diagnostic content (§6).
+# The second rule below exists solely to exercise the multi-rule
+# collision B2-R2 closes (§18) -- both rules share the exact same
+# selector AND hypothesis_type on purpose.
+_DASHBOARD_DIAGNOSTIC_RULES: dict[
+    tuple[str, str, str], list[tuple[str, str, "EvidenceDirection", float, str]]
+] = {
+    ("TestMfr", "TEST-DOC-A", "engine-diag-flashing"): [
         (
             "engine_running",
             "Le témoin de diagnostic moteur signalé par l'interprétation visuelle du tableau de "
             "bord est compatible avec un défaut du système de gestion moteur.",
             EvidenceDirection.SUPPORTS,
             0.3,
-            "automotive.dashboard.testmfr_engine_diag_flashing",
+            "automotive.dashboard.testmfr_engine_diag_flashing_r1_poc",
+        ),
+        (
+            "engine_running",
+            "Une seconde règle TEST/POC, convergeant délibérément vers la même hypothèse que la "
+            "première, afin d'exercer la coexistence de contributions diagnostiques distinctes "
+            "(B2-R2) -- ne représente aucune connaissance Peugeot réelle.",
+            EvidenceDirection.CONTRADICTS,
+            0.2,
+            "automotive.dashboard.testmfr_engine_diag_flashing_r2_poc",
         ),
     ],
 }
 
 
-def _dashboard_diagnostic_domain_ref(manufacturer: str, entry_id: str, hypothesis_type: str) -> str:
-    """B2-R1 §8: the hypothesis identity/dedup key for a dashboard-fact-
-    originated candidate hypothesis. Deliberately compound -- (source
-    manufacturer fact) + (specific hypothesis_type) -- NOT just the
-    manufacturer selector, precisely because ONE manufacturer fact may
-    legitimately drive SEVERAL distinct hypotheses (FACT F -> H1, FACT F
-    -> H2): if domain_ref only encoded the fact, generating H2 after H1
-    already exists would incorrectly look like a duplicate of H1 to the
-    existing generate_hypotheses()-style `domain_ref in already_seen`
-    check this method itself replicates (see
-    AutomotiveDiagnosticDomain.apply_dashboard_diagnostic_relevance).
-    Applying the SAME rule (same fact + same hypothesis_type) a second
-    time still produces the SAME domain_ref, which is exactly what makes
-    hypothesis reuse (idempotency, §13) work.
+def _validate_dashboard_diagnostic_rule_ids() -> None:
+    """B2-R2 §13: the smallest local validation proving
+    _DASHBOARD_DIAGNOSTIC_RULES contains no empty and no duplicate
+    rule_id across the whole table (not merely within one selector's
+    own list) -- no runtime infrastructure, just a deterministic check
+    called once at import time and directly exercised by R2-32/R2-33."""
+    seen: set[str] = set()
+    for rules in _DASHBOARD_DIAGNOSTIC_RULES.values():
+        for _hypothesis_type, _description, _direction, _weight, rule_id in rules:
+            if not rule_id:
+                raise ValueError("dashboard diagnostic rule_id must be non-empty")
+            if rule_id in seen:
+                raise ValueError(f"duplicate dashboard diagnostic rule_id: {rule_id!r}")
+            seen.add(rule_id)
+
+
+_validate_dashboard_diagnostic_rule_ids()
+
+
+def _dashboard_diagnostic_domain_ref(manufacturer: str, document_id: str, entry_id: str, hypothesis_type: str) -> str:
+    """B2-R2 §10: the production hypothesis identity/dedup key for a
+    dashboard-fact-originated candidate hypothesis -- extends B2-R1's
+    own compound shape with document_id, so a rule authored against one
+    document generation can never be mistaken, via domain_ref reuse,
+    for the "same" fact under a different (including a superseding)
+    document (B2-R2 §4's fail-closed version requirement).
+
+    Still deliberately compound with hypothesis_type (§11): ONE
+    manufacturer fact may drive SEVERAL distinct hypotheses (FACT F ->
+    H1, FACT F -> H2) without domain_ref collision -- and, per the
+    accepted B2-R2 investigation's own determination of what existing
+    PGDR hypothesis semantics already imply, TWO DIFFERENT manufacturer
+    facts sharing a hypothesis_type (F1 -> X, F2 -> X) remain TWO
+    separate hypotheses, never merged, because the fact origin
+    (manufacturer, document_id, entry_id) is fully part of this key --
+    exactly mirroring the primary-symptom path's own existing
+    domain_ref-per-origin convention (_HYPOTHESIS_MAP's "vibration" and
+    "noise" both independently producing "engine_running" hypotheses as
+    two separate DiagnosticHypothesis instances, never one shared
+    object), not a new choice invented here.
 
     Namespaced with 'b2r_dashboard:' so this can never collide with the
     primary-symptom path's own domain_ref values (bare SymptomFamily
     strings such as 'vibration', 'noise' -- never containing a colon)."""
-    return f"b2r_dashboard:{manufacturer}:{entry_id}:{hypothesis_type}"
+    return f"b2r_dashboard:{manufacturer}:{document_id}:{entry_id}:{hypothesis_type}"
 
 
 def _generic_hypothesis_entries(family: SymptomFamily) -> list[tuple[str, str, "Confidence", list[str]]]:
@@ -330,30 +436,40 @@ class AutomotiveDiagnosticDomain:
         set produced entirely from AMBIGUOUS_MATCH/NO_MATCH/
         INSUFFICIENT_VISUAL_QUALITY -- no special-casing is needed here
         to keep those three states from bootstrapping manufacturer-
-        identified hypotheses (B2-R1 §12); it falls out structurally
-        from what B2-C already does and does not populate.
+        identified hypotheses, per both B2-R1 and B2-R2's own §28; it
+        falls out structurally from what B2-C already does and does not
+        populate.
 
-        Consumes entry.applicability.manufacturer and entry.entry_id
-        only, for rule selection -- never documented_meaning (§17) and
-        never documented_instruction (§18); neither field is read
-        anywhere in this method's body. No KnowledgeRepositoryPort /
-        VehicleDashboardKnowledgePort is used -- the exact, already-
+        Consumes entry.applicability.manufacturer, entry.applicability.
+        document_id, and entry.entry_id for rule selection (B2-R2 §3) --
+        never documented_meaning (§17/§30 in either mandate) and never
+        documented_instruction (§18/§31); neither field is read anywhere
+        in this method's body. entry.applicability.source_authority is
+        read ONLY to gate eligibility (B2-R2 §7): a rule never fires for
+        anything but MANUFACTURER_OFFICIAL. lifecycle_status and
+        freshness_status are deliberately never read here (B2-R2 §8/§9)
+        -- see the module docstring for why. No KnowledgeRepositoryPort
+        / VehicleDashboardKnowledgePort is used -- the exact, already-
         transported entry object is the sole source of manufacturer
-        fact data (§3).
+        fact data (§3/§29).
 
-        Idempotent by construction (§13): reads state.hypotheses (for
-        domain_ref-based hypothesis reuse, mirroring
+        Idempotent by construction (B2-R2 §23): reads state.hypotheses
+        (for domain_ref-based hypothesis reuse, mirroring
         generate_hypotheses()'s own existing discipline) and
-        state.evidence (for an already_linked (target_hypothesis_id,
-        observation_ids) fingerprint check, mirroring map_evidence()'s
-        own existing `already_linked` set exactly) BEFORE deciding what
-        to return -- a second call with identical inputs returns two
-        empty lists, since everything it would otherwise produce is
-        already visible in `state`."""
+        state.evidence (for an already_linked (rule_id,
+        target_hypothesis_id, observation_ids) fingerprint check -- B2-R2
+        §14 widens this from B2-R1's own (target_hypothesis_id,
+        observation_ids) precisely so two DIFFERENT rules converging on
+        the SAME hypothesis from the SAME observation are correctly
+        told apart from a genuine re-execution of the SAME rule (B2-R2
+        §16/§17): only the latter collides and is suppressed) BEFORE
+        deciding what to return -- a second call with identical inputs
+        returns two empty lists, since everything it would otherwise
+        produce is already visible in `state`."""
         observations_by_id = {o.id: o for o in intake.observations}
         existing_by_domain_ref = {h.domain_ref: h for h in state.hypotheses if h.domain_ref}
         already_linked = {
-            (e.target_hypothesis_id, tuple(e.observation_ids)) for e in state.evidence
+            (e.source_rule_id, e.target_hypothesis_id, tuple(e.observation_ids)) for e in state.evidence
         }
 
         new_hypotheses: list[DiagnosticHypothesis] = []
@@ -364,14 +480,18 @@ class AutomotiveDiagnosticDomain:
             if observation is None:
                 continue  # defensive only -- B2-D always produces a matching Observation
 
-            selector = (entry.applicability.manufacturer, entry.entry_id)
+            if entry.applicability.source_authority != SourceAuthority.MANUFACTURER_OFFICIAL:
+                continue  # B2-R2 §7: fail closed on unverified/placeholder manufacturer content
+
+            selector = (entry.applicability.manufacturer, entry.applicability.document_id, entry.entry_id)
             rules = _DASHBOARD_DIAGNOSTIC_RULES.get(selector)
             if not rules:
-                continue  # §11/§12 of the investigation: UNRESOLVED, no guessing
+                continue  # UNRESOLVED, no guessing (unchanged from B2-R1)
 
             for hypothesis_type, description, direction, weight, rule_id in rules:
                 domain_ref = _dashboard_diagnostic_domain_ref(
-                    entry.applicability.manufacturer, entry.entry_id, hypothesis_type,
+                    entry.applicability.manufacturer, entry.applicability.document_id,
+                    entry.entry_id, hypothesis_type,
                 )
                 hypothesis = existing_by_domain_ref.get(domain_ref)
                 if hypothesis is None:
@@ -383,9 +503,9 @@ class AutomotiveDiagnosticDomain:
                     # immediately, not only on a future call.
                     existing_by_domain_ref[domain_ref] = hypothesis
 
-                link_key = (hypothesis.id, (observation.id,))
+                link_key = (rule_id, hypothesis.id, (observation.id,))
                 if link_key in already_linked:
-                    continue  # §13: this exact fact->hypothesis link already recorded
+                    continue  # B2-R2 §16/§23: this exact rule->hypothesis->observation link already recorded
                 new_evidence.append(Evidence(
                     observation_ids=[observation.id],
                     direction=direction,
