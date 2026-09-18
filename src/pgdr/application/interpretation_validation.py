@@ -15,11 +15,31 @@ Deliberately NOT wired into SessionController or the DiagnosticLoop in
 this pass, per the mandate's own §12/§B2V-18/19/20 instruction -- this is
 a standalone, directly testable capability, not yet connected to
 production reasoning.
+
+B2-V GOVERNANCE REPAIR (this pass) -- PGDR B2-V GOVERNANCE REPAIR MANDATE:
+Until this pass, `validate_against_reference_set` was correct but
+optional from the architecture's perspective -- a conforming
+DashboardInterpretationPort caller could invoke a provider and use its
+results without ever calling it. `run_governed_interpretation` below is
+the governed B2-V execution boundary: the one function through which a
+provider's UNTRUSTED output becomes a VALIDATED result, with no
+successful return path that skips validation.
+
+    PROVIDER OUTPUT != TRUSTED B2-V OUTPUT
+    PROVIDER OUTPUT + MANDATORY VALIDATION = TRUSTED B2-V OUTPUT
+
+A provider exception is never caught here -- it propagates unchanged, so
+a provider failure can never be transformed into a fabricated NO_MATCH or
+any other manufactured result (fail-closed, per B2V-24 and the repair
+mandate's G10).
 """
 from __future__ import annotations
 
 from pgdr.domain.dashboard_knowledge import DashboardReferenceSet
-from pgdr.ports.dashboard_interpretation import DashboardInterpretationResult, MatchStatus
+from pgdr.ports.dashboard_interpretation import (
+    DashboardInterpretationPort, DashboardInterpretationResult, MatchStatus,
+)
+from pgdr.ports.media_resolver import ResolvedMedia
 
 
 class InterpretationValidationError(Exception):
@@ -86,3 +106,27 @@ def validate_against_reference_set(
                 )
 
     return results
+
+
+def run_governed_interpretation(
+    provider: DashboardInterpretationPort,
+    media: ResolvedMedia,
+    reference_set: DashboardReferenceSet,
+) -> list[DashboardInterpretationResult]:
+    """The governed B2-V execution boundary (B2-V governance repair).
+
+        ResolvedMedia + DashboardReferenceSet
+            -> provider.interpret(...)          [UNTRUSTED results]
+            -> validate_against_reference_set()  [MANDATORY]
+            -> VALIDATED results
+
+    There is exactly one return statement, and it produces the
+    validator's own result -- no branch exists that returns the
+    provider's output without passing it through
+    validate_against_reference_set first, and
+    a provider exception is never caught or swallowed here: it propagates
+    to the caller unchanged, fail-closed. Does not connect
+    SessionController or the DiagnosticLoop, create Observation/Evidence/
+    Hypothesis, or integrate a real visual provider -- this function only
+    makes the already-existing validation step mandatory."""
+    return validate_against_reference_set(provider.interpret(media, reference_set), reference_set)

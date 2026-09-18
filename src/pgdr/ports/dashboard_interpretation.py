@@ -43,6 +43,19 @@ B2-V EXTENSION (this pass) -- what changed and why, per the mandate's own
     compatibility with existing B1-era code that reads them -- neither is
     populated with free-form provider output; `identification`, when set,
     must equal the matched entry's own manufacturer_designation.
+
+B2-V GOVERNANCE REPAIR (this pass) -- PGDR B2-V GOVERNANCE REPAIR MANDATE:
+  - DashboardInterpretationResult now enforces, at construction time via
+    a `@model_validator(mode="after")`, the shape invariants that follow
+    from match_status alone and require no access to a
+    DashboardReferenceSet (MATCH requires matched_reference_entry_id and
+    forbids candidates; AMBIGUOUS_MATCH forbids matched_reference_entry_id
+    and requires candidates; NO_MATCH/INSUFFICIENT_VISUAL_QUALITY forbid
+    both). These combinations are now impossible to construct, not just
+    checked after the fact. Reference-set membership itself still cannot
+    be enforced here (this model has no access to the reference_set) and
+    remains the governed execution boundary's responsibility -- see
+    pgdr.application.interpretation_validation.run_governed_interpretation.
 """
 from __future__ import annotations
 
@@ -51,7 +64,7 @@ from enum import Enum
 from typing import Optional, Protocol, runtime_checkable
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pgdr.domain.dashboard_knowledge import DashboardReferenceSet
 from pgdr.enums import Confidence
@@ -122,6 +135,50 @@ class DashboardInterpretationResult(BaseModel):
     """B1-era compatibility field, now optional -- superseded by the
     separate observation_confidence/match_confidence pair (§6)."""
     provenance: InterpretationProvenance
+
+    @model_validator(mode="after")
+    def _enforce_match_status_shape_invariants(self) -> "DashboardInterpretationResult":
+        """B2-V governance repair: enforces, at construction time, the
+        shape invariants that follow from match_status alone -- none of
+        these checks require the DashboardReferenceSet, so they belong
+        here rather than at the governed execution boundary. Reference-
+        set membership (is matched_reference_entry_id/
+        candidate_reference_entry_ids an entry_id actually present in a
+        given DashboardReferenceSet) is a separate concern that this
+        model cannot check (it has no access to the reference_set) and
+        is deliberately NOT duplicated here -- it remains the governed
+        execution boundary's sole responsibility."""
+        if self.match_status == MatchStatus.MATCH:
+            if self.matched_reference_entry_id is None:
+                raise ValueError(
+                    "match_status is MATCH but matched_reference_entry_id is None -- "
+                    "a positive match must reference a real entry"
+                )
+            if self.candidate_reference_entry_ids:
+                raise ValueError(
+                    "match_status is MATCH but candidate_reference_entry_ids is non-empty -- "
+                    "a resolved match must not also carry unresolved candidates"
+                )
+        elif self.match_status == MatchStatus.AMBIGUOUS_MATCH:
+            if self.matched_reference_entry_id is not None:
+                raise ValueError(
+                    "match_status is AMBIGUOUS_MATCH but matched_reference_entry_id is set -- "
+                    "ambiguity must never be silently resolved (B2V-12)"
+                )
+            if not self.candidate_reference_entry_ids:
+                raise ValueError(
+                    "match_status is AMBIGUOUS_MATCH but candidate_reference_entry_ids is empty -- "
+                    "ambiguity requires at least one candidate"
+                )
+        else:
+            # NO_MATCH / INSUFFICIENT_VISUAL_QUALITY: neither a resolved
+            # match nor unresolved candidates may be present (B2V-11).
+            if self.matched_reference_entry_id is not None or self.candidate_reference_entry_ids:
+                raise ValueError(
+                    f"match_status is {self.match_status.value} but a matched/candidate entry "
+                    "is set -- must never carry a fabricated identification (B2V-11)"
+                )
+        return self
 
 
 @runtime_checkable

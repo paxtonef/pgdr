@@ -4,6 +4,13 @@ Covers T01-T13 of the B2-V EXECUTION MANDATE v0 (§14). T14, the full
 existing PGDR regression, is not a unit test in this file -- it is the
 full `pytest` run itself, confirmed green in the accompanying report.
 
+Also covers G01-G10 of the subsequent PGDR B2-V GOVERNANCE REPAIR
+MANDATE: proving the governed execution boundary
+(`run_governed_interpretation`) always validates, fails closed on
+unknown reference-set membership, and never returns a provider's
+unvalidated output -- plus the intrinsic match_status shape invariants
+now enforced by `DashboardInterpretationResult` itself at construction.
+
 Uses a test-only, deterministic scripted fake provider
 (_ScriptedVisualProvider), per the mandate's own explicit §10 allowance:
 "Un fake/stub déterministe est autorisé uniquement pour tester les
@@ -19,9 +26,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 import pytest
+from pydantic import ValidationError
 
+from pgdr.application import interpretation_validation as interpretation_validation_module
 from pgdr.application.interpretation_validation import (
-    InterpretationValidationError, validate_against_reference_set,
+    InterpretationValidationError, run_governed_interpretation, validate_against_reference_set,
 )
 from pgdr.domain.dashboard_knowledge import (
     ApplicabilityStatus, DashboardReferenceEntry, DashboardReferenceSet, IndicatorState,
@@ -362,3 +371,226 @@ class TestB2VSessionControllerRemainsDisconnected:
         )
         controller.start(request)
         assert provider.calls == []
+
+
+# ---------------------------------------------------------------------------
+# PGDR B2-V GOVERNANCE REPAIR MANDATE -- G01-G10.
+#
+# Covers the governed execution boundary (`run_governed_interpretation`)
+# and the intrinsic match_status shape invariants now enforced by
+# `DashboardInterpretationResult` itself at construction. Reuses the same
+# _REFERENCE_SET / _RESOLVED_MEDIA / _ScriptedVisualProvider / _provenance
+# fixtures as T01-T13 above -- no new fixtures, no redesign of B2-V.
+# ---------------------------------------------------------------------------
+
+
+class TestG01GovernedExecutionAlwaysInvokesValidation:
+    def test_validation_is_invoked_on_every_governed_call(self, monkeypatch):
+        """Spies on validate_against_reference_set (monkeypatched at
+        module level, where run_governed_interpretation's own bare-name
+        call resolves it) to prove the governed boundary always calls
+        it -- including on an otherwise-uneventful NO_MATCH result, not
+        only on failing cases (those are G02/G03)."""
+        calls = []
+        original = interpretation_validation_module.validate_against_reference_set
+
+        def spy(results, reference_set):
+            calls.append((results, reference_set))
+            return original(results, reference_set)
+
+        monkeypatch.setattr(interpretation_validation_module, "validate_against_reference_set", spy)
+
+        provider = _ScriptedVisualProvider(planned_results=[
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.NO_MATCH, provenance=_provenance(),
+            ),
+        ])
+        interpretation_validation_module.run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+        assert len(calls) == 1
+
+
+class TestG02UnknownMatchedEntryFailsClosed:
+    def test_unknown_matched_reference_entry_id_raises(self):
+        provider = _ScriptedVisualProvider(planned_results=[
+            DashboardInterpretationResult(
+                observation="Some symbol", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.MATCH,
+                matched_reference_entry_id="entry-id-not-in-the-supplied-set",
+                match_confidence=Confidence.HIGH, provenance=_provenance(),
+            ),
+        ])
+        with pytest.raises(InterpretationValidationError, match="not present in the supplied"):
+            run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+
+
+class TestG03UnknownAmbiguousCandidateFailsClosed:
+    def test_unknown_ambiguous_candidate_raises(self):
+        provider = _ScriptedVisualProvider(planned_results=[
+            DashboardInterpretationResult(
+                observation="Some symbol", observation_confidence=Confidence.MEDIUM,
+                match_status=MatchStatus.AMBIGUOUS_MATCH,
+                candidate_reference_entry_ids=["engine-diag-flashing", "not-a-real-entry-id"],
+                provenance=_provenance(),
+            ),
+        ])
+        with pytest.raises(InterpretationValidationError, match="not present in the supplied"):
+            run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+
+
+class TestG04NoGovernedSuccessPathSkipsValidation:
+    def test_returned_object_is_the_validators_own_return_value(self, monkeypatch):
+        """Proves there is no branch that returns the provider's output
+        without passing it through validate_against_reference_set: the
+        governed boundary's return value is identical (by identity) to
+        whatever the validator returned, not a separately-assembled
+        list built from the untrusted provider output."""
+        marker = object()
+
+        def fake_validate(results, reference_set):
+            return marker
+
+        monkeypatch.setattr(interpretation_validation_module, "validate_against_reference_set", fake_validate)
+
+        provider = _ScriptedVisualProvider(planned_results=[])
+        result = interpretation_validation_module.run_governed_interpretation(
+            provider, _RESOLVED_MEDIA, _REFERENCE_SET,
+        )
+        assert result is marker
+
+    def test_source_has_exactly_one_return_and_it_is_the_validated_call(self):
+        """Static confirmation alongside the behavioural check above:
+        the function body contains a single return statement, and it is
+        the call to validate_against_reference_set."""
+        import inspect
+
+        source = inspect.getsource(run_governed_interpretation)
+        return_lines = [line.strip() for line in source.split("\n") if line.strip().startswith("return ")]
+        assert len(return_lines) == 1, f"expected exactly one return statement, found: {return_lines}"
+        assert "validate_against_reference_set(" in return_lines[0]
+
+
+class TestG05MatchWithoutEntryIdRejectedAtConstruction:
+    def test_match_without_matched_reference_entry_id_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="matched_reference_entry_id is None"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.MATCH, provenance=_provenance(),
+            )
+
+    def test_match_with_nonempty_candidates_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="candidate_reference_entry_ids is non-empty"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.MATCH,
+                matched_reference_entry_id="engine-diag-flashing",
+                candidate_reference_entry_ids=["service-warning-lamp-fixed"],
+                provenance=_provenance(),
+            )
+
+
+class TestG06AmbiguousWithMatchedIdRejectedAtConstruction:
+    def test_ambiguous_match_with_matched_reference_entry_id_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="ambiguity must never be silently resolved"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.MEDIUM,
+                match_status=MatchStatus.AMBIGUOUS_MATCH,
+                matched_reference_entry_id="engine-diag-flashing",
+                candidate_reference_entry_ids=["engine-diag-flashing", "oil-pressure-warning"],
+                provenance=_provenance(),
+            )
+
+    def test_ambiguous_match_with_no_candidates_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="candidate_reference_entry_ids is empty"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.MEDIUM,
+                match_status=MatchStatus.AMBIGUOUS_MATCH, provenance=_provenance(),
+            )
+
+
+class TestG07NoMatchCarryingReferenceIdsRejectedAtConstruction:
+    def test_no_match_with_matched_reference_entry_id_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="fabricated identification"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.NO_MATCH,
+                matched_reference_entry_id="engine-diag-flashing",
+                provenance=_provenance(),
+            )
+
+    def test_no_match_with_candidate_reference_entry_ids_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="fabricated identification"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.HIGH,
+                match_status=MatchStatus.NO_MATCH,
+                candidate_reference_entry_ids=["engine-diag-flashing"],
+                provenance=_provenance(),
+            )
+
+
+class TestG08InsufficientQualityCarryingReferenceIdsRejectedAtConstruction:
+    def test_insufficient_visual_quality_with_matched_reference_entry_id_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="fabricated identification"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.SPECULATIVE,
+                match_status=MatchStatus.INSUFFICIENT_VISUAL_QUALITY,
+                matched_reference_entry_id="engine-diag-flashing",
+                provenance=_provenance(),
+            )
+
+    def test_insufficient_visual_quality_with_candidate_reference_entry_ids_raises_at_construction(self):
+        with pytest.raises(ValidationError, match="fabricated identification"):
+            DashboardInterpretationResult(
+                observation="x", observation_confidence=Confidence.SPECULATIVE,
+                match_status=MatchStatus.INSUFFICIENT_VISUAL_QUALITY,
+                candidate_reference_entry_ids=["engine-diag-flashing"],
+                provenance=_provenance(),
+            )
+
+
+class TestG09ValidResultSurvivesGovernanceUnchanged:
+    def test_valid_match_result_passes_through_the_governed_boundary_unchanged(self):
+        planned = DashboardInterpretationResult(
+            observation="Amber engine-shaped warning symbol, flashing",
+            observation_confidence=Confidence.HIGH,
+            match_status=MatchStatus.MATCH,
+            matched_reference_entry_id="engine-diag-flashing",
+            match_confidence=Confidence.HIGH,
+            identification="Engine self-diagnostic system",
+            provenance=_provenance(),
+        )
+        provider = _ScriptedVisualProvider(planned_results=[planned])
+        results = run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+        assert len(results) == 1
+        assert results[0] is planned
+        assert results[0].match_status == MatchStatus.MATCH
+        assert results[0].matched_reference_entry_id == "engine-diag-flashing"
+
+    def test_multiple_valid_results_all_survive_in_order(self):
+        first = DashboardInterpretationResult(
+            observation="Red oil-can-shaped symbol", observation_confidence=Confidence.HIGH,
+            match_status=MatchStatus.MATCH, matched_reference_entry_id="oil-pressure-warning",
+            match_confidence=Confidence.HIGH, provenance=_provenance(),
+        )
+        second = DashboardInterpretationResult(
+            observation="Service wrench symbol, fixed", observation_confidence=Confidence.MEDIUM,
+            match_status=MatchStatus.MATCH, matched_reference_entry_id="service-warning-lamp-fixed",
+            match_confidence=Confidence.MEDIUM, provenance=_provenance(),
+        )
+        provider = _ScriptedVisualProvider(planned_results=[first, second])
+        results = run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+        assert results == [first, second]
+
+
+class TestG10ProviderExceptionPropagatesUnchanged:
+    def test_provider_exception_is_not_caught_or_transformed(self):
+        """The governed boundary must not turn a provider failure into a
+        fabricated NO_MATCH (or any other manufactured result) -- the
+        real exception must reach the caller unchanged."""
+        provider = _ScriptedVisualProvider(raise_on_call=RuntimeError("simulated provider outage"))
+        with pytest.raises(RuntimeError, match="simulated provider outage"):
+            run_governed_interpretation(provider, _RESOLVED_MEDIA, _REFERENCE_SET)
+        # The provider was genuinely invoked (proving the boundary did not
+        # short-circuit before calling it) and its exception is the one
+        # that propagated -- never swallowed into a fabricated result.
+        assert len(provider.calls) == 1
