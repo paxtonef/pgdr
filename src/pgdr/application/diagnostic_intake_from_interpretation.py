@@ -52,13 +52,34 @@ to MATCH" and "NO_MATCH/INSUFFICIENT_VISUAL_QUALITY must not create
 manufacturer-identified Evidence": since none of these three states name
 a resolved manufacturer reference, there is nothing evidentiary yet to
 record as Evidence, only an observed event.
+
+BLOCK B2-C EXTENSION (this pass) -- EXACT MANUFACTURER REFERENCE CONTEXT
+TRANSPORT: DiagnosticIntakeResult gains `matched_reference_entries`, a
+dict[observation_id, DashboardReferenceEntry] carrying, for every MATCH
+result only, the EXACT (same-instance, frozen) DashboardReferenceEntry
+that was looked up from the SAME in-memory reference_set already passed
+to B2-V/B2-D -- never a re-query, never a reconstruction from selected
+fields, never a copy. This makes documented_meaning, documented_
+instruction, and the full ManufacturerDocumentReference (via
+entry.applicability: document_id, source_authority, lifecycle_status,
+freshness_status) available to whatever future, separately-authorized
+capability performs diagnostic relevance determination -- without B2-D
+itself reading, interpreting, or asserting any of that content (transport
+is not semantic ownership, per this block's own §10). AMBIGUOUS_MATCH/
+NO_MATCH/INSUFFICIENT_VISUAL_QUALITY observations simply have no entry
+in this dict -- consistent with, and not a new form of, their existing
+"no matched entry" semantics. The SAME entry object already looked up
+for MATCH Evidence's rationale text is reused here (see
+_matched_entry_for_result), never looked up a second, independent time
+-- so the transported object and the object the rationale text describes
+are provably identical, not merely equal.
 """
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from pgdr.application.interpretation_validation import run_governed_interpretation
-from pgdr.domain.dashboard_knowledge import DashboardReferenceSet
+from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry, DashboardReferenceSet
 from pgdr.domain.enums import EvidenceDirection, ObservationSource
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.observation import Observation
@@ -84,11 +105,20 @@ class DiagnosticIntakeResult(BaseModel):
     pgdr.application.case_state_updater.CaseStateUpdater.add_observations
     / .add_evidence, should a future, separate acceptance decision wire
     B2-D into SessionController/DiagnosticLoop (not done in this block,
-    per §12)."""
+    per §12).
+
+    matched_reference_entries (Block B2-C): dict[Observation.id,
+    DashboardReferenceEntry] -- the exact, canonical, frozen B2-K entry
+    for every MATCH observation, keyed by that observation's own id (not
+    a new wrapper type -- a plain dict over an existing domain type, per
+    B2-C's own §5/§7 prohibition on inventing a carrier). Absent key =
+    no matched entry, which already means the same thing it always has
+    for AMBIGUOUS_MATCH/NO_MATCH/INSUFFICIENT_VISUAL_QUALITY."""
     model_config = ConfigDict(frozen=True)
 
     observations: list[Observation] = Field(default_factory=list)
     evidence: list[Evidence] = Field(default_factory=list)
+    matched_reference_entries: dict[str, DashboardReferenceEntry] = Field(default_factory=dict)
 
 
 def _observation_context(
@@ -126,18 +156,33 @@ def _observation_from_result(
     )
 
 
+def _matched_entry_for_result(
+    result: DashboardInterpretationResult, reference_set: DashboardReferenceSet,
+) -> DashboardReferenceEntry:
+    """Block B2-C: the single lookup point for a MATCH result's exact
+    DashboardReferenceEntry -- against the SAME in-memory reference_set
+    already supplied to B2-V/B2-D (never a repository re-query; B2-C's
+    own §6/§15/§16 forbid both). Called exactly once per MATCH result;
+    its return value is reused for both the Evidence rationale (below)
+    and DiagnosticIntakeResult.matched_reference_entries, so both refer
+    to the identical object instance, never two independently-fetched
+    copies."""
+    return next(entry for entry in reference_set.entries if entry.entry_id == result.matched_reference_entry_id)
+
+
 def _evidence_from_match(
-    result: DashboardInterpretationResult, observation: Observation, reference_set: DashboardReferenceSet,
+    result: DashboardInterpretationResult, observation: Observation, matched_entry: DashboardReferenceEntry,
 ) -> Evidence:
     """Only called for match_status == MATCH (see the module docstring
     for why AMBIGUOUS_MATCH/NO_MATCH/INSUFFICIENT_VISUAL_QUALITY produce
     no Evidence). Preserves the matched entry's identity and document
-    provenance -- never its documented_meaning/documented_instruction
-    (that lookup belongs to whoever performs actual diagnostic reasoning
-    downstream, not to B2-D)."""
-    matched_entry = next(
-        entry for entry in reference_set.entries if entry.entry_id == result.matched_reference_entry_id
-    )
+    provenance in the rationale text -- never its documented_meaning/
+    documented_instruction (that lookup belongs to whoever performs
+    actual diagnostic reasoning downstream, not to B2-D). The full
+    canonical object itself -- meaning included -- is separately
+    transported via DiagnosticIntakeResult.matched_reference_entries
+    (Block B2-C); this rationale text is a human-readable summary, not
+    the structured transport mechanism."""
     document = matched_entry.applicability
     rationale = (
         f"Interprétation visuelle du tableau de bord (média {result.provenance.media_reference}), "
@@ -167,14 +212,20 @@ def _diagnostic_intake_from_validated_results(
     a provider and therefore the sole path capable of invoking one."""
     observations: list[Observation] = []
     evidence: list[Evidence] = []
+    matched_reference_entries: dict[str, DashboardReferenceEntry] = {}
     for result in validated_results:
         observation = _observation_from_result(result, reference_set)
         observations.append(observation)
         if result.match_status == MatchStatus.MATCH:
-            evidence.append(_evidence_from_match(result, observation, reference_set))
+            matched_entry = _matched_entry_for_result(result, reference_set)
+            evidence.append(_evidence_from_match(result, observation, matched_entry))
+            matched_reference_entries[observation.id] = matched_entry
         # AMBIGUOUS_MATCH / NO_MATCH / INSUFFICIENT_VISUAL_QUALITY:
-        # Observation only -- see module docstring.
-    return DiagnosticIntakeResult(observations=observations, evidence=evidence)
+        # Observation only -- see module docstring. No entry in
+        # matched_reference_entries either (B2-C §8/C13/C14).
+    return DiagnosticIntakeResult(
+        observations=observations, evidence=evidence, matched_reference_entries=matched_reference_entries,
+    )
 
 
 def build_diagnostic_intake(
