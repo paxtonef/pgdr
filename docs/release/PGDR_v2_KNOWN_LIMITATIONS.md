@@ -80,3 +80,38 @@ PGDR materializes a bounded GGM runtime via `RuntimeMaterializer`
 `PGDR_v2_DEFERRED_CAPABILITIES.md` for the P8B history. This still runs
 fully offline (no network calls), and still requires the `ggm` package
 to be installed alongside PGDR - see `PGDR_v2_DEPENDENCY_FREEZE.md`.
+
+## Manufacturer-backed diagnostic hypotheses are tracked but not yet scored by existing questions
+
+The B2 series (B2-K through B2-R10, see `PGDR_v2_RELEASE_MANIFEST.md`'s
+own entry) proved a full, governed mechanism for turning a validated
+dashboard-photo interpretation of a manufacturer-official indicator into
+a non-causal `DiagnosticHypothesis` — bootstrapped, auditable, tracked —
+but deliberately non-scoring. Existing Q&A rules (`Q-COND-001`,
+`Q-EVT-002`) do not automatically apply to these hypotheses merely
+because they share a `hypothesis_type` with the legacy symptom-derived
+population (B2-R6's own finding, closed by B2-R10's bounded
+generic-inheritance gate) — and no manufacturer-specific applicability
+has been separately authored or authorized. Concretely: answering
+`Q-COND-001` today never changes a Peugeot manufacturer-backed
+hypothesis's confidence, regardless of the answer given. This is the
+correct, honest behavior of an unestablished relationship (`applicability
+not established`, never `NOT_APPLICABLE`) — not a defect, and not
+something this release invents a numeric answer for. See
+`docs/architecture/b2_dashboard_manufacturer_relevance_freeze.md` for
+the full investigation trail (B2-R4 through B2-R10) that established
+this boundary deliberately, in the same spirit as P6's own "100% known
+status, not 100% mapped coverage" target for the legacy symptom path.
+
+## No real visual dashboard-interpretation provider is integrated
+
+Every dashboard-photo interpretation exercised anywhere in this
+codebase (tests, and the E2E validation referenced above) uses a
+deterministic test stub (`_ScriptedVisualProvider` or equivalent) behind
+the `DashboardInterpretationPort` Protocol — never a real vision
+model/API. A user cannot submit an actual dashboard photo through
+`pgdr run` today; the entire B2 series' own governed pipeline
+(`run_governed_interpretation()` → `build_diagnostic_intake()` →
+`apply_dashboard_diagnostic_relevance()`) is real, tested, and provider-
+agnostic, but has nothing production-grade to call. See
+`PGDR_v2_DEFERRED_CAPABILITIES.md`.

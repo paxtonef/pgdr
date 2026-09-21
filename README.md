@@ -35,10 +35,21 @@ python3 run_pgdr.py --version
 GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" .venv/bin/pytest tests/ -v    # full suite incl. wheel/packaging
 ```
 
-157/157 tests passing as of this release — see
+471/471 tests passing (`GGM_WHEEL_PATH` set — full suite incl. wheel/
+packaging; 460 passed / 11 skipped without it) — see
 `docs/release/PGDR_v2_RELEASE_MANIFEST.md` for the breakdown by
 capability and `docs/release/PGDR_v2_KNOWN_LIMITATIONS.md` for what this
 number does and doesn't mean.
+
+Since the original v2 freeze, an additive, self-contained capability was
+built and proved end-to-end: turning a validated dashboard-photo
+interpretation of a manufacturer-official indicator into a governed,
+non-causal diagnostic hypothesis (see the "Dashboard / Manufacturer-Fact
+Diagnostic Relevance" entry in the release manifest, and
+`docs/architecture/b2_dashboard_manufacturer_relevance_freeze.md` for
+the full investigation trail). It is not yet wired into `pgdr run` and
+has no real visual provider behind it — both deliberate v1 boundaries,
+not omissions; see `PGDR_v2_DEFERRED_CAPABILITIES.md`.
 
 ## Architecture
 
