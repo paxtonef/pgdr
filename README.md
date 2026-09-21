@@ -1,12 +1,13 @@
 # Pre-Garage Diagnostic Runner (PGDR) v2.0.0
 
-A CLI that helps a driver structure a vehicle problem before contacting a
-garage: it runs a deterministic safety triage first, then reasons
-adaptively through `DiagnosticLoop` (question -> answer -> observation ->
-evidence -> hypothesis update), then governs every candidate diagnostic
-statement through GGM before producing a Garage Preparation Report (for
-the mechanic) and a simplified User Summary — never a definitive
-diagnosis, and never an ungoverned one.
+PGDR helps drivers structure vehicle problems before contacting a garage.
+Available as both a CLI and a web application (French UI), it runs
+deterministic safety triage first, then reasons adaptively through
+`DiagnosticLoop` (question → answer → observation → evidence → hypothesis
+update), then governs every candidate diagnostic statement through GGM
+before producing a Garage Preparation Report (for the mechanic) and a
+simplified User Summary — never a definitive diagnosis, and never an
+ungoverned one.
 
 See `LOG_DEPLOY.md` for the full deployment log and
 `docs/release/PGDR_v2_RELEASE_MANIFEST.md` for what actually exists in
@@ -15,7 +16,7 @@ directory holds each phase's (P0-P8) own findings and freeze documents;
 `docs/release/` holds the v2 release-freeze documents that supersede
 nothing but consolidate everything.
 
-## Quick start
+## Quick start (CLI)
 
 ```bash
 python3 -m venv .venv
@@ -28,18 +29,53 @@ python3 run_pgdr.py readiness
 python3 run_pgdr.py --version
 ```
 
+## Web Application (French UI)
+
+Run the web server locally:
+
+```bash
+# Install dependencies (if not already done)
+pip install vendor/ggm-1.2.0-py3-none-any.whl
+pip install fastapi uvicorn[standard]
+
+# Start the web server
+uvicorn pgdr.web_app:app --host 127.0.0.1 --port 8000
+
+# Access in browser
+open http://127.0.0.1:8000
+```
+
+Production deployment notes:
+- **GGM required**: Production readiness (`/health`) requires GGM wheel available
+- **Session topology**: In-memory sessions require single-process deployment
+  (single uvicorn worker, no horizontal scaling, no scale-to-zero)
+- **Language**: French UI only
+- **Known limitations**: Diagnostic sessions are ephemeral (lost on restart)
+
 ## Run tests
 
 ```bash
-.venv/bin/pytest tests/ -v -m "not packaging"                                          # fast, source tree only
-GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" .venv/bin/pytest tests/ -v    # full suite incl. wheel/packaging
+# Fast: core + web deployment tests (476 tests)
+pytest tests/ -v
+
+# With GGM wheel packaging tests (487 tests total)
+GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" pytest tests/ -v
+
+# Browser E2E tests (requires Playwright)
+pip install pytest-playwright
+playwright install chromium
+pytest tests/test_browser_e2e.py -v
 ```
 
-471/471 tests passing (`GGM_WHEEL_PATH` set — full suite incl. wheel/
-packaging; 460 passed / 11 skipped without it) — see
-`docs/release/PGDR_v2_RELEASE_MANIFEST.md` for the breakdown by
-capability and `docs/release/PGDR_v2_KNOWN_LIMITATIONS.md` for what this
-number does and doesn't mean.
+Test suite:
+- **476 passed, 11 skipped** (core + web, without GGM wheel packaging tests)
+- **487 passed, 0 skipped** (full suite with `GGM_WHEEL_PATH` set)
+- Original 460 core tests + 16 web deployment tests (WEB-1 through WEB-15) + 11 packaging tests
+- Web tests verify: readiness, session lifecycle, Evidence/scoring consistency,
+  French UI rendering, session isolation, safety triage preservation,
+  structural governance-path verification
+
+See `docs/release/PGDR_v2_RELEASE_MANIFEST.md` for capability breakdown.
 
 Since the original v2 freeze, an additive, self-contained capability was
 built and proved end-to-end: turning a validated dashboard-photo
@@ -54,26 +90,30 @@ not omissions; see `PGDR_v2_DEFERRED_CAPABILITIES.md`.
 ## Architecture
 
 ```
-USER (CLI) -> SessionController -> SafetyEngine (deterministic, never overridden)
-                                          |
-                      escalated <---------+---------> continue
-                                                            |
-                                                  DiagnosticCaseState
-                                                            |
-                                                     DiagnosticLoop
-                                          (DiagnosticDomain, EvidenceMapper,
-                                           HypothesisScorer, QuestionSelector)
-                                                            |
-                                              === GGM governance boundary ===
-                                                            |
-                                              GGMConsumer.evaluate() (real,
-                                              pinned GGM package — commit
-                                              4fda597)
-                                                            |
-                                                     Governed report
-                                                    /                \
-                                        GaragePreparationReport   UserSummary
+USER (CLI or Web Browser) → SessionController → SafetyEngine (deterministic, never overridden)
+                                                         |
+                                     escalated <---------+---------> continue
+                                                                           |
+                                                                 DiagnosticCaseState
+                                                                           |
+                                                                    DiagnosticLoop
+                                                         (DiagnosticDomain, EvidenceMapper,
+                                                          HypothesisScorer, QuestionSelector)
+                                                                           |
+                                                             === GGM governance boundary ===
+                                                                           |
+                                                             GGMConsumer.evaluate() (real,
+                                                             pinned GGM package — commit
+                                                             ac99750)
+                                                                           |
+                                                                    Governed report
+                                                                   /                \
+                                                       GaragePreparationReport   UserSummary
 ```
+
+Web layer: `FastAPI (src/pgdr/web_app.py)` → `SessionController` (existing core, unchanged).
+No diagnostic semantics modified. Web adapter preserves existing lifecycle,
+governance boundary, and French module coverage.
 
 Three distinct authorities, kept structurally separate: **Safety**
 (`SafetyEngine`, unchanged since P0), **Analytical**
