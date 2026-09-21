@@ -99,6 +99,75 @@ entry_id) selector AND the same hypothesis_type, so they converge on
 the SAME DiagnosticHypothesis instance from the SAME Observation --
 the one case B2-R1's own fingerprint could not have told apart from a
 real duplicate.
+
+BLOCK B2-R5 EXTENSION (this pass) -- Peugeot Non-Causal Manufacturer-
+Fact Bootstrap: the first REAL (non-TestMfr) diagnostic relevance
+rules, for the three real Peugeot entries B2-R3 investigated
+(oil-pressure-warning, engine-diag-fixed, engine-diag-flashing). Zero
+method-body changes were required -- apply_dashboard_diagnostic_
+relevance() already handles any direction/selector combination
+generically; this pass is DATA ONLY, three new entries in
+_DASHBOARD_DIAGNOSTIC_RULES, confirming the architecture proven by
+B2-R1/B2-R2 needed no widening to accommodate real manufacturer content.
+
+Per the accepted B2-R4 investigation and its constitutional
+interpretation:
+  - PGDR has no explicit model concept for a "directly established
+    proposition" (as distinct from a hypothesis supported by indirect
+    evidence) -- B2-R5 does NOT create one. It uses
+    EvidenceDirection.NEUTRAL as a deliberately BOUNDED, non-scoring
+    BOOTSTRAP CONVENTION for these three rules only -- never as a
+    claim that the manufacturer fact is epistemically neutral toward
+    the hypothesis. NEUTRAL here means "tracked and auditable, but
+    intentionally non-scoring" -- not "no relationship exists." This
+    distinction remains genuinely unresolved at the general PGDR
+    semantic level; B2-R5 provides an operational bridge for exactly
+    three rules, not a general answer.
+  - Evidence.weight is 0.0 for these three rules -- reusing
+    automotive/evidence_mapper.py's own existing "considered, no
+    numeric claim" NEUTRAL convention (its Q-EVI-002/generic fallback
+    rules), deliberately NOT B2-D's own "not yet evaluated" NEUTRAL
+    convention (weight=None): these three facts HAVE been evaluated (a
+    rule fired, on purpose), they are simply not assigned any
+    calibrated numeric strength, because B2-R4 confirmed no
+    calibration authority or methodology exists anywhere in PGDR for
+    ANY Evidence weight, production or POC. No number was invented.
+    IMPORTANT: 0.0 here is the TECHNICAL REPRESENTATION of the bounded
+    B2-R5 non-scoring bootstrap convention (§7 of this pass's own
+    mandate) -- it is not, and must never be read as, a calibrated
+    evidence-strength value of "zero strength." The scorer's own
+    additive formula would treat 0.0 identically whether it meant
+    "deliberately no numeric claim" (this case) or "calibrated as
+    negligible" (a claim this project has no authority to make) --
+    NEUTRAL direction is what actually keeps this Evidence out of
+    scoring (confirmed by B2-R4: direction-based exclusion, not
+    weight-based); 0.0 is chosen only because SOME float is required by
+    the existing tuple shape, and 0.0 is the least misleading existing
+    convention available, not because 0.0 itself carries meaning.
+  - hypothesis_type remains "engine_running" for all three -- an
+    ACKNOWLEDGED approximation (B2-R4's own PARTIAL finding), not a
+    precise semantic match for "engine lubrication system"/"emissions
+    control system"/"engine management system." The precision B2-R4
+    confirmed hypothesis_type cannot carry is preserved instead in
+    each hypothesis's own `description`, which B2-R4 confirmed has
+    zero downstream machine consumers beyond display -- so nothing is
+    lost where it would matter, and nothing is claimed where it would
+    be false.
+  - domain_ref remains the B2-R2 compound identity mechanism
+    (manufacturer:document_id:entry_id:hypothesis_type) -- unchanged,
+    unwidened; it already fully and safely identifies each of these
+    three real Peugeot facts.
+  - The catalytic-converter risk/consequence sentence documented for
+    engine-diag-flashing is deliberately EXCLUDED from this rule's
+    description -- it is a documented CONSEQUENCE, not the fault
+    itself, and folding it in would silently import a severity-
+    adjacent judgment this capability has no authority to make (B2-R3's
+    own finding, reconfirmed unchanged here).
+  - FACT-AS-HYPOTHESIS SEMANTICS: PARTIAL / DEFERRED. B2-R5 does not
+    resolve, and must not be read as resolving, the distinction
+    between a directly established manufacturer fact and a hypothesis
+    built from indirect/inferred evidence. Three rules is a bounded
+    exception handled by convention, not a new general PGDR concept.
 """
 from __future__ import annotations
 
@@ -165,6 +234,68 @@ _DASHBOARD_DIAGNOSTIC_RULES: dict[
             EvidenceDirection.CONTRADICTS,
             0.2,
             "automotive.dashboard.testmfr_engine_diag_flashing_r2_poc",
+        ),
+    ],
+    # BLOCK B2-R5 -- the first REAL (non-TestMfr) diagnostic relevance
+    # rules, for the three real Peugeot entries B2-R3 investigated,
+    # under the SAME real document already used throughout
+    # test_block_b2k_peugeot_poc.py (manufacturer="Peugeot",
+    # document_id="9999_9999_326_en-GB"). Every rule here uses
+    # EvidenceDirection.NEUTRAL under the bounded B2-R5 bootstrap
+    # convention (see module docstring): tracked/auditable, NEVER
+    # scored, NEVER a claim of epistemic neutrality toward the
+    # hypothesis. weight=0.0 is the TECHNICAL REPRESENTATION of that
+    # bounded convention, not a calibrated evidence-strength value --
+    # it reuses automotive/evidence_mapper.py's own existing
+    # "considered, no numeric claim" NEUTRAL convention purely because
+    # the tuple shape requires some float; direction=NEUTRAL, not the
+    # 0.0 itself, is what excludes this Evidence from scoring. No
+    # weight was invented or calibrated. Each description preserves the
+    # exact manufacturer system-level proposition (PGDR-HYP-003
+    # "compatible with"/"système à examiner" phrasing, matching
+    # _HYPOTHESIS_MAP's own existing convention exactly), with no
+    # component-level or causal claim, and with no documented
+    # consequence (e.g. the flashing entry's catalytic-converter risk)
+    # folded into hypothesis content anywhere.
+    ("Peugeot", "9999_9999_326_en-GB", "oil-pressure-warning"): [
+        (
+            "engine_running",
+            "Le constructeur documente un défaut du système de lubrification moteur. Les "
+            "observations sont compatibles avec un problème à examiner sur ce système ; aucune "
+            "cause précise n'est établie par cette source.",
+            EvidenceDirection.NEUTRAL,
+            0.0,
+            "automotive.dashboard.peugeot_oil_pressure_warning_bootstrap",
+        ),
+    ],
+    ("Peugeot", "9999_9999_326_en-GB", "engine-diag-fixed"): [
+        (
+            "engine_running",
+            "Le constructeur documente un défaut du système de contrôle des émissions. Les "
+            "observations sont compatibles avec un problème à examiner sur ce système ; aucune "
+            "cause précise n'est établie par cette source.",
+            EvidenceDirection.NEUTRAL,
+            0.0,
+            "automotive.dashboard.peugeot_engine_diag_fixed_bootstrap",
+        ),
+    ],
+    ("Peugeot", "9999_9999_326_en-GB", "engine-diag-flashing"): [
+        (
+            "engine_running",
+            # The documented catalytic-converter risk/consequence is
+            # deliberately NOT included anywhere in this description --
+            # not even as a labeled exclusion note. It is a documented
+            # CONSEQUENCE, not the fault itself; per B2-R5's own §3/§15
+            # ("Catalytic-converter consequence -> excluded from
+            # hypothesis bootstrap"), it must remain entirely outside
+            # hypothesis content, so the hypothesis's own text carries
+            # only the system-level fault claim.
+            "Le constructeur documente un défaut du système de gestion moteur. Les observations "
+            "sont compatibles avec un problème à examiner sur ce système ; aucune cause précise "
+            "n'est établie par cette source.",
+            EvidenceDirection.NEUTRAL,
+            0.0,
+            "automotive.dashboard.peugeot_engine_diag_flashing_bootstrap",
         ),
     ],
 }

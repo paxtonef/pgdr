@@ -718,10 +718,24 @@ class TestR235NoScorerChange:
         assert source.count("EvidenceDirection.CONTRADICTS") == 1
 
 
-class TestR236NoRealPeugeotRuleIntroduced:
-    def test_no_peugeot_manufacturer_key_in_the_rule_table(self):
-        for manufacturer, _document_id, _entry_id in _DASHBOARD_DIAGNOSTIC_RULES:
-            assert manufacturer != "Peugeot"
+class TestR236NoRealPeugeotRuleIntroducedByB2R2:
+    """R2-36 originally asserted NO Peugeot rule existed -- correct at
+    B2-R2 time. B2-R5 (a later, separately authorized block) explicitly
+    introduced three real Peugeot rules on purpose. This test now
+    asserts the NARROWER, still-true B2-R2-era property: the specific
+    TestMfr POC selector this block itself introduced is still present
+    and still exactly what B2-R2 shipped -- not that Peugeot is absent
+    from the table altogether, which is no longer the case and is not
+    what R2-36 was actually protecting against (accidental/unauthorized
+    introduction, not deliberate, separately-mandated introduction)."""
 
-    def test_rule_table_only_contains_the_testmfr_poc_selector(self):
-        assert set(_DASHBOARD_DIAGNOSTIC_RULES.keys()) == {("TestMfr", "TEST-DOC-A", "engine-diag-flashing")}
+    def test_the_testmfr_poc_selector_b2r2_introduced_is_still_present_unchanged(self):
+        assert ("TestMfr", "TEST-DOC-A", "engine-diag-flashing") in _DASHBOARD_DIAGNOSTIC_RULES
+
+    def test_testmfr_rule_specs_are_unchanged_by_later_blocks(self):
+        rules = _DASHBOARD_DIAGNOSTIC_RULES[("TestMfr", "TEST-DOC-A", "engine-diag-flashing")]
+        rule_ids = {spec[4] for spec in rules}
+        assert rule_ids == {
+            "automotive.dashboard.testmfr_engine_diag_flashing_r1_poc",
+            "automotive.dashboard.testmfr_engine_diag_flashing_r2_poc",
+        }
