@@ -106,13 +106,20 @@ def _all_hypothesis_types() -> set[str]:
 
 
 def _rule_target_directions() -> dict[str, set[EvidenceDirection]]:
+    """B2-R10: _DISCRIMINATING_RULES/_PROVISIONAL_KEYWORD_RULES entries now
+    carry (direction, authorized_domain_refs) / (..., direction,
+    rationale, authorized_domain_refs) respectively -- this coverage
+    report only cares about which hypothesis_type/direction pairs exist
+    at all (its own existing purpose, unchanged), not about
+    authorization, so the extra element is simply unpacked and ignored
+    here."""
     targets: dict[str, set[EvidenceDirection]] = defaultdict(set)
     for value_rules in _DISCRIMINATING_RULES.values():
         for per_hypothesis in value_rules.values():
-            for hypothesis_type, direction in per_hypothesis.items():
+            for hypothesis_type, (direction, _authorized_domain_refs) in per_hypothesis.items():
                 targets[hypothesis_type].add(direction)
     for rules in _PROVISIONAL_KEYWORD_RULES.values():
-        for _keywords, hypothesis_type, direction, _rationale in rules:
+        for _keywords, hypothesis_type, direction, _rationale, _authorized_domain_refs in rules:
             targets[hypothesis_type].add(direction)
     return targets
 

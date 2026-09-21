@@ -14,6 +14,58 @@ keeps the mapper's scope honest: P4 proves the MECHANISM works end to end,
 not that every one of the 10 existing questions has been re-authored with
 a considered discrimination rule — that remains future Domain Pack content
 work, not a P4 requirement.
+
+BLOCK B2-R10 EXTENSION (this pass) -- Bounded Generic-Inheritance Gate,
+implementing the policy the accepted B2-R9 investigation established:
+
+    existing validated population -> generic inheritance preserved
+    new semantic origin            -> NO automatic generic inheritance
+    explicit applicability established -> scoring Evidence may be produced
+    applicability not established      -> no scoring Evidence (never
+                                           CONTRADICTS, never a negative
+                                           assertion -- B2-R9's own
+                                           "not established != NOT
+                                           APPLICABLE" invariant)
+
+B2-R9's own historical investigation established WHY this is required,
+not merely that it would be convenient: Q-COND-001's discriminating rule
+(and Q-EVT-002's provisional one) were authored and tested exclusively
+against the single-primary-symptom-derived population that existed
+before B2-R1 -- at that time, `hypothesis_type` alone was a safe
+selector because at most one hypothesis of any given type could ever be
+active in one case. B2-R1 through B2-R5 introduced hypotheses from
+entirely different semantic origins (dashboard interpretation) that can
+coexist with, and share a `hypothesis_type` with, that original
+population -- `hypothesis_type` equality alone is no longer sufficient
+to imply the rule's original applicability (B2-R6's own empirical
+finding: one Q-COND-001 answer could move three distinct, never-
+reviewed Peugeot propositions' confidence identically).
+
+Authorization representation (B2-R10 §9/§11/§12): each discriminating/
+provisional rule entry now carries, alongside its EvidenceDirection, an
+explicit, authored SET of exact `domain_ref` values for which
+applicability has already been established -- `_LEGACY_SYMPTOM_DOMAIN_REFS`
+below, reusing the EXISTING, closed `SymptomFamily` enum (not a new
+vocabulary, not a string-shape heuristic). A hypothesis's `domain_ref`
+must be an EXACT member of that set to inherit the rule -- checked by
+plain set membership (`in`), never by parsing, splitting, or inspecting
+`domain_ref`'s textual structure (B2-R10-I05). Every hypothesis
+produced by the pre-B2-R1 symptom pathway has, unconditionally, a
+`domain_ref` equal to some `SymptomFamily` value (confirmed structurally:
+`generate_hypotheses()` sets `domain_ref=family_value`, itself always a
+`SymptomFamily.value`) -- so this authorization set exactly and
+completely covers the original validated population, with no
+enumeration of which specific family maps to which hypothesis_type
+required here (that pairing is already, and remains, entirely owned by
+`_HYPOTHESIS_MAP`, unchanged). Any dashboard-derived hypothesis
+(TestMfr or Peugeot, B2-R1 through B2-R5) has a structurally different
+`domain_ref` (the `b2r_dashboard:...` compound format) that can never
+equal a `SymptomFamily` value -- so it is correctly excluded, not
+because its format was inspected, but because its actual value is
+simply not a member of the authorized set. No B2-R10 rule entry
+authorizes any Peugeot-specific `domain_ref` value -- per this pass's
+own explicit prohibition (§10), that remains separate, not-yet-
+established future work.
 """
 from __future__ import annotations
 
@@ -21,18 +73,39 @@ from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.domain.enums import EvidenceDirection
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.question import DiagnosticAnswer, DiagnosticQuestion
+from pgdr.enums import SymptomFamily
 from pgdr.textnorm import normalize
 
-# question_id -> { answer_choice_text -> { hypothesis_type -> direction } }
-_DISCRIMINATING_RULES: dict[str, dict[str, dict[str, EvidenceDirection]]] = {
+# B2-R10: the exact, authored set of domain_ref values for which generic
+# Q&A rule applicability is already established -- the original
+# symptom-derived population every existing discriminating/provisional
+# rule was authored and tested against (B2-R9's own G2 finding). Reuses
+# the EXISTING, closed SymptomFamily enum verbatim -- not a new
+# vocabulary, not an inferred/heuristic set, not a string-shape check.
+# Every symptom-path hypothesis has domain_ref == some SymptomFamily
+# value BY CONSTRUCTION (AutomotiveDiagnosticDomain.generate_hypotheses()
+# sets domain_ref=family_value, itself always a SymptomFamily.value) --
+# so exact membership in this set is both necessary and sufficient to
+# identify that population, without inspecting domain_ref's format at
+# all (B2-R10-I05/I12).
+_LEGACY_SYMPTOM_DOMAIN_REFS: frozenset[str] = frozenset(family.value for family in SymptomFamily)
+
+# question_id -> { answer_choice_text -> { hypothesis_type -> (direction, authorized_domain_refs) } }
+# B2-R10: each entry now carries its authorized domain_ref set alongside
+# direction -- hypothesis_type alone is no longer sufficient authorization
+# (B2-R9). Both existing rules below authorize exactly the pre-existing
+# validated population (_LEGACY_SYMPTOM_DOMAIN_REFS) -- neither rule's
+# own direction/weight/meaning changes for that population; only
+# hypotheses OUTSIDE it are now correctly excluded.
+_DISCRIMINATING_RULES: dict[str, dict[str, dict[str, tuple[EvidenceDirection, frozenset[str]]]]] = {
     "Q-COND-001": {
         "au ralenti / démarrage": {
-            "engine_running": EvidenceDirection.SUPPORTS,
-            "tyre_or_wheel": EvidenceDirection.CONTRADICTS,
+            "engine_running": (EvidenceDirection.SUPPORTS, _LEGACY_SYMPTOM_DOMAIN_REFS),
+            "tyre_or_wheel": (EvidenceDirection.CONTRADICTS, _LEGACY_SYMPTOM_DOMAIN_REFS),
         },
         "à vitesse stabilisée": {
-            "tyre_or_wheel": EvidenceDirection.SUPPORTS,
-            "engine_running": EvidenceDirection.CONTRADICTS,
+            "tyre_or_wheel": (EvidenceDirection.SUPPORTS, _LEGACY_SYMPTOM_DOMAIN_REFS),
+            "engine_running": (EvidenceDirection.CONTRADICTS, _LEGACY_SYMPTOM_DOMAIN_REFS),
         },
     },
 }
@@ -45,7 +118,10 @@ _DISCRIMINATING_WEIGHT = 0.35
 # the evidence reference with full provenance; it does NOT interpret the
 # media's content (automatic dashboard-light recognition is explicitly a
 # later capability, §7/§15). One record per hypothesis the question
-# targeted (mandate §7's "provenance... case association").
+# targeted (mandate §7's "provenance... case association"). Unaffected by
+# B2-R10: this path is already non-scoring (NEUTRAL/0.0) and already
+# targets via question.target_hypothesis_ids, not hypothesis_type -- it
+# never had an inheritance-authority problem to close.
 MEDIA_EVIDENCE_SOURCE_RULE_ID = "automotive.media_evidence_acquired"
 
 # PROVISIONAL — weaker, support-only, free-text keyword matching. Unlike
@@ -59,8 +135,14 @@ MEDIA_EVIDENCE_SOURCE_RULE_ID = "automotive.media_evidence_acquired"
 # as equivalent-confidence to Q-COND-001. See P6 mandate §5's own
 # "explicit PROVISIONAL status" escape valve (P6-T17) and
 # docs/architecture/p6_evidence_mapping_registry.md for the full rationale.
+#
+# B2-R10: same authorization gate as _DISCRIMINATING_RULES above (B2-R9's
+# own "same selector contract required" finding) -- an authorized
+# domain_ref set is now part of each entry, still exactly
+# _LEGACY_SYMPTOM_DOMAIN_REFS for this rule's own existing, unchanged
+# population.
 _PROVISIONAL_WEIGHT = 0.15
-_PROVISIONAL_KEYWORD_RULES: dict[str, list[tuple[list[str], str, EvidenceDirection, str]]] = {
+_PROVISIONAL_KEYWORD_RULES: dict[str, list[tuple[list[str], str, EvidenceDirection, str, frozenset[str]]]] = {
     "Q-EVT-002": [
         (
             ["pneu", "roue", "crevaison", "degonfle"],
@@ -69,6 +151,7 @@ _PROVISIONAL_KEYWORD_RULES: dict[str, list[tuple[list[str], str, EvidenceDirecti
             "PROVISIONAL — l'entretien récent mentionne un pneu/une roue (vocabulaire repris de "
             "symptom_taxonomy.yaml), ce qui est compatible avec un lien vers le système roue/pneumatique. "
             "Non validé indépendamment — voir p6_evidence_mapping_registry.md.",
+            _LEGACY_SYMPTOM_DOMAIN_REFS,
         ),
     ],
 }
@@ -140,7 +223,7 @@ class AutomotiveEvidenceMapper:
 
     @staticmethod
     def _apply_discriminating_rule(
-        rule: dict[str, dict[str, EvidenceDirection]],
+        rule: dict[str, dict[str, tuple[EvidenceDirection, frozenset[str]]]],
         question: DiagnosticQuestion,
         answer: DiagnosticAnswer,
         state: DiagnosticCaseState,
@@ -153,9 +236,24 @@ class AutomotiveEvidenceMapper:
             direction: EvidenceDirection | None = None
             for value in values:
                 per_hypothesis = rule.get(value, {})
-                if h.hypothesis_type in per_hypothesis:
-                    direction = per_hypothesis[h.hypothesis_type]
-                    break
+                entry = per_hypothesis.get(h.hypothesis_type)
+                if entry is None:
+                    continue
+                # B2-R10-I02/I03: hypothesis_type membership alone is no
+                # longer sufficient -- domain_ref must be an EXACT member
+                # of this entry's own authorized set (checked by plain
+                # set membership, never by parsing/inspecting domain_ref's
+                # format, per B2-R10-I05). No match here means
+                # "applicability not established for this hypothesis",
+                # never a negative assertion (B2-R10-I04) -- the loop
+                # simply continues to the next candidate answer value, and
+                # if none authorize it, this hypothesis receives no
+                # scoring Evidence at all from this rule (see below).
+                rule_direction, authorized_domain_refs = entry
+                if h.domain_ref not in authorized_domain_refs:
+                    continue
+                direction = rule_direction
+                break
             if direction is None:
                 continue
             verb = "confirme" if direction == EvidenceDirection.SUPPORTS else "contredit"
@@ -171,7 +269,7 @@ class AutomotiveEvidenceMapper:
 
     @staticmethod
     def _apply_provisional_keyword_rules(
-        rules: list[tuple[list[str], str, EvidenceDirection, str]],
+        rules: list[tuple[list[str], str, EvidenceDirection, str, frozenset[str]]],
         question: DiagnosticQuestion,
         answer: DiagnosticAnswer,
         state: DiagnosticCaseState,
@@ -180,16 +278,23 @@ class AutomotiveEvidenceMapper:
         same pgdr.textnorm.normalize() used throughout the codebase). See
         the _PROVISIONAL_KEYWORD_RULES docstring above — weaker weight,
         clearly labeled PROVISIONAL in the rationale, not equivalent-
-        confidence to a fully-authored _DISCRIMINATING_RULES entry."""
+        confidence to a fully-authored _DISCRIMINATING_RULES entry.
+
+        B2-R10: same authorization gate as _apply_discriminating_rule --
+        hypothesis_type match is necessary but no longer sufficient;
+        h.domain_ref must also be an exact member of this rule's own
+        authorized set."""
         raw_text = answer.value if isinstance(answer.value, str) else str(answer.value)
         text = normalize(raw_text)
 
         evidence: list[Evidence] = []
-        for keywords, hypothesis_type, direction, rationale in rules:
+        for keywords, hypothesis_type, direction, rationale, authorized_domain_refs in rules:
             if not any(normalize(kw) in text for kw in keywords):
                 continue
             for h in state.hypotheses:
                 if h.hypothesis_type != hypothesis_type:
+                    continue
+                if h.domain_ref not in authorized_domain_refs:
                     continue
                 evidence.append(Evidence(
                     observation_ids=list(answer.observation_ids_created),

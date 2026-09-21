@@ -138,8 +138,11 @@ def test_p6_t07_invalid_hypothesis_reference_fails_validation(monkeypatch):
     import pgdr.automotive.evidence_mapper as em
     from pgdr.automotive.domain_validator import validate_automotive_domain
 
+    # B2-R10: entries now carry a 5th element (authorized_domain_refs) --
+    # a non-empty placeholder set here so this test still isolates the
+    # dangling-hypothesis_type-reference check it's actually about.
     monkeypatch.setattr(em, "_PROVISIONAL_KEYWORD_RULES", {
-        "Q-EVT-002": [(["pneu"], "nonexistent_type", EvidenceDirection.SUPPORTS, "PROVISIONAL - test")],
+        "Q-EVT-002": [(["pneu"], "nonexistent_type", EvidenceDirection.SUPPORTS, "PROVISIONAL - test", frozenset({"vibration"}))],
     })
     with pytest.raises(ConfigurationError, match="dangling domain reference"):
         validate_automotive_domain()
@@ -154,7 +157,7 @@ def test_p6_t08_t17_mapping_without_provisional_marker_fails_validation(monkeypa
     from pgdr.automotive.domain_validator import validate_automotive_domain
 
     monkeypatch.setattr(em, "_PROVISIONAL_KEYWORD_RULES", {
-        "Q-EVT-002": [(["pneu"], "tyre_or_wheel", EvidenceDirection.SUPPORTS, "just a guess, no rationale")],
+        "Q-EVT-002": [(["pneu"], "tyre_or_wheel", EvidenceDirection.SUPPORTS, "just a guess, no rationale", frozenset({"vibration"}))],
     })
     with pytest.raises(ConfigurationError, match="PROVISIONAL"):
         validate_automotive_domain()

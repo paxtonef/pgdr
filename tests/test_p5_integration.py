@@ -386,11 +386,13 @@ def test_p5_t21_signature_adaptive_product_path(controller):
 def test_domain_enrichment_q_cond_001_semantics_are_correct():
     from pgdr.automotive.evidence_mapper import _DISCRIMINATING_RULES
 
+    # B2-R10: each entry is now (direction, authorized_domain_refs) --
+    # direction is still the first element, unchanged in content.
     rule = _DISCRIMINATING_RULES["Q-COND-001"]
-    assert rule["au ralenti / démarrage"]["engine_running"] == EvidenceDirection.SUPPORTS
-    assert rule["au ralenti / démarrage"]["tyre_or_wheel"] == EvidenceDirection.CONTRADICTS
-    assert rule["à vitesse stabilisée"]["tyre_or_wheel"] == EvidenceDirection.SUPPORTS
-    assert rule["à vitesse stabilisée"]["engine_running"] == EvidenceDirection.CONTRADICTS
+    assert rule["au ralenti / démarrage"]["engine_running"][0] == EvidenceDirection.SUPPORTS
+    assert rule["au ralenti / démarrage"]["tyre_or_wheel"][0] == EvidenceDirection.CONTRADICTS
+    assert rule["à vitesse stabilisée"]["tyre_or_wheel"][0] == EvidenceDirection.SUPPORTS
+    assert rule["à vitesse stabilisée"]["engine_running"][0] == EvidenceDirection.CONTRADICTS
 
 
 # ---------------------------------------------------------------------------

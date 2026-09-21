@@ -11,6 +11,12 @@ exactly as P0 left it, untouched). It validates the NEW P5 domain
 relations: does every evidence-mapping rule reference a hypothesis_type
 that actually exists in the hypothesis map, does every rule reference a
 real question_id, are declared weights in range.
+
+B2-R10: also validates that every rule's authorized domain_ref set
+(introduced by B2-R10's bounded generic-inheritance gate) is non-empty
+-- an empty set would make a rule silently unreachable by any
+hypothesis, a configuration mistake this startup gate should catch the
+same way it already catches dangling hypothesis_type references.
 """
 from __future__ import annotations
 
@@ -58,12 +64,22 @@ def validate_automotive_domain() -> None:
                 raise ConfigurationError(
                     f"AutomotiveEvidenceMapper: rule for {question_id}='{value}' is empty"
                 )
-            for hypothesis_type in per_hypothesis:
+            for hypothesis_type, entry in per_hypothesis.items():
                 if hypothesis_type not in declared_types:
                     raise ConfigurationError(
                         f"AutomotiveEvidenceMapper: rule for {question_id}='{value}' targets "
                         f"hypothesis_type '{hypothesis_type}', which does not appear in any "
                         f"_HYPOTHESIS_MAP entry — dangling domain reference"
+                    )
+                # B2-R10: each entry is now (direction, authorized_domain_refs) --
+                # an empty authorization set would make the rule
+                # unreachable for every hypothesis, silently dead.
+                _direction, authorized_domain_refs = entry
+                if not authorized_domain_refs:
+                    raise ConfigurationError(
+                        f"AutomotiveEvidenceMapper: rule for {question_id}='{value}' -> "
+                        f"'{hypothesis_type}' has an empty authorized domain_ref set — "
+                        f"unreachable by any hypothesis"
                     )
     if not (0.0 <= _DISCRIMINATING_WEIGHT <= 1.0):
         raise ConfigurationError(
@@ -84,7 +100,7 @@ def validate_automotive_domain() -> None:
                 f"AutomotiveEvidenceMapper: provisional rule references unknown "
                 f"question_id '{question_id}' — no such question in questions.yaml"
             )
-        for keywords, hypothesis_type, direction, rationale in rules:
+        for keywords, hypothesis_type, direction, rationale, authorized_domain_refs in rules:
             if not keywords:
                 raise ConfigurationError(
                     f"AutomotiveEvidenceMapper: provisional rule for {question_id} has no keywords"
@@ -101,4 +117,12 @@ def validate_automotive_domain() -> None:
                     f"'{hypothesis_type}' must carry a rationale explicitly marked PROVISIONAL "
                     f"(P6-T17: every mapping needs source/rationale metadata OR explicit "
                     f"PROVISIONAL status)"
+                )
+            # B2-R10: same empty-authorization-set guard as the
+            # discriminating path above.
+            if not authorized_domain_refs:
+                raise ConfigurationError(
+                    f"AutomotiveEvidenceMapper: provisional rule for {question_id} -> "
+                    f"'{hypothesis_type}' has an empty authorized domain_ref set — "
+                    f"unreachable by any hypothesis"
                 )
