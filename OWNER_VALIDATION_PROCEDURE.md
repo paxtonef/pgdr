@@ -35,38 +35,45 @@ echo $?
 
 ---
 
-## 2. GGM wheel supply
+## 2. GGM wheel supply (canonical GGM 1.0.0)
 
 ```bash
-# Supply the GGM wheel via the repository's established mechanism
-# The wheel file is: vendor/ggm-1.2.0-py3-none-any.whl
-# SHA-256: 7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2
+# Canonical GGM 1.0.0 is supplied out-of-band. It is NOT in this repository.
+# Artifact:      ggm-1.0.0-py3-none-any.whl
+# Release commit: 5fdea20413ba85503770649cfc6df2699df8af3f
+# SHA-256:       414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7
+GGM_WHEEL=/path/to/ggm-1.0.0-py3-none-any.whl
 
-# Verify wheel is present
-ls -lh vendor/ggm-1.2.0-py3-none-any.whl
-sha256sum vendor/ggm-1.2.0-py3-none-any.whl
-# Expected: 7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2
+# A matching filename is insufficient — verify the hash:
+shasum -a 256 "$GGM_WHEEL"
+# Expected: 414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7
 
 # Install dependencies
 python3 -m venv .venv
 source .venv/bin/activate
-pip install vendor/ggm-1.2.0-py3-none-any.whl
+pip install "$GGM_WHEEL"
+pip install -e . --no-deps   # PGDR declares ggm==1.0.0
 pip install fastapi 'uvicorn[standard]' httpx pytest-playwright
+pip check   # must report no broken requirements
 ```
+
+Do NOT use the historical `ggm-1.2.0` wheel (a non-canonical PGDR-built
+artifact); it does not satisfy `ggm==1.0.0` and does not establish
+production governance.
 
 ---
 
 ## 3. GGM-enabled full regression
 
 ```bash
-# WITHOUT GGM wheel environment variable (should pass with 476/11/0)
+# WITHOUT GGM wheel environment variable (ordinary regression: 11 GGM-packaging skips expected)
 pytest -q
 # Expected output:
 # 476 passed, 11 skipped
 # (11 skipped are GGM-wheel-packaging tests)
 
-# WITH GGM wheel environment variable (should pass with 487/0/0)
-GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" pytest -q
+# WITH GGM wheel environment variable (must be 0 skipped, 0 failed)
+GGM_WHEEL_PATH="$(pwd)/$GGM_WHEEL" pytest -q
 # Expected output:
 # 487 passed, 0 skipped
 # (all tests including packaging tests should pass)
@@ -199,44 +206,31 @@ python3 run_pgdr.py run \
 
 ---
 
-## 9. GGM wheel production supply mechanism
+## 9. GGM production supply mechanism
 
-**What was established from the repository:**
+**Canonical identity:**
 
-- Wheel location: `vendor/ggm-1.2.0-py3-none-any.whl`
-- SHA-256: `7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2`
-- Package version: `ggm 1.2.0`
-- Source commit (target): `ac99750`
-- Built by PGDR from GGM P2.2 source
-- No third-party runtime dependencies (stdlib only)
+- Artifact: `ggm-1.0.0-py3-none-any.whl` (`ggm==1.0.0`)
+- SHA-256: `414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7`
+- Canonical release commit: `5fdea20413ba85503770649cfc6df2699df8af3f`
+- Contract 1.3 / runtime `ggm/1.1` / resolver 1.3 / manifest 1.0
 
-**What could NOT be established:**
+**Authorization:**
 
-- **Licensing terms**: No license file present in source archive
-- **Distribution authorization**: Whether wheel may be publicly redistributed
-- **Official GGM release process**: No canonical GGM build/release exists yet
+- PGDR consumption: AUTHORIZED
+- Private PGDR production embedding: AUTHORIZED
+- Public redistribution: NOT AUTHORIZED (never publish the wheel or an image containing it)
 
 **Production supply mechanism:**
 
-For production deployment:
+1. Private image: supply the canonical wheel to the image build out-of-band
+   (build context or build secret — it is not committed here), verify its
+   SHA-256 in the build, then `pip install` it before PGDR.
+2. Verify at deployment: `/health` MUST return `"status": "ready"` with
+   `ggm_consumption.status == "ok"` before accepting traffic.
 
-1. **If embedding in private image is authorized**: Include wheel in Docker image
-   at build time via `COPY vendor/ggm-1.2.0-py3-none-any.whl /app/vendor/` and
-   install during image build.
-
-2. **If embedding is not authorized**: Supply wheel at deployment time via secure
-   mechanism (e.g., mounted volume, secret store, build-time injection) and ensure
-   it is available before application startup.
-
-3. **Verify at deployment**: The `/health` endpoint MUST return `"status": "ready"`
-   with `ggm_consumption.status == "ok"` before accepting traffic.
-
-**Licensing/distribution decision required**: Confirm with GGM maintainers whether:
-- The wheel may be embedded in a private deployment image
-- The wheel may be redistributed (publicly or privately)
-- An official GGM release process will provide canonical wheels
-
-Until confirmed, treat the wheel as **private, non-redistributable**.
+The historical `ggm-1.2.0` wheel (PGDR-built, non-canonical) is not a
+supported supply source.
 
 ---
 
@@ -246,7 +240,7 @@ Mark **PGDR GOVERNED LOCAL VALIDATION: PASS** if ALL of:
 
 - [ ] Candidate HEAD checked out from verified bundle
 - [ ] GGM wheel available and SHA-256 verified
-- [ ] Regression with GGM: **487 passed, 0 skipped, 0 failed**
+- [ ] Regression with canonical GGM 1.0.0: **0 failed, 0 skipped** (492 passed at adoption)
 - [ ] Web application starts successfully with real GGM
 - [ ] Readiness endpoint returns `"status": "ready"` with `ggm_consumption.status == "ok"`
 - [ ] Complete governed French browser E2E-A: **PASSED**
@@ -263,9 +257,11 @@ If **NOT PASSED**: Document failure reason and return to implementation.
 
 ## Notes
 
-- This validation procedure uses the **actual GGM wheel** and verifies **actual
-  governed diagnostic output**, which could not be fully verified in the Claude
-  Code environment.
+- This validation procedure uses the **canonical GGM 1.0.0 wheel** and verifies
+  **actual governed diagnostic output**. Canonical GGM 1.0.0 has been executed
+  locally, including the real-Chromium E2E-A/E2E-C tests (see
+  `PGDR_LOCAL_PRODUCTIZATION_FINAL_REPORT.md`); the owner run repeats this in the
+  owner environment.
 
 - The French browser E2E (E2E-A) is the **primary end-to-end validation** of the
   complete user journey with governance active.

@@ -1,5 +1,15 @@
 # PGDR ↔ GGM P2.2 Migration — Closure Verification
 
+> **HISTORICAL RECORD — SUPERSEDED for packaging identity.** Everything below
+> that names `ggm 1.2.0`, source `ac99750`, or wheel SHA-256 `7340c166…` describes
+> a **non-canonical historical PGDR packaging artifact**, preserved as it was
+> written. Canonical GGM is `ggm-1.0.0-py3-none-any.whl` (release commit
+> `5fdea20413ba85503770649cfc6df2699df8af3f`, SHA-256
+> `414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7`), and PGDR
+> now depends on `ggm==1.0.0`. The historical "Packaging Identity Gate: PASS" and
+> "Fresh wheel test" rows do **not** establish canonical production governance.
+> Current validation: see `PGDR_LOCAL_PRODUCTIZATION_FINAL_REPORT.md`.
+
 **Status: CLOSED**
 
 | Gate | Result | Evidence |

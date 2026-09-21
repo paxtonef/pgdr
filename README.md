@@ -21,7 +21,7 @@ nothing but consolidate everything.
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-pip install vendor/ggm-1.2.0-py3-none-any.whl   # pinned GGM package, not on PyPI
+pip install /path/to/ggm-1.0.0-py3-none-any.whl   # canonical GGM 1.0.0 (supplied out-of-band, not on PyPI, not in this repo)
 pip install -r requirements.txt
 
 python3 run_pgdr.py run --vir-id VIR-001 --complaint "La voiture tremble au ralenti"
@@ -35,7 +35,7 @@ Run the web server locally:
 
 ```bash
 # Install dependencies (if not already done)
-pip install vendor/ggm-1.2.0-py3-none-any.whl
+pip install /path/to/ggm-1.0.0-py3-none-any.whl   # canonical GGM 1.0.0
 pip install fastapi uvicorn[standard]
 
 # Start the web server
@@ -55,11 +55,12 @@ Production deployment notes:
 ## Run tests
 
 ```bash
-# Fast: core + web deployment tests (476 tests)
+# Ordinary regression (wheel-packaging tests skip without GGM_WHEEL_PATH)
 pytest tests/ -v
 
-# With GGM wheel packaging tests (487 tests total)
-GGM_WHEEL_PATH="$(pwd)/vendor/ggm-1.2.0-py3-none-any.whl" pytest tests/ -v
+# GGM-enabled regression with canonical GGM 1.0.0 (verify its SHA-256 first:
+# 414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7)
+GGM_WHEEL_PATH=/path/to/ggm-1.0.0-py3-none-any.whl pytest tests/ -v
 
 # Browser E2E tests (requires Playwright)
 pip install pytest-playwright
@@ -68,9 +69,9 @@ pytest tests/test_browser_e2e.py -v
 ```
 
 Test suite:
-- **476 passed, 11 skipped** (core + web, without GGM wheel packaging tests)
-- **487 passed, 0 skipped** (full suite with `GGM_WHEEL_PATH` set)
-- Original 460 core tests + 16 web deployment tests (WEB-1 through WEB-15) + 11 packaging tests
+- **481 passed, 11 skipped** (ordinary; the 11 skips are the GGM wheel-packaging tests)
+- **492 passed, 0 skipped, 0 failed** (GGM-enabled with canonical GGM 1.0.0, incl. real-Chromium E2E)
+- Counts as of the canonical-GGM adoption; they are not a frozen historical target
 - Web tests verify: readiness, session lifecycle, Evidence/scoring consistency,
   French UI rendering, session isolation, safety triage preservation,
   structural governance-path verification
@@ -103,8 +104,8 @@ USER (CLI or Web Browser) → SessionController → SafetyEngine (deterministic,
                                                              === GGM governance boundary ===
                                                                            |
                                                              GGMConsumer.evaluate() (real,
-                                                             pinned GGM package — commit
-                                                             ac99750)
+                                                             canonical GGM 1.0.0 —
+                                                             commit 5fdea20)
                                                                            |
                                                                     Governed report
                                                                    /                \

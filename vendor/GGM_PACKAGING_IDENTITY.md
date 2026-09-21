@@ -1,5 +1,14 @@
 # GGM Packaging Identity Freeze — vendor/ggm-1.2.0-py3-none-any.whl
 
+> **HISTORICAL — NON-CANONICAL PGDR PACKAGING ARTIFACT.** This document records
+> a wheel PGDR built itself (`ggm 1.2.0`). It is **not** canonical GGM. Canonical
+> GGM is `ggm-1.0.0-py3-none-any.whl`, release commit
+> `5fdea20413ba85503770649cfc6df2699df8af3f`, SHA-256
+> `414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7`, which PGDR
+> now consumes (`ggm==1.0.0`). The 1.2.0 wheel is no longer tracked in git. The
+> content below is preserved as history and must not be used for production
+> governance.
+
 Closes the Packaging Identity Gate opened by the PGDR -> GGM P2.2
 Pre-Implementation Evidence Note v1 (§14 gate items 2/3, §15 "Packaging/
 release gate: NOT YET CLOSED").

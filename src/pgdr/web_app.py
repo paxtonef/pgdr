@@ -696,7 +696,7 @@ def serve_frontend():
             const us = data.user_summary;
             const gpr = data.garage_preparation_report;
 
-            let html = '<h2>📋 Synthèse pour l\'automobiliste</h2>';
+            let html = "<h2>📋 Synthèse pour l'automobiliste</h2>";
             html += '<div class="report-section">';
             if (us.urgency && us.urgency.label) {
                 html += `<h3>Urgence</h3>`;

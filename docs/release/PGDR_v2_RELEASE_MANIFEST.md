@@ -10,11 +10,11 @@ used anywhere in this document.
 
 | | |
 |---|---|
-| Implementation | `pyproject.toml` (hatchling), `install.sh` (self-contained installer, vendors the pinned GGM wheel) |
-| Authoritative component | `pyproject.toml` force-include of 4 config YAMLs; `vendor/ggm-1.2.0-py3-none-any.whl` |
+| Implementation | `pyproject.toml` (hatchling), `install.sh` (self-contained installer; canonical GGM 1.0.0 is supplied out-of-band) |
+| Authoritative component | `pyproject.toml` force-include of 4 config YAMLs (the GGM wheel is supplied out-of-band, not vendored) |
 | Test evidence | `test_p0_packaging.py` (11 tests), `test_p7_t09_wheel_build_install_scenario_after_retirement`, `test_p8_t30_cli_regression_with_governance_enabled` |
 | Status | **ACTIVE** |
-| Version/dependency | Python >=3.10; pydantic>=2.0, pyyaml>=6.0, rich>=13.0, click>=8.0, ggm>=1.2.0 |
+| Version/dependency | Python >=3.10; pydantic>=2.0, pyyaml>=6.0, rich>=13.0, click>=8.0, ggm==1.0.0 |
 
 ## Configuration Integrity
 
@@ -96,7 +96,7 @@ used anywhere in this document.
 | Authoritative component | `GGMDiagnosticGovernanceAdapter` (sole caller of `GGMConsumer.evaluate()`); `DiagnosticCaseState` never mutated by governance (deep-copy gate) |
 | Test evidence | `test_p8_ggm_integration.py` (23 tests incl. signature, BLOCK/REPAIR/ESCALATE/ConsumptionError handling, AST-scanned import boundary) |
 | Status | **ACTIVE** (P8A - consumer-contract integration) / **ACTIVE** (P8B - bounded/embedded GGM runtime, delivered via GGM P2.2 `RuntimeMaterializer`; see `PGDR_v2_DEFERRED_CAPABILITIES.md`) |
-| Version/dependency | GGM package `1.2.0`, target source commit `ac99750`, contract v1.3, resolver v1.3, kernel/runtime `ggm/1.1`, wheel SHA-256 `7340c166918e5b9bb83008a8f5944ef0ae64b0c1995189fc3860d7a90b1baff2` (full provenance: `PGDR_v2_DEPENDENCY_FREEZE.md`) |
+| Version/dependency | canonical GGM package `1.0.0`, release commit `5fdea20413ba85503770649cfc6df2699df8af3f`, contract v1.3, resolver v1.3, manifest 1.0, kernel/runtime `ggm/1.1`, wheel SHA-256 `414591587d29adf756f16e39ad03cffe0fa2328c8a41e5bbf3ba6b0aa42799a7` (full provenance: `PGDR_v2_DEPENDENCY_FREEZE.md`) |
 
 ## Dashboard / Manufacturer-Fact Diagnostic Relevance (B2 series)
 

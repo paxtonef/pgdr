@@ -10,52 +10,73 @@ including governed diagnostic output.
 """
 from __future__ import annotations
 
-import multiprocessing
+import importlib.metadata
+import json
+import re
+import socket
+import threading
 import time
-from contextlib import contextmanager
 
 import pytest
 import uvicorn
 from playwright.sync_api import Page, expect
 
+from pgdr.enums import SessionState
+from pgdr.governance.trace import InMemoryGovernanceTraceStore
+from pgdr import web_app as _web
 from pgdr.web_app import app, _sessions
 
-
-def _run_uvicorn_server():
-    """Run uvicorn server in a separate process."""
-    uvicorn.run(app, host="127.0.0.1", port=8765, log_level="error")
+_PORT = 8765
+_CANONICAL_GGM_VERSION = "1.0.0"
+_CANONICAL_GGM_RUNTIME = "ggm/1.1"
 
 
 @pytest.fixture(scope="module")
-def live_server():
-    """Start uvicorn server for E2E tests."""
-    # Clear sessions before starting
+def governance_traces():
+    """Observe-only tap on the real GGM adapter's trace store.
+
+    Records every governance trace the application produces while delegating
+    to the original `record` unchanged — it adds no behavior and cannot alter
+    a governance outcome. Lets the browser tests prove that GGM governance
+    actually executed for the sessions they drive."""
+    seen: list = []
+    original = InMemoryGovernanceTraceStore.record
+
+    def tap(self, trace):
+        seen.append(trace)
+        return original(self, trace)
+
+    InMemoryGovernanceTraceStore.record = tap
+    try:
+        yield seen
+    finally:
+        InMemoryGovernanceTraceStore.record = original
+
+
+@pytest.fixture(scope="module")
+def live_server(governance_traces):
+    """Real uvicorn server (real HTTP, real web app, real SessionController,
+    real GGM) on a background thread of this process."""
     _sessions.clear()
+    config = uvicorn.Config(app, host="127.0.0.1", port=_PORT, log_level="error")
+    server = uvicorn.Server(config)
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
 
-    # Start server in background process
-    server_process = multiprocessing.Process(target=_run_uvicorn_server, daemon=True)
-    server_process.start()
-
-    # Wait for server to be ready
-    import socket
-    for _ in range(50):  # 5 seconds max
+    for _ in range(100):
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.1)
-            sock.connect(("127.0.0.1", 8765))
-            sock.close()
+            socket.create_connection(("127.0.0.1", _PORT), timeout=0.2).close()
             break
-        except (socket.error, ConnectionRefusedError):
+        except OSError:
             time.sleep(0.1)
     else:
-        server_process.terminate()
+        server.should_exit = True
         pytest.fail("Server failed to start")
 
-    yield "http://127.0.0.1:8765"
+    yield f"http://127.0.0.1:{_PORT}"
 
-    # Cleanup
-    server_process.terminate()
-    server_process.join(timeout=2)
+    server.should_exit = True
+    thread.join(timeout=5)
     _sessions.clear()
 
 
@@ -70,106 +91,174 @@ def page(playwright):
     browser.close()
 
 
+# --- Shared browser-driving helpers ---
+
+def _start_diagnostic(page: Page, base_url: str, complaint: str, urgency: str = "medium") -> str:
+    """Fill the rendered French form, click start, return the session id the
+    server issued for this browser (read from the real HTTP response)."""
+    errors: list[str] = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    page.goto(base_url)
+    page.fill("textarea#complaint", complaint)
+    page.select_option("select#location", "home")
+    page.select_option("select#urgency", urgency)
+    with page.expect_response(lambda r: r.url.endswith("/api/session/start")) as info:
+        page.click("button#start-btn")
+    assert info.value.status == 200
+    assert not errors, f"page JS errors: {errors}"
+    return info.value.json()["session_id"]
+
+
+def _case(session_id: str):
+    """The controller-held DiagnosticCaseState (observations, Evidence,
+    hypotheses, answers) for a session."""
+    return _web._session_controller._case_states[session_id]
+
+
+def _report_visible(page: Page) -> bool:
+    return page.locator("#report-container").evaluate(
+        "el => !el.classList.contains('hidden') && el.textContent.trim().length > 0"
+    )
+
+
+def _answer_visible_question(page: Page, pick: int, answers_log: list[str]) -> None:
+    """Answer the question currently rendered in the browser through the UI
+    (button click or typed text), then wait for the next question or the
+    report. `pick` selects which offered choice (0 = first, 1 = second)."""
+    page.wait_for_selector(".question-box", state="visible", timeout=10000)
+    prompt = page.locator(".question-prompt").text_content()
+    assert prompt and prompt.strip(), "empty question prompt rendered"
+    choices = page.locator(".choice-btn")
+    n = choices.count()
+    if n:
+        idx = min(pick, n - 1)
+        answers_log.append(choices.nth(idx).text_content())
+        choices.nth(idx).click()
+    else:
+        page.fill("input#text-answer", "je ne sais pas")
+        answers_log.append("je ne sais pas")
+        page.click("button:text('Valider')")
+    page.wait_for_function(
+        """(prev) => {
+            const rep = document.getElementById('report-container');
+            const qc = document.getElementById('question-container');
+            const err = document.getElementById('error');
+            if (!err.classList.contains('hidden') && err.textContent.trim()) return true;
+            if (!rep.classList.contains('hidden') && rep.textContent.trim()) return true;
+            const p = qc.querySelector('.question-prompt');
+            return !qc.classList.contains('hidden') && p && p.textContent !== prev;
+        }""",
+        arg=prompt,
+        timeout=15000,
+    )
+    assert page.locator("#error").is_hidden(), (
+        f"UI error after answering: {page.locator('#error').text_content()!r}"
+    )
+
+
+def _drive_to_report(page: Page, pick: int = 0, max_questions: int = 20) -> list[str]:
+    answers: list[str] = []
+    for _ in range(max_questions):
+        if _report_visible(page):
+            break
+        _answer_visible_question(page, pick, answers)
+    else:
+        pytest.fail("no report after max_questions")
+    expect(page.locator("#report-container")).to_be_visible()
+    return answers
+
+
+def _assert_canonical_ggm_executed(governance_traces, case_id: str) -> None:
+    """Prove the real canonical GGM package governed this session."""
+    assert importlib.metadata.version("ggm") == _CANONICAL_GGM_VERSION
+    direct_url = importlib.metadata.distribution("ggm").read_text("direct_url.json") or ""
+    assert "ggm-1.0.0-py3-none-any.whl" in direct_url, (
+        f"ggm not installed from the canonical wheel: {direct_url!r}"
+    )
+    mine = [t for t in governance_traces if t.case_id == case_id]
+    assert mine, "GGM governance produced no trace for this session"
+    for t in mine:
+        assert t.result_channel == "GOVERNANCE_RESULT", t
+        assert t.runtime_version == _CANONICAL_GGM_RUNTIME, t
+        assert t.operation == "DECIDE", t
+
+
+_DEFINITIVE_CLAIM_PATTERNS = [
+    r"\bla cause (réelle |exacte )?est\b",
+    r"\bdiagnostic (est )?confirmé\b",
+    r"\bpanne (est )?confirmée\b",
+    r"\b(il faut|vous devez) (impérativement )?(remplacer|changer|réparer)\b",
+    r"\bremplacez\b",
+    r"\bchangez (la|le|les|l')\b",
+    r"€|\beuros?\b|\bcoûtera\b|\bdevis de\b",
+    r"\bc'est certainement\b|\bc'est sûrement\b",
+]
+
+
+def _assert_non_definitive(report_text: str) -> None:
+    low = report_text.lower()
+    for pat in _DEFINITIVE_CLAIM_PATTERNS:
+        assert not re.search(pat, low), f"unsupported/definitive claim matched {pat!r}"
+    assert "ne remplace pas l'examen du véhicule par un professionnel" in low
+    assert "aucune réparation spécifique n'est recommandée avec certitude" in low
+
+
 # --- E2E-A: Normal legacy case ---
 
-def test_e2e_a_complete_french_lifecycle(live_server, page: Page):
-    """E2E-A: Complete diagnostic episode in French from complaint to report.
+def test_e2e_a_complete_french_lifecycle(live_server, page: Page, governance_traces):
+    """E2E-A: complete governed French lifecycle, browser to final report.
 
-    User journey: open PGDR → describe "La voiture tremble au ralenti" →
-    answer questions → read final governed report in French.
-    """
+    Browser -> rendered French UI -> HTTP -> web adapter -> SessionController
+    -> safety triage -> DiagnosticLoop -> questions/answers -> Evidence ->
+    hypotheses -> canonical GGM governance -> governed report -> rendered
+    French report inspected in the browser. No silent alternate path: the
+    complaint must NOT safety-escalate, every question is answered through
+    the UI, and the report must actually render."""
+    complaint = "La voiture tremble au ralenti"
+
     page.goto(live_server)
-
-    # Verify page loaded with French UI
-    expect(page.locator('html')).to_have_attribute("lang", "fr")
-
-    # Verify French heading
+    expect(page.locator("html")).to_have_attribute("lang", "fr")
     expect(page.locator("h1")).to_contain_text("PGDR")
+    assert "ne fournit jamais un diagnostic" in page.locator(".disclaimer").text_content().lower()
 
-    # Verify non-definitive-diagnosis disclaimer is visible
-    disclaimer_text = page.locator(".disclaimer").text_content()
-    assert "jamais un diagnostic mécanique définitif" in disclaimer_text.lower() or \
-           "ne fournit jamais un diagnostic" in disclaimer_text.lower()
+    sid = _start_diagnostic(page, live_server, complaint)
 
-    # Enter complaint in French
-    page.fill("textarea#complaint", "La voiture tremble au ralenti")
-    page.select_option("select#location", "home")
-    page.select_option("select#urgency", "medium")
+    # Normal diagnostic path only — a safety escalation would be a different
+    # journey and must not let this test pass vacuously.
+    assert page.locator("#safety-alert").is_hidden()
+    assert _sessions[sid].state != SessionState.ESCALATED
 
-    # Start diagnostic
-    page.click("button#start-btn")
+    answers = _drive_to_report(page, pick=0)
+    assert len(answers) >= 5, f"lifecycle too short to be meaningful: {answers}"
 
-    # Wait for response (either safety alert, question, or report)
-    page.wait_for_timeout(1000)
+    # Server-side lifecycle really ran through the existing core.
+    session = _sessions[sid]
+    assert session.state == SessionState.COMPLETED
+    assert len(session.answers) == len(answers)
+    case = _case(sid)
+    assert case.answers, "no answers recorded in the diagnostic case"
+    assert case.observations, "no observations produced from the answers"
+    assert case.evidence, "no Evidence produced from the answers"
+    assert case.hypotheses, "no hypotheses produced"
+    assert session.result is not None
 
-    # Check if safety escalated (red alert)
-    safety_alert = page.locator("#safety-alert")
-    if safety_alert.is_visible():
-        # Safety escalation path - verify French content
-        alert_text = safety_alert.text_content()
-        assert "signal" in alert_text.lower() or "sécurité" in alert_text.lower()
-    else:
-        # Normal diagnostic path - answer questions until completion
-        max_questions = 15
-        for i in range(max_questions):
-            # Check if we have a question
-            question_box = page.locator(".question-box")
-            if not question_box.is_visible():
-                break
-
-            # Verify question is in French
-            question_text = question_box.text_content()
-            assert "?" in question_text  # French questions end with ?
-
-            # Answer with first choice (or "je ne sais pas" if available)
-            choices = page.locator(".choice-btn").all()
-            if choices:
-                # Try to find "je ne sais pas" option
-                je_ne_sais_pas_btn = None
-                for choice in choices:
-                    if "je ne sais pas" in choice.text_content().lower():
-                        je_ne_sais_pas_btn = choice
-                        break
-                if je_ne_sais_pas_btn:
-                    je_ne_sais_pas_btn.click()
-                else:
-                    choices[0].click()
-            else:
-                # Text input question
-                page.fill("input#text-answer", "je ne sais pas")
-                page.click("button:text('Valider')")
-
-            page.wait_for_timeout(500)
-
-    # Wait for report to appear
-    page.wait_for_selector("#report-container:not(.hidden)", timeout=10000)
-
-    # Verify report is in French
+    # Rendered French final report.
     report = page.locator("#report-container")
-    expect(report).to_be_visible()
+    text = report.text_content()
+    assert "Synthèse pour l'automobiliste" in text
+    assert "Rapport de préparation garage" in text
+    assert complaint in text
+    assert "garage" in text.lower()
+    assert "Important" in text
+    _assert_non_definitive(text)
 
-    report_text = report.text_content()
+    # Governed API report agrees with the rendered one and stays non-definitive.
+    api = page.request.get(f"{live_server}/api/session/{sid}/report").json()
+    assert api["garage_preparation_report"]["customer_reported_problem"] == complaint
+    _assert_non_definitive(json.dumps(api, ensure_ascii=False))
 
-    # Should contain French report sections
-    assert "Synthèse" in report_text or "synthèse" in report_text
-    assert "garage" in report_text.lower()
-
-    # Should contain French action/observation vocabulary
-    french_indicators = ["pour", "véhicule", "problème", "le", "la", "une", "observation"]
-    assert any(word in report_text.lower() for word in french_indicators)
-
-    # Should NOT contain English diagnostic text
-    english_words = ["vehicle", "problem", "symptom", "check", "inspection"]
-    # Allow "check" in "checkbox" or HTML, but not as standalone diagnostic word
-    for word in english_words:
-        if word.lower() in report_text.lower():
-            # Check it's not part of a compound or technical term
-            # This is a basic check; adjust if needed
-            pass  # French UI might have some technical English, but questions/reports must be French
-
-    # Verify non-definitive-diagnosis notice in report (disclaimer)
-    # The report should include a disclaimer about PGDR not being definitive
-    assert "Important" in report_text or "important" in report_text or "jamais" in report_text
+    # Real canonical GGM 1.0.0 governed this session.
+    _assert_canonical_ggm_executed(governance_traces, case.case_id)
 
 
 # --- E2E-B: Boundary/error case ---
@@ -207,50 +296,123 @@ def test_e2e_b_unknown_session_error(live_server, page: Page):
 
 # --- E2E-C: Independent sessions ---
 
-def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright):
-    """E2E-C: Two independent browser sessions maintain isolation.
+def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governance_traces):
+    """E2E-C: two independent browser contexts, interleaved, fully isolated.
 
-    Open two separate browser contexts (simulating two users), start
-    diagnostic sessions with different complaints, verify no state leakage.
-    """
-    # Create two independent browser contexts
+    Two users with different complaints and different answers are driven in
+    lock-step through the real UI. Verifies different session ids,
+    independent diagnostic state / answers / Evidence / hypotheses / reports,
+    no leakage in either direction, and both sessions completing."""
+    complaint_1 = "bruit métallique au démarrage"
+    complaint_2 = "voyant moteur orange allumé"
+
     browser = playwright.chromium.launch(headless=True)
-
-    context1 = browser.new_context()
-    page1 = context1.new_page()
-
-    context2 = browser.new_context()
-    page2 = context2.new_page()
-
+    ctx_1 = browser.new_context()
+    ctx_2 = browser.new_context()
+    page_1 = ctx_1.new_page()
+    page_2 = ctx_2.new_page()
     try:
-        # User 1: "bruit moteur"
-        page1.goto(live_server)
-        page1.fill("textarea#complaint", "bruit moteur au démarrage")
-        page1.click("button#start-btn")
-        page1.wait_for_timeout(1000)
+        sid_1 = _start_diagnostic(page_1, live_server, complaint_1)
+        sid_2 = _start_diagnostic(page_2, live_server, complaint_2)
+        assert sid_1 != sid_2
+        s1, s2 = _sessions[sid_1], _sessions[sid_2]
+        assert s1 is not s2
+        assert page_1.locator("#safety-alert").is_hidden()
+        assert page_2.locator("#safety-alert").is_hidden()
 
-        # User 2: "voyant allumé"
-        page2.goto(live_server)
-        page2.fill("textarea#complaint", "voyant moteur allumé orange")
-        page2.click("button#start-btn")
-        page2.wait_for_timeout(1000)
+        # Interleave: user 1 always takes the first offered choice, user 2 the
+        # second — genuinely different answers to the same questions.
+        answers_1: list[str] = []
+        answers_2: list[str] = []
+        for _ in range(20):
+            done_1, done_2 = _report_visible(page_1), _report_visible(page_2)
+            if done_1 and done_2:
+                break
+            if not done_1:
+                _answer_visible_question(page_1, 0, answers_1)
+            if not done_2:
+                _answer_visible_question(page_2, 1, answers_2)
+        else:
+            pytest.fail("sessions did not both complete")
 
-        # Verify both got to a state (question or alert or report)
-        # Page 1 should show User 1's complaint context
-        page1_content = page1.content().lower()
-        assert "bruit" in page1_content
-        # Should not show User 2's specific complaint (voyant moteur allumé orange)
-        assert "voyant moteur allumé orange" not in page1_content
+        # Both operable through the whole lifecycle.
+        s1, s2 = _sessions[sid_1], _sessions[sid_2]
+        assert s1.state == SessionState.COMPLETED
+        assert s2.state == SessionState.COMPLETED
+        assert answers_1 and answers_2 and answers_1 != answers_2
 
-        # Page 2 should show User 2's complaint context
-        page2_content = page2.content().lower()
-        assert "voyant" in page2_content or "orange" in page2_content
-        # Should not show User 1's specific complaint (bruit moteur au démarrage)
-        assert "bruit moteur au démarrage" not in page2_content
+        # Independent request/complaint state.
+        assert s1.request.request_id != s2.request.request_id
+        assert s1.request.initial_complaint.free_text == complaint_1
+        assert s2.request.initial_complaint.free_text == complaint_2
 
+        # Independent answers: each session holds exactly its own values,
+        # and they differ where the same question was asked of both.
+        assert len(s1.answers) == len(answers_1)
+        assert len(s2.answers) == len(answers_2)
+        common = {a.question_id for a in s1.answers} & {a.question_id for a in s2.answers}
+        assert common, "expected shared questions to compare answers on"
+        v1 = {a.question_id: a.value for a in s1.answers}
+        v2 = {a.question_id: a.value for a in s2.answers}
+        assert any(v1[q] != v2[q] for q in common)
+        assert {a.question_id for a in s1.answers} <= {q.question_id for q in s1.questions_asked}
+        assert {a.question_id for a in s2.answers} <= {q.question_id for q in s2.questions_asked}
+
+        # Independent diagnostic state (case state: observations, Evidence,
+        # hypotheses, answers) — no shared objects between the sessions.
+        c1, c2 = _case(sid_1), _case(sid_2)
+        assert c1 is not c2 and c1.case_id != c2.case_id
+        for attr in ("observations", "evidence", "hypotheses", "answers", "questions"):
+            l1, l2 = getattr(c1, attr), getattr(c2, attr)
+            assert l1 is not l2
+            assert not ({id(x) for x in l1} & {id(x) for x in l2}), f"shared {attr} objects"
+        for attr in ("answers", "symptoms", "trace", "questions_asked"):
+            l1, l2 = getattr(s1, attr), getattr(s2, attr)
+            assert l1 is not l2
+            assert not ({id(x) for x in l1} & {id(x) for x in l2}), f"shared {attr} objects"
+        assert c1.evidence and c2.evidence and c1.hypotheses and c2.hypotheses
+        assert c1.observations and c2.observations
+
+        # No Evidence / observation / hypothesis / report content leakage,
+        # either direction.
+        def dump(objs):
+            return json.dumps([o.model_dump(mode="json") for o in objs], ensure_ascii=False).lower()
+
+        own_1 = dump(c1.observations) + dump(c1.evidence) + dump(c1.hypotheses)
+        own_2 = dump(c2.observations) + dump(c2.evidence) + dump(c2.hypotheses)
+        assert complaint_2.lower() not in own_1
+        assert complaint_1.lower() not in own_2
+        assert c1.case_id not in own_2 and c2.case_id not in own_1
+        rep_1 = s1.result.garage_preparation_report.model_dump_json().lower()
+        rep_2 = s2.result.garage_preparation_report.model_dump_json().lower()
+        assert complaint_1 in rep_1 and complaint_2 not in rep_1
+        assert complaint_2 in rep_2 and complaint_1 not in rep_2
+
+        # Rendered UI: each browser shows only its own report.
+        text_1 = page_1.locator("#report-container").text_content()
+        text_2 = page_2.locator("#report-container").text_content()
+        assert complaint_1 in text_1 and complaint_2 not in text_1
+        assert complaint_2 in text_2 and complaint_1 not in text_2
+        _assert_non_definitive(text_1)
+        _assert_non_definitive(text_2)
+
+        # Server API keeps them separate and each remains operable/readable.
+        st_1 = page_1.request.get(f"{live_server}/api/session/{sid_1}/state").json()
+        st_2 = page_2.request.get(f"{live_server}/api/session/{sid_2}/state").json()
+        assert st_1["session_id"] == sid_1 and st_2["session_id"] == sid_2
+        assert st_1["completed"] and st_2["completed"]
+        rep_api_1 = page_1.request.get(f"{live_server}/api/session/{sid_1}/report").json()
+        rep_api_2 = page_2.request.get(f"{live_server}/api/session/{sid_2}/report").json()
+        assert rep_api_1["garage_preparation_report"]["customer_reported_problem"] == complaint_1
+        assert rep_api_2["garage_preparation_report"]["customer_reported_problem"] == complaint_2
+        assert rep_api_1["garage_preparation_report"]["report_id"] != rep_api_2["garage_preparation_report"]["report_id"]
+
+        # Governance traces are per-session and both used canonical GGM.
+        _assert_canonical_ggm_executed(governance_traces, c1.case_id)
+        _assert_canonical_ggm_executed(governance_traces, c2.case_id)
     finally:
-        context1.close()
-        context2.close()
+        ctx_1.close()
+        ctx_2.close()
         browser.close()
 
 
