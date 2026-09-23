@@ -79,11 +79,20 @@ class KnowledgeFreshnessStatus(str, Enum):
     alone -- verified_at is evidence of WHEN verification occurred; this
     enum is the actual governed decision about what that evidence means,
     set explicitly by whoever performs or reviews verification, never
-    computed automatically from a timestamp comparison."""
+    computed automatically from a timestamp comparison.
+
+    VERIFIED_CURRENT must only be used when a verification has actually
+    occurred and is reproducible (verified_at set, evidence available).
+    OWNER_ATTESTED_UNVERIFIED is the truthful state for content supplied
+    and attributed by the owner whose independent verification against
+    the source cannot be demonstrated -- it does not assert the content
+    is false, only that no verification is claimed. It is the default so
+    that a document never silently claims verification."""
     VERIFIED_CURRENT = "verified_current"
     STALE = "stale"
     SOURCE_UPDATE_REQUIRED = "source_update_required"
     SOURCE_UNAVAILABLE = "source_unavailable"
+    OWNER_ATTESTED_UNVERIFIED = "owner_attested_unverified"
 
 
 class SourceAuthority(str, Enum):
@@ -206,6 +215,8 @@ class ManufacturerDocumentReference(BaseModel):
         (historical authority). Never computed from verified_at by this
         domain type or any code that constructs it; always an explicit
         value supplied by whoever performed or reviewed verification.
+        Defaults to OWNER_ATTESTED_UNVERIFIED: no verification is
+        asserted unless one is explicitly recorded.
     """
     model_config = ConfigDict(frozen=True)
 
@@ -219,7 +230,7 @@ class ManufacturerDocumentReference(BaseModel):
     lifecycle_status: KnowledgeLifecycleStatus = KnowledgeLifecycleStatus.ACTIVE
     verified_at: Optional[str] = None
     supersedes_document_id: Optional[str] = None
-    freshness_status: KnowledgeFreshnessStatus = KnowledgeFreshnessStatus.VERIFIED_CURRENT
+    freshness_status: KnowledgeFreshnessStatus = KnowledgeFreshnessStatus.OWNER_ATTESTED_UNVERIFIED
 
 
 class DashboardReferenceEntry(BaseModel):

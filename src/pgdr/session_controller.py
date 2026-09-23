@@ -55,7 +55,18 @@ from pgdr.governance.errors import GovernanceUnavailableError
 from pgdr.governance.reporting import govern_and_build_result
 from pgdr.governance.trace import InMemoryGovernanceTraceStore
 from pgdr.models import Answer, DiagnosticQuestion, DiagnosticSession, PreGarageDiagnosticRequest
-from pgdr.ports.dashboard_interpretation import DashboardInterpretationPort
+from pgdr.application.diagnostic_intake_from_interpretation import DiagnosticIntakeResult
+from pgdr.application.diagnostic_intake_ingestion import ingest_dashboard_interpretation
+from pgdr.application.photo_first import (
+    FallbackOffer, PhotoCaseState, PhotoPhase, PhotoStep, build_user_selection_intake, fallback_offer,
+    fallback_trigger, warning_indicator_from_entry,
+)
+from pgdr.domain.dashboard_knowledge import DashboardReferenceSet
+from pgdr.domain.photo_provenance import LOCATION_QUESTION_ID, MAX_RETAKES
+from pgdr.domain.safety_state import SafetyState
+from pgdr.enums import TriageLevel
+from pgdr.ports.dashboard_interpretation import DashboardInterpretationPort, MatchStatus
+from pgdr.ports.media_resolver import MediaResolverPort
 from pgdr.report_builder import build_result_from_case_state
 from pgdr.safety_engine import SafetyEngine
 
@@ -92,6 +103,10 @@ class SessionController:
         # diagnostic reasoning loop is not modified to consume
         # interpretation results. That wiring belongs to a later B slice.
         self._dashboard_interpretation_port = dashboard_interpretation_port
+
+        # PHOTO-FIRST (B2 completion): per-session photo acquisition state.
+        # Keyed by session id, so concurrent sessions cannot share it.
+        self._photo_state: dict[str, PhotoCaseState] = {}
 
         # Only used to recover a question's original QuestionCategory for
         # the legacy pgdr.models.DiagnosticQuestion shape (session.pending_questions) —
@@ -198,8 +213,209 @@ class SessionController:
         session.pending_questions = self._advance(session, case_state)
         return session
 
+
+    # ------------------------------------------------------------------
+    # PHOTO-FIRST (B2 completion, E3/E4/E5).
+    #
+    # The dashboard photograph is the mandatory initial input. These
+    # methods wire the ALREADY-BUILT B2 chain (B1.5 resolution -> B2-V
+    # governed validation -> B2-D intake -> B2-I ingestion -> B2-R
+    # relevance) into the existing case state, then re-evaluate safety
+    # through the UNMODIFIED SafetyEngine. Nothing here interprets an
+    # image, decides a safety state from provider output, or changes
+    # Evidence/scorer/confidence semantics.
+    # ------------------------------------------------------------------
+
+    def start_photo_case(
+        self, request: PreGarageDiagnosticRequest, *, session_id: str | None = None,
+    ) -> DiagnosticSession:
+        """Creates the session/case for a photo-first entry. Consent is a
+        precondition of the CALLER's flow (no case exists without it); this
+        method additionally refuses to start when media analysis was not
+        authorized on the request. No complaint is required."""
+        if not request.consent.media_analysis_allowed:
+            raise PermissionError("media_analysis_allowed is False: a photo-first case cannot start")
+        session = (
+            DiagnosticSession(request=request, session_id=session_id) if session_id else DiagnosticSession(request=request)
+        )
+        session.log_transition(SessionState.RECEIVED, SessionState.IDENTITY_RESOLUTION, "Request received")
+        session.log_transition(
+            SessionState.IDENTITY_RESOLUTION, SessionState.COMPLAINT_ANALYSIS,
+            f"VIR identity artifact consumed: {request.vehicle_identity_context.resolution_id}",
+        )
+        session.log_transition(
+            SessionState.COMPLAINT_ANALYSIS, SessionState.IMMEDIATE_SAFETY_TRIAGE, "Photo-first: awaiting photo"
+        )
+        triage = self.safety_engine.evaluate(session)
+        session.safety_triage = triage
+        case_state = self._case_factory.create_for_photo(request, triage)
+        self._case_states[session.session_id] = case_state
+        session.log_transition(
+            SessionState.IMMEDIATE_SAFETY_TRIAGE, SessionState.SYMPTOM_COLLECTION, "No critical safety signal"
+        )
+        self._photo_state[session.session_id] = PhotoCaseState()
+        return session
+
+    def photo_case_state(self, session: DiagnosticSession) -> PhotoCaseState:
+        return self._photo_state[session.session_id]
+
+    def acquire_photo(
+        self, session: DiagnosticSession, *, media_reference: str, resolver: MediaResolverPort,
+        reference_set: DashboardReferenceSet,
+    ) -> PhotoStep:
+        """One photo attempt through the real B2 chain."""
+        ps = self._photo_state[session.session_id]
+        if ps.phase not in (PhotoPhase.AWAITING_PHOTO, PhotoPhase.RETAKE_REQUESTED):
+            raise RuntimeError(f"photo cannot be submitted in phase {ps.phase.value}")
+        if self._dashboard_interpretation_port is None:
+            raise RuntimeError("no DashboardInterpretationPort is configured")
+        case_state = self._case_states[session.session_id]
+
+        media = resolver.resolve(media_reference)          # B1.5: real bytes
+        ps.media_reference = media_reference
+        ps.reference_set = reference_set
+        # B2-I -> B2-D -> B2-V (mandatory validation); provider failures
+        # propagate unchanged and leave case state untouched.
+        intake = ingest_dashboard_interpretation(
+            self._dashboard_interpretation_port, media, reference_set, self._updater, case_state,
+        )
+        ps.last_intake = intake
+
+        trigger = fallback_trigger(intake)
+        if trigger is None:
+            self._complete_photo_acquisition(session, intake)
+            return PhotoStep(phase=PhotoPhase.COMPLETED)
+
+        if trigger == MatchStatus.INSUFFICIENT_VISUAL_QUALITY and ps.retakes_used < MAX_RETAKES:
+            ps.retakes_used += 1
+            ps.phase = PhotoPhase.RETAKE_REQUESTED
+            ps.trigger = trigger
+            return PhotoStep(
+                phase=PhotoPhase.RETAKE_REQUESTED, trigger=trigger, retakes_used=ps.retakes_used,
+                retakes_remaining=MAX_RETAKES - ps.retakes_used,
+            )
+        return self._open_fallback(ps, trigger, intake, reference_set)
+
+    def decline_retake(self, session: DiagnosticSession) -> PhotoStep:
+        """The driver cannot / will not retake: move to the fallback."""
+        ps = self._photo_state[session.session_id]
+        if ps.phase != PhotoPhase.RETAKE_REQUESTED or ps.last_intake is None or ps.reference_set is None:
+            raise RuntimeError("no retake is currently requested")
+        return self._open_fallback(ps, MatchStatus.INSUFFICIENT_VISUAL_QUALITY, ps.last_intake, ps.reference_set)
+
+    def _open_fallback(
+        self, ps: PhotoCaseState, trigger: MatchStatus, intake: DiagnosticIntakeResult,
+        reference_set: DashboardReferenceSet,
+    ) -> PhotoStep:
+        ps.trigger = trigger
+        ps.offer = fallback_offer(trigger, intake, reference_set)
+        ps.phase = PhotoPhase.SELECTION_REQUIRED
+        return PhotoStep(
+            phase=PhotoPhase.SELECTION_REQUIRED, trigger=trigger, offer=ps.offer,
+            retakes_used=ps.retakes_used, retakes_remaining=max(0, MAX_RETAKES - ps.retakes_used),
+        )
+
+    def record_user_symbol_selection(
+        self, session: DiagnosticSession, *, entry_id: str | None,
+    ) -> PhotoStep:
+        """E5: the driver's own selection (or 'none of these'). Recorded
+        with USER provenance -- never as a machine-verified visual match."""
+        ps = self._photo_state[session.session_id]
+        if ps.phase != PhotoPhase.SELECTION_REQUIRED or ps.offer is None or ps.media_reference is None:
+            raise RuntimeError("no symbol selection is currently requested")
+        case_state = self._case_states[session.session_id]
+        intake = build_user_selection_intake(
+            ps.offer, media_reference=ps.media_reference, selected_entry_id=entry_id,
+        )
+        self._updater.add_observations(case_state, list(intake.observations))
+        if intake.evidence:
+            self._updater.add_evidence(case_state, list(intake.evidence))
+        self._complete_photo_acquisition(session, intake)
+        return PhotoStep(phase=PhotoPhase.COMPLETED)
+
+    def _complete_photo_acquisition(self, session: DiagnosticSession, intake: DiagnosticIntakeResult) -> None:
+        """B2-R relevance -> safety re-evaluation -> existing flow.
+
+        Order matters: safety is re-evaluated (unmodified SafetyEngine, on
+        the governed entries only) BEFORE any ordinary question is
+        selected. The provider's raw output never reaches this point: only
+        a governed DiagnosticIntakeResult does."""
+        ps = self._photo_state[session.session_id]
+        case_state = self._case_states[session.session_id]
+        ps.phase = PhotoPhase.COMPLETED
+
+        # B2-R1/R2/R5: existing dashboard relevance, unmodified.
+        new_hypotheses, new_evidence = self._domain.apply_dashboard_diagnostic_relevance(intake, case_state)
+        if new_hypotheses:
+            case_state.hypotheses.extend(new_hypotheses)
+            case_state.touch()
+        if new_evidence:
+            self._updater.add_evidence(case_state, new_evidence)
+
+        # E4: safety re-evaluation from GOVERNED reference entries.
+        previous = session.safety_triage
+        for obs_id, entry in intake.matched_reference_entries.items():
+            session.warning_indicators.append(warning_indicator_from_entry(entry, photo_evidence_id=obs_id))
+        triage = self.safety_engine.evaluate(session)
+        session.safety_triage = triage
+        case_state.safety_state = SafetyState(triage=triage)
+
+        elevated = _severity_index(triage.level) > _severity_index(previous.level if previous else None)
+        needs_location = (
+            elevated
+            and _severity_index(triage.level) >= _severity_index(TriageLevel.PROMPT_INSPECTION)
+            and not ps.location_clarification_asked
+        )
+        if needs_location:
+            # ONE safety-gated location question, before any ordinary question.
+            question = self._domain.safety_clarification_question(case_state)
+            case_state.questions.append(question)
+            ps.location_clarification_asked = True
+            session.pending_questions = [self._legacy_question(question)]
+            if triage.level.value in ("emergency_stop", "do_not_drive"):
+                session.log_transition(
+                    session.state, SessionState.ESCALATED, f"Critical safety signal: {triage.level.value}",
+                )
+                session.result = build_result_from_case_state(session.request.request_id, case_state)
+            return
+
+        if triage.level.value in ("emergency_stop", "do_not_drive"):
+            session.log_transition(
+                session.state, SessionState.ESCALATED, f"Critical safety signal: {triage.level.value}",
+            )
+            session.result = build_result_from_case_state(session.request.request_id, case_state)
+            session.pending_questions = []
+            return
+
+        session.pending_questions = self._advance(session, case_state)
+        if not session.pending_questions:
+            self._finalize(session, case_state)
+
+    def _legacy_question(self, nq) -> DiagnosticQuestion:
+        category = self._category_by_question_id.get(nq.id, None) or "clarification"
+        return DiagnosticQuestion(
+            question_id=nq.id, target=nq.domain_ref or "", category=category, prompt=nq.text,
+            answer_type=nq.answer_type, required=False, risk_level=nq.risk_level or "none",
+            selection_reason="Précision nécessaire suite à l'analyse de sécurité.", choices=nq.choices,
+        )
+
     def submit_answer(self, session: DiagnosticSession, answer: Answer) -> DiagnosticSession:
         case_state = self._case_states[session.session_id]
+
+        # PHOTO-FIRST: a safety-gated clarification asked on an ESCALATED
+        # case is recorded but never restarts ordinary questioning (the
+        # existing terminal-escalation semantics are unchanged).
+        if session.state == SessionState.ESCALATED and any(
+            q.question_id == answer.question_id for q in session.pending_questions
+        ):
+            session.answers.append(answer)
+            new_question = next((q for q in case_state.questions if q.id == answer.question_id), None)
+            if new_question is not None:
+                self._case_states[session.session_id] = self._loop.submit_answer(
+                    case_state, new_question, answer.value,
+                )
+            session.pending_questions = []
+            return session
 
         session.answers.append(answer)
         matched = next((q for q in session.pending_questions if q.question_id == answer.question_id), None)
@@ -299,3 +515,13 @@ class SessionController:
             "safety_triage": session.safety_triage.model_dump(mode="json") if session.safety_triage else None,
             "symptoms": [s.model_dump(mode="json") for s in session.symptoms],
         }
+
+
+_SEVERITY_ORDER = [
+    TriageLevel.MONITOR_AND_DOCUMENT, TriageLevel.STANDARD_APPOINTMENT, TriageLevel.PROMPT_INSPECTION,
+    TriageLevel.LIMITED_MOVEMENT_ONLY, TriageLevel.DO_NOT_DRIVE, TriageLevel.EMERGENCY_STOP,
+]
+
+
+def _severity_index(level: TriageLevel | None) -> int:
+    return -1 if level is None else _SEVERITY_ORDER.index(level)

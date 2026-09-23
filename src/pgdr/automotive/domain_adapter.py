@@ -178,6 +178,7 @@ from pgdr.diagnostic import _HYPOTHESIS_MAP
 from pgdr.domain.analytical_state import DiagnosticCaseState
 from pgdr.domain.contradiction import DiagnosticContradiction
 from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry, SourceAuthority
+from pgdr.domain.photo_provenance import LOCATION_QUESTION_ID, PHOTO_ORIGIN_OBSERVATION_KINDS
 from pgdr.domain.enums import EvidenceDirection, ObservationSource
 from pgdr.domain.evidence import Evidence
 from pgdr.domain.hypothesis import DiagnosticHypothesis
@@ -476,9 +477,22 @@ class AutomotiveDiagnosticDomain:
         active_ids = [h.id for h in state.active_hypotheses()]
         answers_by_question_id = {a.question_id: a for a in state.answers}
 
+        # PHOTO-FIRST (B2 completion, mandate §1c/§6): in a case whose
+        # entry point is a dashboard photograph, the generic location
+        # question is NOT an ordinary question (it is asked exactly once,
+        # only when photo-triggered safety re-evaluation requires it --
+        # see safety_clarification_question) and the driver is never asked
+        # whether they have a photo (evidence-acquisition questions).
+        # Cases without photo-origin observations are entirely unchanged.
+        photo_origin = any(o.kind in PHOTO_ORIGIN_OBSERVATION_KINDS for o in state.observations)
+
         result: list[DiagnosticQuestion] = []
         for raw in self._questions_raw:
             if raw.get("answer_type") in _SKIPPED_ANSWER_TYPES:
+                continue
+            if photo_origin and (
+                raw["question_id"] == LOCATION_QUESTION_ID or raw.get("evidence_acquisition")
+            ):
                 continue
 
             ask_if = raw.get("ask_if", "")
@@ -504,6 +518,25 @@ class AutomotiveDiagnosticDomain:
                 is_evidence_acquisition=bool(raw.get("evidence_acquisition", False)),
             ))
         return result
+
+    def safety_clarification_question(self, state: DiagnosticCaseState) -> DiagnosticQuestion:
+        """PHOTO-FIRST E4: the single, existing location question
+        (Q-STATE-001), built from the same configuration entry ordinary
+        selection would use, for the one case where safety re-evaluation
+        -- not ordinary diagnostic selection -- requires it. Not part of
+        the DiagnosticDomain Protocol."""
+        raw = next(q for q in self._questions_raw if q["question_id"] == LOCATION_QUESTION_ID)
+        return DiagnosticQuestion(
+            id=raw["question_id"],
+            text=raw["prompt"],
+            target_hypothesis_ids=[h.id for h in state.active_hypotheses()],
+            answer_type=AnswerType(raw["answer_type"]),
+            risk_level=raw.get("risk_level", "none"),
+            domain_ref=raw.get("target"),
+            choices=raw.get("choices"),
+            repeatable=False,
+            is_evidence_acquisition=False,
+        )
 
     # -- extra: not part of the DiagnosticDomain Protocol (P4's §18 names
     # 4 methods only) — contradiction detection is called explicitly by

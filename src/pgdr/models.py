@@ -240,6 +240,13 @@ class GaragePreparationReport(BaseModel):
     safety_information: dict[str, Any] = Field(default_factory=dict)
     recent_vehicle_events: list[dict[str, Any]] = Field(default_factory=list)
     evidence_index: list[dict[str, Any]] = Field(default_factory=list)
+    dashboard_identifications: list[dict[str, Any]] = Field(default_factory=list)
+    """B2 photo-first: dashboard symbols established from the driver's photo,
+    each with an explicit `origin` -- 'visual_provider_match' (machine
+    visual interpretation, validated against the manufacturer reference
+    set) or 'user_selection' (the driver's own choice from the
+    manufacturer symbol list, machine_verified=False). The two are never
+    merged or phrased alike. Empty for cases without a photo."""
     systems_to_examine: list[dict[str, Any]] = Field(default_factory=list)
     suggested_professional_checks: list[str] = Field(default_factory=list)
     unresolved_questions: list[str] = Field(default_factory=list)

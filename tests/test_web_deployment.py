@@ -9,10 +9,22 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+import photo_first_support as sup
+from pgdr import web_app as _web
 from pgdr.enums import SessionState
 from pgdr.models import Answer
 from pgdr.session_controller import SessionController
 from pgdr.web_app import app, _sessions
+
+# B2 photo-first: the dashboard photograph is the mandatory initial input, so
+# there is no text-first web start path any more. Tests below that formerly
+# started a session from a free-text complaint now start it from a photo
+# (deterministic provider = integration-test mechanism only; see
+# photo_first_support.py). Tests whose subject was the text-first entry itself
+# (WEB-4 complaint extraction, WEB-6 empty complaint) were removed: that
+# behavior no longer exists by design. WEB-1/7/10/14/15 are unchanged.
+# The vehicle identity is the VIR artifact handed over by PI (captured real
+# VIR -> map_resolution() output), never typed vehicle fields.
 
 
 @pytest.fixture(autouse=True)
@@ -27,6 +39,35 @@ def clear_sessions():
 def client():
     """FastAPI test client."""
     return TestClient(app)
+
+
+@pytest.fixture
+def provider(monkeypatch):
+    monkeypatch.setenv(_web.IDENTITY_HANDOFF_TOKEN_ENV, sup.HANDOFF_TOKEN)
+    saved = (_web._photo_wiring, _web._session_controller)
+    p = sup.DeterministicDashboardProvider()
+    _web._photo_wiring = _web.PhotoWiring(
+        interpretation_provider=p, knowledge_repository=sup.InMemoryKnowledgeRepository(),
+    )
+    _web._session_controller = None
+    _web._photo_intakes.clear()
+    yield p
+    _web._photo_wiring, _web._session_controller = saved
+    _web._photo_intakes.clear()
+
+
+def _photo_session(client, provider, seed, *factories):
+    """VIR identity handoff + consent + real image upload through the web
+    API. Returns (session_id, upload_payload)."""
+    image = provider.script(sup.png_bytes(seed), *factories)
+    sid = sup.handoff(client).json()["intake_id"]
+    client.post("/api/photo/session", json={"intake_id": sid, "consent_media_analysis": True})
+    payload = client.post(f"/api/photo/{sid}/media", content=image, headers={"Content-Type": "image/png"}).json()
+    return sid, payload
+
+
+def _oil():
+    return sup.match(sup.OIL, "Voyant rouge de pression d'huile")
 
 
 # --- WEB-1: Application/readiness starts correctly ---
@@ -51,132 +92,70 @@ def test_web1_readiness_check_reflects_ggm_availability(client):
 
 # --- WEB-2: A diagnostic session can start ---
 
-def test_web2_start_session_creates_session(client):
-    """WEB-2: A diagnostic session can be started via HTTP."""
-    response = client.post("/api/session/start", json={
-        "complaint": "La voiture tremble au ralenti",
-        "vehicle_location": "home",
-        "urgency": "medium",
-    })
-
-    assert response.status_code == 200
-    data = response.json()
-    assert "session_id" in data
-    assert data["state"] in [SessionState.SYMPTOM_COLLECTION.value, SessionState.ESCALATED.value]
+def test_web2_start_session_creates_session(client, provider):
+    """WEB-2: A diagnostic session can be started via HTTP -- from a
+    consented dashboard photograph (the only entry into PGDR)."""
+    sid, payload = _photo_session(client, provider, 201, _oil())
+    assert payload["status"] == "analysed"
+    assert payload["session_id"] == sid and sid in _sessions
+    assert payload["state"] in [SessionState.SYMPTOM_COLLECTION.value, SessionState.ESCALATED.value]
 
 
 # --- WEB-3: Question/answer state progresses correctly ---
 
-def test_web3_question_answer_progression(client):
+def test_web3_question_answer_progression(client, provider):
     """WEB-3: Question/answer state progression works correctly."""
-    # Start session
-    start_resp = client.post("/api/session/start", json={
-        "complaint": "La voiture tremble au ralenti",
-    })
-    assert start_resp.status_code == 200
-    session_data = start_resp.json()
-    session_id = session_data["session_id"]
-
-    # If escalated (safety signal), skip question progression test
-    if session_data.get("escalated"):
-        pytest.skip("Session escalated due to safety signal")
-
-    # Should have questions
+    sid, session_data = _photo_session(client, provider, 202, _oil())
+    assert not session_data.get("escalated")
     assert len(session_data.get("pending_questions", [])) > 0
     first_question = session_data["pending_questions"][0]
 
-    # Submit answer
-    answer_resp = client.post(f"/api/session/{session_id}/answer", json={
+    answer_resp = client.post(f"/api/session/{sid}/answer", json={
         "question_id": first_question["question_id"],
         "value": "je ne sais pas",
     })
     assert answer_resp.status_code == 200
-    answer_data = answer_resp.json()
-
-    # State should have progressed
-    assert "state" in answer_data
-
-
-# --- WEB-4: Evidence/scoring behavior remains consistent with core ---
-
-def test_web4_evidence_scoring_consistency(client):
-    """WEB-4: Evidence/scoring behavior via web matches core behavior.
-
-    This is a structural test: the web layer calls SessionController with
-    the same inputs the CLI would use, so it must produce the same Evidence
-    and scoring results.
-    """
-    # Start two identical sessions: one via web, one via core directly
-    web_resp = client.post("/api/session/start", json={
-        "complaint": "La voiture tremble au ralenti",
-        "vehicle_location": "home",
-    })
-    assert web_resp.status_code == 200
-    web_session_id = web_resp.json()["session_id"]
-    web_session = _sessions[web_session_id]
-
-    # The web session uses the same SessionController as the CLI would,
-    # so its initial state (symptoms, hypotheses) must match what a direct
-    # SessionController.start() call produces
-    assert web_session.extracted_complaint is not None
-    assert isinstance(web_session.symptoms, list)
+    assert "state" in answer_resp.json()
 
 
 # --- WEB-5: Final report is reachable ---
 
-def test_web5_report_endpoint_available_after_completion(client):
+def test_web5_report_endpoint_available_after_completion(client, provider):
     """WEB-5: Final report can be retrieved after session completion."""
-    # Start session
-    start_resp = client.post("/api/session/start", json={
-        "complaint": "bruit étrange au démarrage",
-    })
-    session_data = start_resp.json()
-    session_id = session_data["session_id"]
+    sid, session_data = _photo_session(client, provider, 203, _oil())
+    assert not session_data.get("escalated")
+    while session_data.get("pending_questions"):
+        q = session_data["pending_questions"][0]
+        client.post(f"/api/session/{sid}/answer", json={
+            "question_id": q["question_id"],
+            "value": False if q["answer_type"] == "yes_no" else "je ne sais pas",
+        })
+        session_data = client.get(f"/api/session/{sid}/state").json()
+        if session_data.get("completed"):
+            break
+    report_resp = client.get(f"/api/session/{sid}/report")
+    assert report_resp.status_code == 200
+    report_data = report_resp.json()
+    assert "user_summary" in report_data
+    assert "garage_preparation_report" in report_data
 
-    # If escalated, report should be available immediately
-    if session_data.get("escalated"):
-        report_resp = client.get(f"/api/session/{session_id}/report")
-        assert report_resp.status_code == 200
-        report_data = report_resp.json()
-        assert "user_summary" in report_data
-        assert "garage_preparation_report" in report_data
-    else:
-        # Answer all questions with "je ne sais pas" to complete
-        while session_data.get("pending_questions"):
-            q = session_data["pending_questions"][0]
-            client.post(f"/api/session/{session_id}/answer", json={
-                "question_id": q["question_id"],
-                "value": False if q["answer_type"] == "yes_no" else "je ne sais pas",
-            })
-            state_resp = client.get(f"/api/session/{session_id}/state")
-            session_data = state_resp.json()
-            if session_data.get("completed"):
-                break
 
-        # Report should be available
-        report_resp = client.get(f"/api/session/{session_id}/report")
-        assert report_resp.status_code == 200
+def test_web5b_report_is_available_immediately_for_a_photo_derived_escalation(client, provider):
+    """WEB-5 (escalated branch): a safety-escalated session's report is
+    available at once."""
+    sid, payload = _photo_session(client, provider, 204, sup.match(sup.BRAKE, "Voyant rouge de frein"))
+    assert payload["escalated"] is True
+    report_resp = client.get(f"/api/session/{sid}/report")
+    assert report_resp.status_code == 200
+    assert "user_summary" in report_resp.json() and "garage_preparation_report" in report_resp.json()
 
 
 # --- WEB-6: Invalid input fails boundedly ---
 
-def test_web6_invalid_complaint_fails_bounded(client):
-    """WEB-6: Invalid input (empty complaint) fails with clear error."""
-    response = client.post("/api/session/start", json={
-        "complaint": "",  # Invalid: empty
-    })
-    assert response.status_code == 422  # Pydantic validation error
-
-
-def test_web6_invalid_answer_fails_bounded(client):
+def test_web6_invalid_answer_fails_bounded(client, provider):
     """WEB-6: Invalid answer (wrong question_id) fails boundedly."""
-    start_resp = client.post("/api/session/start", json={
-        "complaint": "problème au démarrage",
-    })
-    session_id = start_resp.json()["session_id"]
-
-    # Submit answer with invalid question_id
-    answer_resp = client.post(f"/api/session/{session_id}/answer", json={
+    sid, _ = _photo_session(client, provider, 205, _oil())
+    answer_resp = client.post(f"/api/session/{sid}/answer", json={
         "question_id": "INVALID-Q-999",
         "value": "test",
     })
@@ -194,7 +173,7 @@ def test_web7_unknown_session_fails_bounded(client):
 
 # --- WEB-8: Two sessions remain isolated ---
 
-def test_web8_concurrent_sessions_isolated(client):
+def test_web8_concurrent_sessions_isolated(client, provider):
     """WEB-8: Two concurrent sessions maintain isolation.
 
     Logical isolation test: two sessions created independently must have
@@ -202,42 +181,25 @@ def test_web8_concurrent_sessions_isolated(client):
     verification (single-process deployment requirement) is documented
     separately in the final report.
     """
-    # Start two sessions
-    resp1 = client.post("/api/session/start", json={"complaint": "bruit moteur"})
-    resp2 = client.post("/api/session/start", json={"complaint": "voyant allumé"})
+    sid1, session1 = _photo_session(client, provider, 206, _oil())
+    sid2, session2 = _photo_session(client, provider, 207, sup.match(sup.ENGINE_FLASHING, "Voyant orange clignotant"))
 
-    assert resp1.status_code == 200
-    assert resp2.status_code == 200
-
-    session1 = resp1.json()
-    session2 = resp2.json()
-
-    # Different session IDs
     assert session1["session_id"] != session2["session_id"]
-
-    # Independent state (can retrieve each separately)
-    state1 = client.get(f"/api/session/{session1['session_id']}/state").json()
-    state2 = client.get(f"/api/session/{session2['session_id']}/state").json()
-
-    assert state1["session_id"] == session1["session_id"]
-    assert state2["session_id"] == session2["session_id"]
+    state1 = client.get(f"/api/session/{sid1}/state").json()
+    state2 = client.get(f"/api/session/{sid2}/state").json()
+    assert state1["session_id"] == sid1
+    assert state2["session_id"] == sid2
 
 
 # --- WEB-9: Safety triage remains active ---
 
-def test_web9_safety_triage_preserved(client):
-    """WEB-9: Safety triage is active and can escalate via web layer."""
-    # Use a complaint that might trigger safety (e.g., smoke/fire keywords)
-    response = client.post("/api/session/start", json={
-        "complaint": "fumée noire sortant du moteur",
-    })
-
-    assert response.status_code == 200
-    data = response.json()
-
-    # Safety triage should have been evaluated (might or might not escalate,
-    # but the triage object must be present)
-    assert "safety_triage" in data or "escalated" in data
+def test_web9_safety_triage_preserved(client, provider):
+    """WEB-9: Safety triage is active and can escalate via web layer --
+    here from a photo-derived (governed) dashboard signal."""
+    sid, data = _photo_session(client, provider, 208, sup.match(sup.BRAKE, "Voyant rouge de frein"))
+    assert data["safety_triage"] is not None
+    assert data["escalated"] is True
+    assert data["safety_triage"]["level"] == "do_not_drive"
 
 
 # --- WEB-10: No unauthorized manufacturer scoring ---
@@ -266,10 +228,12 @@ def test_web10_no_unauthorized_manufacturer_additions(client):
     assert "Hypothesis(" not in web_app_source
 
 
-# --- WEB-11: UI renders in French ---
+# --- WEB-11: Frontend is in French ---
 
 def test_web11_frontend_in_french(client):
-    """WEB-11: HTML UI declares lang=fr and uses French text."""
+    """WEB-11: HTML UI declares lang=fr and uses French text.
+
+    B2 photo-first: the (only) page is the photo-first entry page."""
     response = client.get("/")
     assert response.status_code == 200
     html = response.text
@@ -281,72 +245,49 @@ def test_web11_frontend_in_french(client):
     assert 'charset="UTF-8"' in html or 'charset="utf-8"' in html
 
     # French UI labels (sample)
-    assert "Décrivez le problème" in html
-    assert "Démarrer" in html
+    assert "Continuer" in html
+    assert "photo" in html
     assert "véhicule" in html
+    assert "J'autorise PGDR à analyser la photo" in html
 
 
 # --- WEB-12: No English text leaks into French session ---
 
-def test_web12_no_english_in_french_session(client):
+def test_web12_no_english_in_french_session(client, provider):
     """WEB-12: A French session produces no English diagnostic text.
 
     Questions, answers, and reports must all be in French. UI chrome is
     allowed to be French (no i18n framework needed).
     """
-    start_resp = client.post("/api/session/start", json={
-        "complaint": "La voiture fait un bruit bizarre",
-    })
-    assert start_resp.status_code == 200
-    data = start_resp.json()
-
-    # Check questions are in French (if any)
+    _, data = _photo_session(client, provider, 209, _oil())
+    assert data["pending_questions"]
     for q in data.get("pending_questions", []):
         prompt = q.get("prompt", "")
-        # No common English question words in prompts
         assert "what" not in prompt.lower()
         assert "where" not in prompt.lower()
         assert "when" not in prompt.lower()
-        # Should have French question words
         assert any(word in prompt.lower() for word in ["où", "quand", "quel", "comment", "vous", "le", "la"])
 
 
 # --- WEB-13: Accented characters round-trip correctly ---
 
-def test_web13_french_accents_roundtrip(client):
-    """WEB-13: Accented French characters survive the full lifecycle."""
-    complaint_with_accents = "Problème de démarrage à froid, très gênant"
-
-    start_resp = client.post("/api/session/start", json={
-        "complaint": complaint_with_accents,
-    })
-    assert start_resp.status_code == 200
-    session_id = start_resp.json()["session_id"]
-
-    # Complete session and get report
-    data = start_resp.json()
-    if not data.get("escalated"):
-        # Answer questions to complete
-        for _ in range(10):  # Max 10 questions to avoid infinite loop
-            state_resp = client.get(f"/api/session/{session_id}/state")
-            state = state_resp.json()
-            if not state.get("pending_questions") or state.get("completed"):
-                break
-            q = state["pending_questions"][0]
-            client.post(f"/api/session/{session_id}/answer", json={
-                "question_id": q["question_id"],
-                "value": "je ne sais pas",
-            })
-
-    # Get report
-    report_resp = client.get(f"/api/session/{session_id}/report")
-    if report_resp.status_code == 200:
-        report = report_resp.json()
-        gpr = report["garage_preparation_report"]
-        # Original complaint with accents should appear in report
-        reported_problem = gpr.get("customer_reported_problem", "")
-        # Accented characters should be preserved
-        assert "é" in reported_problem or "è" in reported_problem or complaint_with_accents in reported_problem
+def test_web13_french_accents_roundtrip(client, provider):
+    """WEB-13: Accented French characters survive the full lifecycle (the
+    photo-derived observation text and the report wording)."""
+    observation = "Voyant rouge de pression d'huile allumé, très visible à gauche"
+    sid, data = _photo_session(client, provider, 210, sup.match(sup.OIL, observation))
+    for _ in range(30):
+        if not data.get("pending_questions"):
+            break
+        q = data["pending_questions"][0]
+        data = client.post(f"/api/session/{sid}/answer", json={
+            "question_id": q["question_id"], "value": "je ne sais pas",
+        }).json()
+    report = client.get(f"/api/session/{sid}/report").json()
+    text = " ".join(report["user_summary"]["main_observations"])
+    assert "identifié" in text and "allumé, très visible à gauche" in text
+    idents = report["garage_preparation_report"]["dashboard_identifications"]
+    assert idents and idents[0]["description"] == observation
 
 
 # --- WEB-14: Readiness negative path (GGM absent → NOT READY) ---

@@ -1,7 +1,13 @@
 """Browser E2E tests (Section 24) — real browser against production-like build.
 
-E2E-A: normal legacy case with "La voiture tremble au ralenti"
-E2E-B: boundary/error case
+B2 photo-first: PGDR starts only from a consented dashboard photograph, so
+these (formerly text-complaint) journeys now start from a photo. The
+deterministic provider is an integration-test mechanism only (see
+photo_first_support.py); the GGM / non-definitive-claim / isolation checks are
+unchanged in strength.
+
+E2E-A: complete governed French lifecycle, photo to final report
+E2E-B: boundary/error cases (non-image upload, unknown session)
 E2E-C: independent sessions (no state leakage)
 
 These tests run against a real uvicorn server with a real browser engine
@@ -12,15 +18,18 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import re
 import socket
 import threading
 import time
 
+import httpx
 import pytest
 import uvicorn
 from playwright.sync_api import Page, expect
 
+import photo_first_support as sup
 from pgdr.enums import SessionState
 from pgdr.governance.trace import InMemoryGovernanceTraceStore
 from pgdr import web_app as _web
@@ -54,9 +63,22 @@ def governance_traces():
 
 
 @pytest.fixture(scope="module")
-def live_server(governance_traces):
+def provider():
+    return sup.DeterministicDashboardProvider()
+
+
+@pytest.fixture(scope="module")
+def live_server(governance_traces, provider):
     """Real uvicorn server (real HTTP, real web app, real SessionController,
     real GGM) on a background thread of this process."""
+    saved = (_web._photo_wiring, _web._session_controller)
+    saved_token = os.environ.get(_web.IDENTITY_HANDOFF_TOKEN_ENV)
+    os.environ[_web.IDENTITY_HANDOFF_TOKEN_ENV] = sup.HANDOFF_TOKEN
+    _web._photo_wiring = _web.PhotoWiring(
+        interpretation_provider=provider, knowledge_repository=sup.InMemoryKnowledgeRepository(),
+    )
+    _web._session_controller = None
+    _web._photo_intakes.clear()
     _sessions.clear()
     config = uvicorn.Config(app, host="127.0.0.1", port=_PORT, log_level="error")
     server = uvicorn.Server(config)
@@ -77,7 +99,13 @@ def live_server(governance_traces):
 
     server.should_exit = True
     thread.join(timeout=5)
+    _web._photo_wiring, _web._session_controller = saved
+    _web._photo_intakes.clear()
     _sessions.clear()
+    if saved_token is None:
+        os.environ.pop(_web.IDENTITY_HANDOFF_TOKEN_ENV, None)
+    else:
+        os.environ[_web.IDENTITY_HANDOFF_TOKEN_ENV] = saved_token
 
 
 @pytest.fixture
@@ -93,17 +121,30 @@ def page(playwright):
 
 # --- Shared browser-driving helpers ---
 
-def _start_diagnostic(page: Page, base_url: str, complaint: str, urgency: str = "medium") -> str:
-    """Fill the rendered French form, click start, return the session id the
-    server issued for this browser (read from the real HTTP response)."""
+def _open_on_vir_intake(page: Page, base_url: str) -> None:
+    """PI's role (server to server): hand the captured real VIR identity
+    artifact to PGDR; then the driver opens the page on that intake and
+    consents. The vehicle is never entered in the browser."""
+    r = httpx.post(f"{base_url}/api/photo/identity-handoff", json=sup.vir_identity(),
+                   headers={_web.IDENTITY_HANDOFF_TOKEN_HEADER: sup.HANDOFF_TOKEN})
+    assert r.status_code == 200 and r.json()["status"] == "awaiting_consent", r.text
+    page.goto(f"{base_url}/?intake={r.json()['intake_id']}")
+    page.check("input#consent-checkbox")
+    page.click("button#photo-start-btn")
+    expect(page.locator("#photo-step")).to_be_visible()
+
+
+def _start_photo_diagnostic(page: Page, base_url: str, provider, seed: int, *factories) -> str:
+    """Drive the rendered French photo-first UI: VIR intake + consent + real
+    image upload. Returns the session id the server issued (read from the
+    real HTTP response of the upload, which is where PGDR starts)."""
+    image = provider.script(sup.png_bytes(seed), *factories)
     errors: list[str] = []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
-    page.goto(base_url)
-    page.fill("textarea#complaint", complaint)
-    page.select_option("select#location", "home")
-    page.select_option("select#urgency", urgency)
-    with page.expect_response(lambda r: r.url.endswith("/api/session/start")) as info:
-        page.click("button#start-btn")
+    _open_on_vir_intake(page, base_url)
+    page.set_input_files("input#photo-input", files=[{"name": "tableau.png", "mimeType": "image/png", "buffer": image}])
+    with page.expect_response(lambda r: r.url.endswith("/media")) as info:
+        page.click("button#photo-btn")
     assert info.value.status == 200
     assert not errors, f"page JS errors: {errors}"
     return info.value.json()["session_id"]
@@ -128,7 +169,7 @@ def _answer_visible_question(page: Page, pick: int, answers_log: list[str]) -> N
     page.wait_for_selector(".question-box", state="visible", timeout=10000)
     prompt = page.locator(".question-prompt").text_content()
     assert prompt and prompt.strip(), "empty question prompt rendered"
-    choices = page.locator(".choice-btn")
+    choices = page.locator("#question-container .choice-btn")
     n = choices.count()
     if n:
         idx = min(pick, n - 1)
@@ -137,7 +178,7 @@ def _answer_visible_question(page: Page, pick: int, answers_log: list[str]) -> N
     else:
         page.fill("input#text-answer", "je ne sais pas")
         answers_log.append("je ne sais pas")
-        page.click("button:text('Valider')")
+        page.click("#question-container button:text('Valider')")
     page.wait_for_function(
         """(prev) => {
             const rep = document.getElementById('report-container');
@@ -203,85 +244,77 @@ def _assert_non_definitive(report_text: str) -> None:
     assert "aucune réparation spécifique n'est recommandée avec certitude" in low
 
 
-# --- E2E-A: Normal legacy case ---
+# --- E2E-A: complete governed French lifecycle from a photo ---
 
-def test_e2e_a_complete_french_lifecycle(live_server, page: Page, governance_traces):
+def test_e2e_a_complete_french_lifecycle(live_server, page: Page, governance_traces, provider):
     """E2E-A: complete governed French lifecycle, browser to final report.
 
-    Browser -> rendered French UI -> HTTP -> web adapter -> SessionController
-    -> safety triage -> DiagnosticLoop -> questions/answers -> Evidence ->
-    hypotheses -> canonical GGM governance -> governed report -> rendered
-    French report inspected in the browser. No silent alternate path: the
-    complaint must NOT safety-escalate, every question is answered through
-    the UI, and the report must actually render."""
-    complaint = "La voiture tremble au ralenti"
+    Browser -> rendered French UI -> consent + real image bytes -> HTTP ->
+    web adapter -> SessionController -> governed B2 chain -> safety triage ->
+    DiagnosticLoop -> questions/answers -> Evidence -> hypotheses ->
+    canonical GGM governance -> governed report -> rendered French report
+    inspected in the browser. No silent alternate path: the photo must NOT
+    safety-escalate, every question is answered through the UI, and the
+    report must actually render."""
+    observation = "Voyant rouge de pression d'huile"
 
     page.goto(live_server)
     expect(page.locator("html")).to_have_attribute("lang", "fr")
     expect(page.locator("h1")).to_contain_text("PGDR")
-    assert "ne fournit jamais un diagnostic" in page.locator(".disclaimer").text_content().lower()
+    assert "ne fournit jamais un diagnostic" in page.locator(".disclaimer").first.text_content().lower()
 
-    sid = _start_diagnostic(page, live_server, complaint)
+    sid = _start_photo_diagnostic(page, live_server, provider, 301, sup.match(sup.OIL, observation))
 
-    # Normal diagnostic path only — a safety escalation would be a different
-    # journey and must not let this test pass vacuously.
     assert page.locator("#safety-alert").is_hidden()
     assert _sessions[sid].state != SessionState.ESCALATED
 
     answers = _drive_to_report(page, pick=0)
-    assert len(answers) >= 5, f"lifecycle too short to be meaningful: {answers}"
+    assert len(answers) >= 3, f"lifecycle too short to be meaningful: {answers}"
 
-    # Server-side lifecycle really ran through the existing core.
     session = _sessions[sid]
     assert session.state == SessionState.COMPLETED
     assert len(session.answers) == len(answers)
     case = _case(sid)
     assert case.answers, "no answers recorded in the diagnostic case"
-    assert case.observations, "no observations produced from the answers"
-    assert case.evidence, "no Evidence produced from the answers"
+    assert case.observations, "no observations produced"
+    assert case.evidence, "no Evidence produced"
     assert case.hypotheses, "no hypotheses produced"
     assert session.result is not None
 
-    # Rendered French final report.
     report = page.locator("#report-container")
     text = report.text_content()
     assert "Synthèse pour l'automobiliste" in text
     assert "Rapport de préparation garage" in text
-    assert complaint in text
+    assert observation in text
     assert "garage" in text.lower()
     assert "Important" in text
     _assert_non_definitive(text)
 
-    # Governed API report agrees with the rendered one and stays non-definitive.
     api = page.request.get(f"{live_server}/api/session/{sid}/report").json()
-    assert api["garage_preparation_report"]["customer_reported_problem"] == complaint
+    assert api["garage_preparation_report"]["customer_reported_problem"] == ""   # no complaint exists in photo-first
+    assert api["garage_preparation_report"]["dashboard_identifications"][0]["description"] == observation
     _assert_non_definitive(json.dumps(api, ensure_ascii=False))
 
-    # Real canonical GGM 1.0.0 governed this session.
     _assert_canonical_ggm_executed(governance_traces, case.case_id)
 
 
-# --- E2E-B: Boundary/error case ---
+# --- E2E-B: Boundary/error cases ---
 
-def test_e2e_b_empty_complaint_validation(live_server, page: Page):
-    """E2E-B: Boundary case - empty complaint is rejected."""
-    page.goto(live_server)
+def test_e2e_b_non_image_upload_is_rejected_and_pgdr_does_not_start(live_server, page: Page, provider):
+    """E2E-B: Boundary case - a non-image file is rejected, no PGDR session
+    is created, and the driver can still proceed with a real photo.
+    (Replaces the former empty-complaint boundary: no complaint exists.)"""
+    sessions_before = set(_sessions)
+    _open_on_vir_intake(page, live_server)
 
-    # Try to start without entering complaint
-    # First, clear the textarea if it has default text
-    page.fill("textarea#complaint", "")
-
-    # Click start button
-    page.click("button#start-btn")
-
-    # Should show error (either browser validation or our JS validation)
-    # Wait a bit to see if error appears
-    page.wait_for_timeout(500)
-
-    # Either browser prevents submission (required attribute) or our JS shows error
-    # Verify we're still on initial form (session didn't start)
-    initial_form = page.locator("#initial-form")
-    assert initial_form.is_visible() or page.locator("#error").is_visible()
+    page.set_input_files("input#photo-input", files=[{"name": "note.txt", "mimeType": "text/plain", "buffer": b"pas une photo"}])
+    with page.expect_response(lambda r: r.url.endswith("/media")) as info:
+        page.click("button#photo-btn")
+    assert info.value.status == 400
+    expect(page.locator("#error")).to_be_visible()
+    expect(page.locator("#error")).to_contain_text("Fichier non accepté")
+    assert set(_sessions) == sessions_before          # PGDR did not start
+    expect(page.locator("#photo-step")).to_be_visible()  # the driver can retry with a real photo
 
 
 def test_e2e_b_unknown_session_error(live_server, page: Page):
@@ -296,15 +329,16 @@ def test_e2e_b_unknown_session_error(live_server, page: Page):
 
 # --- E2E-C: Independent sessions ---
 
-def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governance_traces):
+def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governance_traces, provider):
     """E2E-C: two independent browser contexts, interleaved, fully isolated.
 
-    Two users with different complaints and different answers are driven in
+    Two users with different photos and different answers are driven in
     lock-step through the real UI. Verifies different session ids,
     independent diagnostic state / answers / Evidence / hypotheses / reports,
     no leakage in either direction, and both sessions completing."""
-    complaint_1 = "bruit métallique au démarrage"
-    complaint_2 = "voyant moteur orange allumé"
+    # Two distinct photos -> two distinct governed interpretations.
+    complaint_1 = "Voyant rouge de pression d'huile allumé"          # (kept as the per-session marker text)
+    complaint_2 = "Voyant orange clignotant du moteur"
 
     browser = playwright.chromium.launch(headless=True)
     ctx_1 = browser.new_context()
@@ -312,8 +346,8 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
     page_1 = ctx_1.new_page()
     page_2 = ctx_2.new_page()
     try:
-        sid_1 = _start_diagnostic(page_1, live_server, complaint_1)
-        sid_2 = _start_diagnostic(page_2, live_server, complaint_2)
+        sid_1 = _start_photo_diagnostic(page_1, live_server, provider, 311, sup.match(sup.OIL, complaint_1))
+        sid_2 = _start_photo_diagnostic(page_2, live_server, provider, 312, sup.match(sup.ENGINE_FLASHING, complaint_2))
         assert sid_1 != sid_2
         s1, s2 = _sessions[sid_1], _sessions[sid_2]
         assert s1 is not s2
@@ -341,10 +375,9 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
         assert s2.state == SessionState.COMPLETED
         assert answers_1 and answers_2 and answers_1 != answers_2
 
-        # Independent request/complaint state.
+        # Independent request state (no complaint exists in photo-first).
         assert s1.request.request_id != s2.request.request_id
-        assert s1.request.initial_complaint.free_text == complaint_1
-        assert s2.request.initial_complaint.free_text == complaint_2
+        assert s1.request.initial_complaint.free_text == "" == s2.request.initial_complaint.free_text
 
         # Independent answers: each session holds exactly its own values,
         # and they differ where the same question was asked of both.
@@ -385,8 +418,10 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
         assert c1.case_id not in own_2 and c2.case_id not in own_1
         rep_1 = s1.result.garage_preparation_report.model_dump_json().lower()
         rep_2 = s2.result.garage_preparation_report.model_dump_json().lower()
-        assert complaint_1 in rep_1 and complaint_2 not in rep_1
-        assert complaint_2 in rep_2 and complaint_1 not in rep_2
+        assert complaint_1.lower() in rep_1 and complaint_2.lower() not in rep_1
+        assert complaint_2.lower() in rep_2 and complaint_1.lower() not in rep_2
+        assert "oil-pressure-warning" in own_1 and "engine-diag-flashing" not in own_1
+        assert "engine-diag-flashing" in own_2 and "oil-pressure-warning" not in own_2
 
         # Rendered UI: each browser shows only its own report.
         text_1 = page_1.locator("#report-container").text_content()
@@ -403,8 +438,8 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
         assert st_1["completed"] and st_2["completed"]
         rep_api_1 = page_1.request.get(f"{live_server}/api/session/{sid_1}/report").json()
         rep_api_2 = page_2.request.get(f"{live_server}/api/session/{sid_2}/report").json()
-        assert rep_api_1["garage_preparation_report"]["customer_reported_problem"] == complaint_1
-        assert rep_api_2["garage_preparation_report"]["customer_reported_problem"] == complaint_2
+        assert rep_api_1["garage_preparation_report"]["dashboard_identifications"][0]["description"] == complaint_1
+        assert rep_api_2["garage_preparation_report"]["dashboard_identifications"][0]["description"] == complaint_2
         assert rep_api_1["garage_preparation_report"]["report_id"] != rep_api_2["garage_preparation_report"]["report_id"]
 
         # Governance traces are per-session and both used canonical GGM.
@@ -419,20 +454,15 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
 # --- Supplemental: verify French accents render correctly end-to-end ---
 
 def test_e2e_french_accents_display(live_server, page: Page):
-    """Verify French accented characters display correctly in browser."""
+    """Verify French accented characters display correctly in the browser
+    (photo-first page + the script-rendered notice shown without a VIR
+    identity)."""
     page.goto(live_server)
-
-    # Enter complaint with many French accents
-    accented_complaint = "Problème très gênant de démarrage à froid, cela nécessite une réparation"
-    page.fill("textarea#complaint", accented_complaint)
-    page.click("button#start-btn")
-
-    page.wait_for_timeout(1000)
-
-    # Get page content and verify accents survived
     content = page.content()
-
-    # Check that some accented characters are present
     french_chars = ["é", "è", "à", "ê", "ç"]
-    found_accents = [char for char in french_chars if char in content]
-    assert len(found_accents) > 0, "No French accented characters found in rendered page"
+    assert [c for c in french_chars if c in content], "No French accented characters found in rendered page"
+
+    notice = page.locator("#photo-notice")
+    expect(notice).to_be_visible()
+    expect(notice).to_contain_text("Aucun véhicule identifié pour ce diagnostic")
+    expect(notice).to_contain_text("après l'identification de votre véhicule")

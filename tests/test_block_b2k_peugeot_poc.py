@@ -9,7 +9,7 @@ isolation.
 Uses a small in-memory KnowledgeRepositoryPort test double
 (_InMemoryKnowledgeRepository) so these remain pure, fast, no-database
 PGDR unit tests. The real, database-backed concrete adapter and the real
-full verified Peugeot content (all 11 entries, transcribed from document
+full owner-attested (not independently verified) Peugeot content (all 11 entries, transcribed from document
 9999_9999_326_en-GB.pdf) live and are separately tested on the PI/CPL
 persistence side -- this file's own fixture data is a small
 representative subset sufficient to prove the pattern, not a duplicate
@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from pgdr.adapters.peugeot_dashboard_knowledge import PeugeotDashboardKnowledgeAdapter
 from pgdr.domain.dashboard_knowledge import (
-    ApplicabilityStatus, DashboardReferenceEntry, DashboardReferenceSet, IndicatorState,
+    ApplicabilityPeriod, ApplicabilityStatus, DashboardReferenceEntry, DashboardReferenceSet, IndicatorState,
     KnowledgeLifecycleStatus, ManufacturerDocumentReference, SourceAuthority, VehicleApplicabilityContext,
 )
 from pgdr.ports.knowledge_repository import KnowledgeRepositoryPort
@@ -167,14 +167,17 @@ class TestB2K03UnknownFieldsNeverInvented:
 
 
 class TestB2K04ApplicabilityUncertaintyPreserved:
-    def test_2020_production_year_alone_is_uncertain_not_guessed(self):
+    def test_single_unbounded_document_needs_no_registration_date(self):
+        """VIR -> PGDR boundary correction: with one candidate and no issue
+        period (today's real Peugeot data) the date discriminates nothing and
+        is not required."""
         adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(_test_vehicle())
-        assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
         assert len(result.candidate_documents) == 1
-        assert result.entries == []
+        assert result.vehicle_applicability.first_registration_date is None
 
-    def test_first_registration_date_resolves_the_same_ambiguity(self):
+    def test_a_supplied_date_does_not_change_an_undiscriminated_resolution(self):
         adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
         result = adapter.get_dashboard_reference_set(
             _test_vehicle(first_registration_date="2020-09-15")
@@ -184,9 +187,10 @@ class TestB2K04ApplicabilityUncertaintyPreserved:
 
 
 class TestB2K05ZeroOneManyEntries:
-    def test_uncertain_case_has_zero_entries(self):
-        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
-        result = adapter.get_dashboard_reference_set(_test_vehicle())
+    def test_insufficient_case_has_zero_entries(self):
+        result = PeugeotDashboardKnowledgeAdapter(repository=_period_bound_repository()).get_dashboard_reference_set(
+            _synthetic_vehicle()
+        )
         assert result.entries == []
 
     def test_resolved_case_has_many_entries(self):
@@ -250,11 +254,105 @@ class TestB2K10MissingDocumentationState:
         assert result.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
         assert result.entries == []
 
-    def test_production_year_alone_is_never_sufficient_even_when_unusual(self):
-        adapter = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository())
-        result = adapter.get_dashboard_reference_set(_test_vehicle(production_year=2035))
+    def test_production_dates_never_stand_in_for_the_registration_date(self):
+        adapter = PeugeotDashboardKnowledgeAdapter(repository=_period_bound_repository())
+        result = adapter.get_dashboard_reference_set(_synthetic_vehicle(
+            production_year=2019, production_start_date="2019-06-01", production_end_date="2019-12-31",
+        ))
+        assert result.applicability_status == ApplicabilityStatus.VEHICLE_IDENTITY_INSUFFICIENT
+        assert result.entries == []
+
+
+# ---------------------------------------------------------------------------
+# VIR -> PGDR identity boundary correction, owner decision 3: the first-
+# registration date is required only when it materially discriminates
+# between candidate documents bounded by issue periods. SYNTHETIC documents
+# only -- not manufacturer data.
+# ---------------------------------------------------------------------------
+
+def _synthetic_doc(document_id: str, start: str | None, end: str | None) -> ManufacturerDocumentReference:
+    return ManufacturerDocumentReference(
+        manufacturer="SynthMfr", document_id=document_id, document_title=f"Synthetic handbook {document_id}",
+        applicability_period=ApplicabilityPeriod(start_date=start, end_date=end) if (start or end) else None,
+        source_authority=SourceAuthority.UNVERIFIED_PLACEHOLDER, source_locator=f"synthetic://{document_id}",
+    )
+
+
+# Distinct, overlapping issue periods: 2019-01-01..2020-12-31 and 2020-07-01..2022-12-31.
+_EDITION_EARLY = _synthetic_doc("SYNTH-EARLY", "2019-01-01", "2020-12-31")
+_EDITION_LATE = _synthetic_doc("SYNTH-LATE", "2020-07-01", "2022-12-31")
+
+
+def _period_bound_repository(*documents: ManufacturerDocumentReference) -> _InMemoryKnowledgeRepository:
+    repo = _InMemoryKnowledgeRepository()
+    for doc in documents or (_EDITION_EARLY, _EDITION_LATE):
+        repo.register_document("SynthMfr", "SynthModel", "I", doc)
+        repo.register_entries(doc.document_id, [DashboardReferenceEntry(
+            entry_id=f"{doc.document_id}-lamp", manufacturer_designation="Synthetic lamp",
+            documented_meaning="Synthetic meaning.", applicability=doc,
+        )])
+    return repo
+
+
+def _synthetic_vehicle(**overrides) -> VehicleApplicabilityContext:
+    return VehicleApplicabilityContext(**{"manufacturer": "SynthMfr", "model": "SynthModel", "generation": "I",
+                                          **overrides})
+
+
+class TestFirstRegistrationDateOnlyWhenItDiscriminates:
+    def _resolve(self, repository, **vehicle):
+        return PeugeotDashboardKnowledgeAdapter(repository=repository).get_dashboard_reference_set(
+            _synthetic_vehicle(**vehicle)
+        )
+
+    def test_a_period_bound_candidates_without_a_date_fail_closed_as_identity_insufficient(self):
+        result = self._resolve(_period_bound_repository())
+        assert result.applicability_status == ApplicabilityStatus.VEHICLE_IDENTITY_INSUFFICIENT
+        assert {d.document_id for d in result.candidate_documents} == {"SYNTH-EARLY", "SYNTH-LATE"}
+        assert result.entries == []
+        assert "first-registration date" in result.provenance_note
+
+    def test_b_a_date_inside_one_period_selects_exactly_that_document(self):
+        early = self._resolve(_period_bound_repository(), first_registration_date="2019-05-10")
+        assert early.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert [d.document_id for d in early.candidate_documents] == ["SYNTH-EARLY"]
+        assert [e.entry_id for e in early.entries] == ["SYNTH-EARLY-lamp"]
+
+        late = self._resolve(_period_bound_repository(), first_registration_date="2022-03-01")
+        assert late.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert [d.document_id for d in late.candidate_documents] == ["SYNTH-LATE"]
+
+    def test_b_a_date_in_the_overlap_is_not_resolved_automatically(self):
+        result = self._resolve(_period_bound_repository(), first_registration_date="2020-09-15")
         assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
         assert result.entries == []
+
+    def test_b_a_date_outside_every_period_finds_no_documentation(self):
+        result = self._resolve(_period_bound_repository(), first_registration_date="2024-01-01")
+        assert result.applicability_status == ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE
+
+    def test_b_an_unreadable_date_fails_closed(self):
+        result = self._resolve(_period_bound_repository(), first_registration_date="not-a-date")
+        assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
+
+    def test_c_a_single_document_needs_no_date_even_when_period_bound(self):
+        result = self._resolve(_period_bound_repository(_EDITION_EARLY))
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
+        assert [d.document_id for d in result.candidate_documents] == ["SYNTH-EARLY"]
+
+    def test_c_several_documents_without_periods_need_no_date_and_stay_unresolved(self):
+        repo = _period_bound_repository(_synthetic_doc("SYNTH-A", None, None), _synthetic_doc("SYNTH-B", None, None))
+        result = self._resolve(repo)
+        # The date could not discriminate: it is not demanded, and the
+        # multiple-document ambiguity is reported as such.
+        assert result.applicability_status == ApplicabilityStatus.DOCUMENT_APPLICABILITY_UNCERTAIN
+        assert "More than one" in result.provenance_note
+
+    def test_c_todays_real_shaped_peugeot_data_needs_no_date(self):
+        result = PeugeotDashboardKnowledgeAdapter(repository=_peugeot_repository()).get_dashboard_reference_set(
+            _test_vehicle()
+        )
+        assert result.applicability_status == ApplicabilityStatus.REFERENCE_SET_AVAILABLE
 
 
 class TestB2K11NoPGDREvidenceCreated:
@@ -474,7 +572,7 @@ class TestB2K17VerifiedAtDoesNotDetermineFreshness:
         assert doc_current.verified_at == doc_stale.verified_at
         assert doc_current.freshness_status != doc_stale.freshness_status
 
-    def test_default_freshness_is_verified_current_not_inferred(self):
+    def test_default_freshness_is_owner_attested_unverified_not_verified_current(self):
         """Confirms the default value is an explicit constant, not a
         computation involving verified_at (which defaults to None here)."""
         from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
@@ -483,7 +581,8 @@ class TestB2K17VerifiedAtDoesNotDetermineFreshness:
             source_authority=SourceAuthority.MANUFACTURER_OFFICIAL, source_locator="test-locator-z",
         )
         assert doc.verified_at is None
-        assert doc.freshness_status == KnowledgeFreshnessStatus.VERIFIED_CURRENT
+        assert doc.freshness_status == KnowledgeFreshnessStatus.OWNER_ATTESTED_UNVERIFIED
+        assert doc.freshness_status != KnowledgeFreshnessStatus.VERIFIED_CURRENT
 
 
 class TestB2K18SupersededKnowledgeRemainsHistoricallyAvailable:
@@ -524,3 +623,28 @@ class TestB2K19CaseDataCannotContaminateManufacturerKnowledge:
         forbidden_field_names = {"execution_id", "case_id", "diagnostic_id", "vehicle_instance_id"}
         for model in (ManufacturerDocumentReference, DashboardReferenceEntry):
             assert forbidden_field_names.isdisjoint(model.model_fields.keys())
+
+
+class TestSourceVeracityCorrection:
+    """B2 owner decision A(b)/C: provenance truthfulness only. A document
+    never claims VERIFIED_CURRENT unless a verification is recorded, and
+    the correction does not touch diagnostic eligibility semantics."""
+
+    def test_owner_attested_unverified_is_a_distinct_freshness_state(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        assert KnowledgeFreshnessStatus("owner_attested_unverified") is KnowledgeFreshnessStatus.OWNER_ATTESTED_UNVERIFIED
+        assert KnowledgeFreshnessStatus.OWNER_ATTESTED_UNVERIFIED != KnowledgeFreshnessStatus.VERIFIED_CURRENT
+
+    def test_persisted_row_value_round_trips_through_the_enum(self):
+        from pgdr.domain.dashboard_knowledge import KnowledgeFreshnessStatus
+        assert KnowledgeFreshnessStatus("OWNER_ATTESTED_UNVERIFIED".lower()) is KnowledgeFreshnessStatus.OWNER_ATTESTED_UNVERIFIED
+
+    def test_freshness_is_still_never_read_by_the_diagnostic_rule_gate(self):
+        """Diagnostic semantics preserved: eligibility keys on
+        source_authority only; freshness_status remains unread."""
+        import inspect
+        from pgdr.automotive import domain_adapter
+        src = inspect.getsource(domain_adapter)
+        assert "entry.applicability.freshness_status" not in src
+        assert "OWNER_ATTESTED_UNVERIFIED" not in src
+        assert "entry.applicability.source_authority != SourceAuthority.MANUFACTURER_OFFICIAL" in src

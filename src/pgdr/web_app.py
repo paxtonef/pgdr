@@ -10,10 +10,13 @@ UI language: French only
 """
 from __future__ import annotations
 
+import importlib
+import os
 import secrets
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict
+from typing import Dict, Optional
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -21,7 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from pgdr.enums import (
-    DrivingStatus, ResolutionStatus, SessionState, TechnicalLevel,
+    DrivingStatus, SessionState, TechnicalLevel,
     Urgency, VehicleLocation, VehicleState,
 )
 from pgdr.errors import ConfigurationError
@@ -29,22 +32,20 @@ from pgdr.models import (
     Answer, Consent, DiagnosticSession, InitialComplaint,
     PreGarageDiagnosticRequest, UserContext, VehicleIdentityContext,
 )
+from pgdr.adapters.peugeot_dashboard_knowledge import PeugeotDashboardKnowledgeAdapter
+from pgdr.application.interpretation_validation import InterpretationValidationError
+from pgdr.application.photo_first import PhotoPhase, PhotoStep, UserSelectionError
+from pgdr.application.vehicle_applicability import resolve_dashboard_reference
+from pgdr.domain.dashboard_knowledge import ApplicabilityStatus, DashboardReferenceSet
+from pgdr.domain.media import MediaType
+from pgdr.ports.dashboard_interpretation import DashboardInterpretationPort, MatchStatus
+from pgdr.ports.knowledge_repository import KnowledgeRepositoryPort
+from pgdr.ports.media_resolver import MediaResolutionError, MediaResolverPort, ResolvedMedia
 from pgdr.readiness import check_readiness
 from pgdr.session_controller import SessionController
 
 
 # --- Request/Response models for HTTP API ---
-
-class StartSessionRequest(BaseModel):
-    """HTTP request to start a new diagnostic session."""
-    complaint: str = Field(..., min_length=1, max_length=5000, description="Free-text vehicle problem description")
-    vehicle_location: str = Field(default="home", description="Where is the vehicle")
-    vehicle_state: str = Field(default="engine_off", description="Vehicle current state")
-    urgency: str = Field(default="unknown", description="Perceived urgency")
-    driving_status: str = Field(default="parked", description="Can user drive")
-    technical_level: str = Field(default="low", description="User technical knowledge")
-    vir_id: str = Field(default="WEB-VIR-UNRESOLVED", description="Vehicle identity resolution ID")
-
 
 class SubmitAnswerRequest(BaseModel):
     """HTTP request to submit an answer to a question."""
@@ -65,7 +66,9 @@ def _get_or_create_controller() -> SessionController:
     (including GovernanceUnavailableError) if PGDR cannot start."""
     global _session_controller
     if _session_controller is None:
-        _session_controller = SessionController()
+        _session_controller = SessionController(
+            dashboard_interpretation_port=_get_photo_wiring().interpretation_provider,
+        )
     return _session_controller
 
 
@@ -102,75 +105,6 @@ def health_check():
 
 
 # --- Session API endpoints ---
-
-@app.post("/api/session/start")
-def start_session(req: StartSessionRequest):
-    """Start a new diagnostic session. Returns session_id and initial state."""
-    try:
-        controller = _get_or_create_controller()
-    except ConfigurationError as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=f"PGDR configuration invalide : {exc}",
-        ) from None
-
-    # Create PGDR request from HTTP input
-    request_id = f"PGDR-WEB-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
-    pgdr_request = PreGarageDiagnosticRequest(
-        request_id=request_id,
-        locale="fr-FR",  # French only (Section 9)
-        vehicle_identity_context=VehicleIdentityContext(
-            resolution_id=req.vir_id,
-            resolution_status=ResolutionStatus.PROVISIONALLY_RESOLVED,
-        ),
-        initial_complaint=InitialComplaint(
-            free_text=req.complaint,
-            current_vehicle_location=VehicleLocation(req.vehicle_location),
-            vehicle_current_state=VehicleState(req.vehicle_state),
-            perceived_urgency=Urgency(req.urgency),
-        ),
-        user_context=UserContext(
-            driving_status=DrivingStatus(req.driving_status),
-            technical_level=TechnicalLevel(req.technical_level),
-        ),
-        consent=Consent(
-            media_analysis_allowed=False,
-            report_storage_allowed=False,
-        ),
-    )
-
-    # Start session through existing PGDR core
-    session = controller.start(pgdr_request)
-    session_id = session.session_id
-    _sessions[session_id] = session
-
-    # Return session state
-    return {
-        "session_id": session_id,
-        "state": session.state.value,
-        "escalated": session.state == SessionState.ESCALATED,
-        "safety_triage": (
-            {
-                "level": session.safety_triage.level.value,
-                "user_instruction": session.safety_triage.user_instruction,
-                "emergency_services_required": session.safety_triage.emergency_services_required,
-                "roadside_assistance_recommended": session.safety_triage.roadside_assistance_recommended,
-            }
-            if session.safety_triage
-            else None
-        ),
-        "pending_questions": [
-            {
-                "question_id": q.question_id,
-                "prompt": q.prompt,
-                "answer_type": q.answer_type.value,
-                "choices": q.choices,
-                "selection_reason": q.selection_reason,
-            }
-            for q in session.pending_questions
-        ],
-    }
-
 
 @app.get("/api/session/{session_id}/state")
 def get_session_state(session_id: str):
@@ -214,7 +148,7 @@ def submit_answer(session_id: str, req: SubmitAnswerRequest):
     if session is None:
         raise HTTPException(status_code=404, detail="Session inconnue ou expirée")
 
-    if session.state == SessionState.ESCALATED:
+    if session.state == SessionState.ESCALATED and not session.pending_questions:
         raise HTTPException(status_code=400, detail="Session déjà terminée (signal de sécurité)")
 
     if session.state == SessionState.COMPLETED:
@@ -274,12 +208,368 @@ def get_report(session_id: str):
     }
 
 
-# --- Frontend (French HTML UI) ---
+# --- Photo-first entry (B2 completion: E1-E5) ---
+#
+# The dashboard photograph is the mandatory initial input. Consent for media
+# analysis must accompany it; without consent PGDR does not start. No image
+# leaves this process: analysis goes through the injected
+# DashboardInterpretationPort, and NO external provider is authorized. When no
+# provider/knowledge repository is configured the photo path reports that
+# plainly instead of failing or falling back to ungoverned interpretation.
 
-@app.get("/", response_class=HTMLResponse)
-def serve_frontend():
-    """Serve the French HTML UI."""
-    return """<!DOCTYPE html>
+_ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp", "image/heic"}
+_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+CONSENT_DECLINED_MESSAGE = (
+    "PGDR ne peut pas démarrer sans votre accord pour analyser la photo. "
+    "Le point de départ de PGDR est la photo de votre tableau de bord : c'est elle qui permet "
+    "d'identifier le voyant concerné, sans que vous ayez à décrire le problème. "
+    "Votre accord porte uniquement sur l'analyse de cette photo pour ce diagnostic : "
+    "il n'autorise ni l'envoi de la photo à un service extérieur, ni sa conservation, "
+    "ni son utilisation à d'autres fins. Vous pouvez réessayer à tout moment en donnant votre accord."
+)
+PHOTO_UNAVAILABLE_MESSAGE = (
+    "L'analyse de photo n'est pas disponible dans cette installation de PGDR : "
+    "aucun service d'interprétation ou aucune base de références constructeur n'est configuré. "
+    "Ce n'est pas une erreur de votre part et rien n'a été envoyé ni conservé."
+)
+VEHICLE_NOT_SUPPORTED_MESSAGE = (
+    "Aucune notice constructeur disponible pour ce véhicule : PGDR ne peut pas interpréter "
+    "la photo de son tableau de bord de façon fiable. Aucune interprétation n'a été tentée "
+    "et la photo n'a pas été analysée."
+)
+REFERENCE_UNAVAILABLE_MESSAGE = (
+    "La notice constructeur applicable à ce véhicule n'a pas pu être déterminée avec certitude : "
+    "PGDR n'interprète pas la photo sans référence constructeur établie. La photo n'a pas été analysée."
+)
+VEHICLE_IDENTITY_INSUFFICIENT_MESSAGE = (
+    "L'identification du véhicule reçue ne suffit pas pour choisir la notice constructeur applicable. "
+    "L'identification du véhicule se fait avant PGDR, qui ne la complète pas : "
+    "la photo n'a pas été analysée."
+)
+
+
+@dataclass
+class PhotoWiring:
+    """What the deployment injects for the photo path. Both default to None
+    (photo analysis unavailable). NO real external vision provider exists or
+    is authorized; a deterministic test provider is an integration-test
+    mechanism only, never a real-world visual capability."""
+    interpretation_provider: Optional[DashboardInterpretationPort] = None
+    knowledge_repository: Optional[KnowledgeRepositoryPort] = None
+
+
+_photo_wiring: PhotoWiring | None = None
+
+
+def _get_photo_wiring() -> PhotoWiring:
+    """Loaded once from PGDR_PHOTO_WIRING_FACTORY ("package.module:callable"
+    returning a PhotoWiring) when set; otherwise an empty wiring."""
+    global _photo_wiring
+    if _photo_wiring is None:
+        target = os.environ.get("PGDR_PHOTO_WIRING_FACTORY")
+        if target:
+            module_name, _, attr = target.partition(":")
+            _photo_wiring = getattr(importlib.import_module(module_name), attr)()
+        else:
+            _photo_wiring = PhotoWiring()
+    return _photo_wiring
+
+
+class InMemoryMediaStore:
+    """Real MediaResolverPort implementation for the web layer. Bytes live in
+    process memory only, and are discarded right after analysis: media-analysis
+    consent does NOT authorize persistent retention. References are opaque,
+    server-generated and never derived from client input."""
+
+    def __init__(self) -> None:
+        self._items: Dict[str, ResolvedMedia] = {}
+
+    def store(self, content: bytes, content_type: str) -> str:
+        if content_type not in _ALLOWED_IMAGE_TYPES:
+            raise MediaResolutionError(f"unsupported media type: {content_type!r}")
+        if not content:
+            raise MediaResolutionError("empty upload")
+        if len(content) > _MAX_IMAGE_BYTES:
+            raise MediaResolutionError("upload too large")
+        reference = f"media-{uuid.uuid4().hex}"
+        self._items[reference] = ResolvedMedia(content=content, media_type=MediaType.IMAGE, reference=reference)
+        return reference
+
+    def resolve(self, reference: str) -> ResolvedMedia:
+        try:
+            return self._items[reference]
+        except KeyError:
+            raise MediaResolutionError(f"no stored media for reference {reference!r}") from None
+
+    def discard(self, reference: str) -> None:
+        self._items.pop(reference, None)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+
+_media_store = InMemoryMediaStore()
+assert isinstance(_media_store, MediaResolverPort)
+
+
+@dataclass
+class PhotoIntake:
+    """Pre-session photo-intake state: the VIR identity artifact handed over
+    by PI, the manufacturer reference it resolved to, and the driver's
+    consent. It is NOT a PGDR session: PGDR starts only when the first
+    dashboard photograph is submitted. Its id becomes the PGDR session id at
+    that moment. Isolated per intake by construction."""
+    identity: VehicleIdentityContext
+    reference_set: DashboardReferenceSet
+    consent_media_analysis: bool = False
+
+
+_photo_intakes: Dict[str, PhotoIntake] = {}
+
+# PI -> PGDR identity handoff credential. Unset means the handoff is closed:
+# the browser can never introduce a vehicle identity of its own.
+IDENTITY_HANDOFF_TOKEN_ENV = "PGDR_IDENTITY_HANDOFF_TOKEN"
+IDENTITY_HANDOFF_TOKEN_HEADER = "X-PGDR-Identity-Handoff-Token"
+
+
+class PhotoSessionRequest(BaseModel):
+    intake_id: str = Field(max_length=64)
+    consent_media_analysis: bool = False
+
+
+class SymbolSelectionRequest(BaseModel):
+    entry_id: Optional[str] = None
+
+
+def _photo_knowledge_adapter() -> PeugeotDashboardKnowledgeAdapter:
+    return PeugeotDashboardKnowledgeAdapter(repository=_get_photo_wiring().knowledge_repository)
+
+
+def _resolve_reference_set(identity: VehicleIdentityContext) -> DashboardReferenceSet:
+    return resolve_dashboard_reference(identity, _photo_knowledge_adapter())
+
+
+def _require_handoff_credential(request: Request) -> None:
+    expected = os.environ.get(IDENTITY_HANDOFF_TOKEN_ENV)
+    if not expected:
+        raise HTTPException(status_code=503, detail="Identity handoff is not configured on this PGDR instance.")
+    supplied = request.headers.get(IDENTITY_HANDOFF_TOKEN_HEADER) or ""
+    if not secrets.compare_digest(supplied.encode(), expected.encode()):
+        raise HTTPException(status_code=403, detail="Identity handoff refused.")
+
+
+def _session_payload(session: DiagnosticSession) -> dict:
+    return {
+        "session_id": session.session_id,
+        "state": session.state.value,
+        "escalated": session.state == SessionState.ESCALATED,
+        "completed": session.state == SessionState.COMPLETED,
+        "safety_triage": (
+            {
+                "level": session.safety_triage.level.value,
+                "user_instruction": session.safety_triage.user_instruction,
+                "emergency_services_required": session.safety_triage.emergency_services_required,
+                "roadside_assistance_recommended": session.safety_triage.roadside_assistance_recommended,
+            }
+            if session.safety_triage else None
+        ),
+        "pending_questions": [
+            {
+                "question_id": q.question_id, "prompt": q.prompt, "answer_type": q.answer_type.value,
+                "choices": q.choices, "selection_reason": q.selection_reason,
+            }
+            for q in session.pending_questions
+        ],
+    }
+
+
+_SELECTION_MESSAGES = {
+    MatchStatus.AMBIGUOUS_MATCH: (
+        "Plusieurs voyants du constructeur ressemblent à celui de votre photo. "
+        "Indiquez celui qui correspond, ou « aucun de ceux-là »."
+    ),
+    MatchStatus.NO_MATCH: (
+        "Aucun voyant de la notice constructeur n'a été reconnu sur la photo. "
+        "Vous pouvez indiquer le voyant dans la liste ci-dessous, ou « aucun de ceux-là »."
+    ),
+    MatchStatus.INSUFFICIENT_VISUAL_QUALITY: (
+        "La photo reste inexploitable. Vous pouvez indiquer le voyant dans la liste ci-dessous, "
+        "ou « aucun de ceux-là »."
+    ),
+}
+
+
+def _step_response(session: DiagnosticSession, step: PhotoStep) -> dict:
+    payload = _session_payload(session)
+    payload["photo_phase"] = step.phase.value
+    payload["retakes_used"] = step.retakes_used
+    payload["retakes_remaining"] = step.retakes_remaining
+    if step.phase == PhotoPhase.RETAKE_REQUESTED:
+        payload["status"] = "retake_requested"
+        payload["message"] = (
+            "La photo n'est pas assez lisible. Reprenez-la (bonne lumière, tableau de bord net) — "
+            f"il reste {step.retakes_remaining} nouvelle(s) tentative(s) avant de choisir le voyant dans la liste."
+        )
+    elif step.phase == PhotoPhase.SELECTION_REQUIRED:
+        payload["status"] = "selection_required"
+        payload["trigger"] = step.trigger.value
+        payload["message"] = _SELECTION_MESSAGES[step.trigger]
+        # Recognition data only: never the manufacturer's documented meaning.
+        payload["options"] = [
+            {
+                "entry_id": e.entry_id, "designation": e.manufacturer_designation,
+                "symbol_descriptor": e.symbol_descriptor, "colour": e.colour,
+                "state": e.state.value if e.state else None, "displayed_message": e.displayed_message,
+            }
+            for e in step.offer.entries
+        ]
+    else:
+        payload["status"] = "analysed"
+    return payload
+
+
+_UNAVAILABLE_REFERENCE_OUTCOMES = {
+    ApplicabilityStatus.VEHICLE_IDENTITY_INSUFFICIENT: ("vehicle_identity_insufficient", VEHICLE_IDENTITY_INSUFFICIENT_MESSAGE),
+    ApplicabilityStatus.DOCUMENTATION_NOT_AVAILABLE: ("vehicle_not_supported", VEHICLE_NOT_SUPPORTED_MESSAGE),
+}
+
+
+@app.post("/api/photo/identity-handoff")
+def receive_identity_handoff(identity: VehicleIdentityContext, request: Request):
+    """PI -> PGDR: the VIR identity artifact (PI map_resolution() output) for
+    a Photo-First intake. Server-to-server only (credential required): the
+    vehicle identity is VIR's responsibility and never typed by the driver.
+    Resolves the manufacturer reference the photo will be read against; an
+    intake is created only when that reference is established."""
+    _require_handoff_credential(request)
+    wiring = _get_photo_wiring()
+    if wiring.interpretation_provider is None or wiring.knowledge_repository is None:
+        return {"status": "photo_analysis_unavailable", "message": PHOTO_UNAVAILABLE_MESSAGE}
+
+    reference_set = _resolve_reference_set(identity)
+    if reference_set.applicability_status != ApplicabilityStatus.REFERENCE_SET_AVAILABLE:
+        status, message = _UNAVAILABLE_REFERENCE_OUTCOMES.get(
+            reference_set.applicability_status, ("reference_unavailable", REFERENCE_UNAVAILABLE_MESSAGE),
+        )
+        return {
+            "status": status, "message": message,
+            "applicability_status": reference_set.applicability_status.value,
+            "provenance_note": reference_set.provenance_note,
+        }
+
+    # No PGDR session exists yet: PGDR starts when the first photo arrives.
+    intake_id = f"SESS-{uuid.uuid4().hex[:12].upper()}"
+    _photo_intakes[intake_id] = PhotoIntake(identity=identity, reference_set=reference_set)
+    return {"status": "awaiting_consent", "intake_id": intake_id}
+
+
+@app.post("/api/photo/session")
+def start_photo_session(req: PhotoSessionRequest):
+    """The driver's step: consent to analysing the dashboard photo, for an
+    intake whose vehicle identity was already handed over from VIR via PI.
+    Without consent nothing starts."""
+    intake = _photo_intakes.get(req.intake_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Session inconnue ou expirée")
+    if not req.consent_media_analysis:
+        return {"status": "consent_required", "message": CONSENT_DECLINED_MESSAGE}
+    intake.consent_media_analysis = True
+    return {"status": "awaiting_photo", "intake_id": req.intake_id}
+
+
+@app.post("/api/photo/{session_id}/media")
+async def submit_photo(session_id: str, request: Request):
+    """The real media-ingress boundary: the raw image bytes are the request
+    body (Content-Type = the image type). They are stored, resolved through
+    the real MediaResolverPort, interpreted through the injected
+    DashboardInterpretationPort behind the governed B2 chain, then discarded."""
+    intake = _photo_intakes.get(session_id)
+    if intake is None:
+        raise HTTPException(status_code=404, detail="Session inconnue ou expirée")
+    if not intake.consent_media_analysis:
+        raise HTTPException(status_code=400, detail="La photo n'est pas attendue à ce stade.")
+    controller = _get_or_create_controller()
+    session = _sessions.get(session_id)
+    if session is not None:
+        ps = controller.photo_case_state(session)
+        if ps.phase not in (PhotoPhase.AWAITING_PHOTO, PhotoPhase.RETAKE_REQUESTED):
+            raise HTTPException(status_code=400, detail="La photo n'est pas attendue à ce stade.")
+
+    content = await request.body()
+    content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+    try:
+        reference = _media_store.store(content, content_type)
+    except MediaResolutionError:
+        raise HTTPException(
+            status_code=400,
+            detail="Fichier non accepté : envoyez une photo JPEG, PNG, WebP ou HEIC de moins de 15 Mo.",
+        ) from None
+    try:
+        if session is None:
+            # PGDR STARTS HERE, and only here: a consented intake plus a
+            # dashboard photograph that passed transport validation.
+            session = _start_photo_session(controller, session_id, intake)
+            _sessions[session_id] = session
+        step = controller.acquire_photo(
+            session, media_reference=reference, resolver=_media_store, reference_set=intake.reference_set,
+        )
+    except (MediaResolutionError, InterpretationValidationError):
+        raise HTTPException(status_code=502, detail="L'analyse de la photo n'a pas pu aboutir (erreur technique).") from None
+    finally:
+        # Consent does not authorize retention: the bytes are dropped now.
+        _media_store.discard(reference)
+    _sessions[session_id] = session
+    return _step_response(session, step)
+
+
+def _start_photo_session(controller: SessionController, session_id: str, intake: PhotoIntake) -> DiagnosticSession:
+    request_id = f"PGDR-WEB-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(4)}"
+    pgdr_request = PreGarageDiagnosticRequest(
+        request_id=request_id,
+        locale="fr-FR",
+        vehicle_identity_context=intake.identity,  # the VIR artifact, verbatim (PGDR-ID-001/002)
+        initial_complaint=InitialComplaint(free_text=""),
+        consent=Consent(media_analysis_allowed=intake.consent_media_analysis, report_storage_allowed=False),
+    )
+    return controller.start_photo_case(pgdr_request, session_id=session_id)
+
+
+@app.post("/api/photo/{session_id}/decline-retake")
+def decline_retake(session_id: str):
+    session = _sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session inconnue ou expirée")
+    controller = _get_or_create_controller()
+    try:
+        step = controller.decline_retake(session)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail="Aucune nouvelle photo n'est demandée.") from exc
+    return _step_response(session, step)
+
+
+@app.post("/api/photo/{session_id}/selection")
+def submit_symbol_selection(session_id: str, req: SymbolSelectionRequest):
+    """E5: the driver's own selection from the manufacturer symbol list.
+    Recorded with USER provenance -- never as a machine-verified match."""
+    session = _sessions.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session inconnue ou expirée")
+    controller = _get_or_create_controller()
+    try:
+        step = controller.record_user_symbol_selection(session, entry_id=req.entry_id)
+    except UserSelectionError:
+        raise HTTPException(status_code=400, detail="Ce voyant ne figure pas dans la liste proposée.") from None
+    except RuntimeError:
+        raise HTTPException(status_code=400, detail="Aucun choix de voyant n'est attendu.") from None
+    _sessions[session_id] = session
+    return _step_response(session, step)
+
+
+# --- Frontend (French HTML UI): the ONLY page. The dashboard photograph is the
+# mandatory initial input; there is no text-first entry into PGDR. ---
+
+_PHOTO_HTML = """<!DOCTYPE html>
 <html lang="fr">
 <head>
     <meta charset="UTF-8">
@@ -469,42 +759,53 @@ def serve_frontend():
 <body>
     <div class="container">
         <h1>PGDR — Pré-Garage Diagnostic Runner</h1>
-        <p class="subtitle">Structurez votre problème véhicule avant de contacter un garage</p>
+        <p class="subtitle">Photographiez le tableau de bord : PGDR prépare la suite</p>
 
         <div class="disclaimer">
             <strong>⚠️ PGDR ne fournit jamais un diagnostic mécanique définitif</strong>
             PGDR vous aide à structurer et documenter un problème véhicule. Il ne remplace pas l'examen professionnel d'un mécanicien qualifié. Les observations produites sont des hypothèses compatibles avec les symptômes décrits, nécessitant toujours une vérification professionnelle.
         </div>
 
-        <!-- Initial form -->
-        <div id="initial-form">
-            <div class="form-group">
-                <label for="complaint">Décrivez le problème que vous rencontrez avec votre véhicule :</label>
-                <textarea id="complaint" placeholder="Exemple : La voiture tremble au ralenti, surtout moteur chaud..." required></textarea>
+        <!-- Photo-first entry -->
+        <div id="photo-flow">
+            <div id="consent-step">
+                <p><strong>Étape 1 — Votre accord</strong></p>
+                <p class="question-reason">Votre véhicule a déjà été identifié : la photo de votre tableau de bord
+                    sera lue avec la notice de son constructeur. Vous n'avez pas à décrire de problème.</p>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="consent-checkbox">
+                        J'autorise PGDR à analyser la photo que je fournis, pour ce diagnostic uniquement.
+                        Cet accord n'autorise ni l'envoi de la photo à un service extérieur, ni sa conservation,
+                        ni son utilisation à d'autres fins.
+                    </label>
+                </div>
+                <button id="photo-start-btn" onclick="startPhotoSession()">Continuer</button>
             </div>
 
-            <div class="form-group">
-                <label for="location">Où se trouve actuellement le véhicule ?</label>
-                <select id="location">
-                    <option value="home">Domicile</option>
-                    <option value="roadside">Bord de route</option>
-                    <option value="parking">Parking</option>
-                    <option value="work">Travail</option>
-                    <option value="garage">Garage</option>
-                </select>
+            <div id="consent-message" class="disclaimer hidden"></div>
+            <div id="photo-notice" class="disclaimer hidden"></div>
+
+            <div id="photo-step" class="hidden">
+                <p><strong>Étape 2 — La photo de votre tableau de bord</strong></p>
+                <p class="question-reason">Photographiez le tableau de bord avec le ou les voyants allumés.</p>
+                <div class="form-group">
+                    <input type="file" id="photo-input" accept="image/*" capture="environment">
+                </div>
+                <button id="photo-btn" onclick="submitPhoto()">Envoyer la photo pour analyse</button>
             </div>
 
-            <div class="form-group">
-                <label for="urgency">Urgence perçue :</label>
-                <select id="urgency">
-                    <option value="unknown">Je ne sais pas</option>
-                    <option value="low">Faible</option>
-                    <option value="medium">Modérée</option>
-                    <option value="high">Élevée</option>
-                </select>
+            <div id="retake-step" class="hidden">
+                <p id="retake-message"></p>
+                <button id="decline-retake-btn" class="choice-btn" onclick="declineRetake()">
+                    Je ne peux pas reprendre la photo — choisir le voyant dans la liste</button>
             </div>
 
-            <button id="start-btn" onclick="startSession()">Démarrer l'analyse</button>
+            <div id="selection-step" class="hidden">
+                <p id="selection-message"></p>
+                <div id="selection-options" class="choices"></div>
+                <div class="choices"><button id="symbol-none-btn" class="choice-btn" onclick="submitSelection(null)">Aucun de ceux-là</button></div>
+            </div>
         </div>
 
         <!-- Loading state -->
@@ -526,53 +827,10 @@ def serve_frontend():
     </div>
 
     <script>
-        let sessionId = null;
+        // The intake is created upstream, from the VIR vehicle identity handed
+        // over by PI; this page never asks for the vehicle.
+        let sessionId = new URLSearchParams(window.location.search).get('intake');
         let currentQuestion = null;
-
-        async function startSession() {
-            const complaint = document.getElementById('complaint').value.trim();
-            if (!complaint) {
-                showError('Veuillez décrire le problème véhicule');
-                return;
-            }
-
-            showLoading();
-            hideError();
-
-            try {
-                const response = await fetch('/api/session/start', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        complaint: complaint,
-                        vehicle_location: document.getElementById('location').value,
-                        urgency: document.getElementById('urgency').value,
-                    }),
-                });
-
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Erreur lors du démarrage');
-                }
-
-                const data = await response.json();
-                sessionId = data.session_id;
-
-                document.getElementById('initial-form').classList.add('hidden');
-                hideLoading();
-
-                if (data.escalated && data.safety_triage) {
-                    showSafetyAlert(data.safety_triage);
-                } else if (data.pending_questions && data.pending_questions.length > 0) {
-                    showQuestion(data.pending_questions[0]);
-                } else {
-                    await loadReport();
-                }
-            } catch (error) {
-                hideLoading();
-                showError(error.message);
-            }
-        }
 
         function showSafetyAlert(triage) {
             const alertDiv = document.getElementById('safety-alert');
@@ -787,10 +1045,142 @@ def serve_frontend():
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
         }
+
+        function show(id) { document.getElementById(id).classList.remove('hidden'); }
+        function hide(id) { document.getElementById(id).classList.add('hidden'); }
+        function hidePhotoSteps() {
+            ['consent-step','photo-step','retake-step','selection-step'].forEach(hide);
+        }
+        function photoNotice(message) {
+            const n = document.getElementById('photo-notice');
+            n.textContent = message;
+            n.classList.remove('hidden');
+        }
+
+        async function photoPost(url, body, headers) {
+            const response = await fetch(url, {method: 'POST', headers: headers || {'Content-Type': 'application/json'}, body: body});
+            const data = await response.json();
+            if (!response.ok) { throw new Error(data.detail || 'Erreur'); }
+            return data;
+        }
+
+        async function startPhotoSession() {
+            hideError(); hide('consent-message'); hide('photo-notice');
+            showLoading();
+            try {
+                const data = await photoPost('/api/photo/session', JSON.stringify({
+                    intake_id: sessionId,
+                    consent_media_analysis: document.getElementById('consent-checkbox').checked,
+                }));
+                hideLoading();
+                handlePhotoStatus(data);
+            } catch (error) { hideLoading(); showError(error.message); }
+        }
+
+        function handlePhotoStatus(data) {
+            if (data.intake_id) { sessionId = data.intake_id; }
+            if (data.session_id) { sessionId = data.session_id; }
+            hide('photo-step'); hide('retake-step'); hide('selection-step');
+            if (data.status === 'consent_required') {
+                const c = document.getElementById('consent-message');
+                c.textContent = data.message; c.classList.remove('hidden');
+            } else if (data.status === 'awaiting_photo') {
+                hide('consent-step'); hide('photo-notice'); show('photo-step');
+            } else if (data.status === 'retake_requested') {
+                document.getElementById('retake-message').textContent = data.message;
+                show('photo-step'); show('retake-step');
+                document.getElementById('photo-input').value = '';
+            } else if (data.status === 'selection_required') {
+                showSelection(data);
+            } else if (data.status === 'analysed') {
+                hidePhotoSteps(); hide('photo-notice');
+                document.getElementById('photo-flow').classList.add('hidden');
+                if (data.escalated && data.safety_triage) { showSafetyAlert(data.safety_triage); }
+                if (data.pending_questions && data.pending_questions.length > 0) {
+                    showQuestion(data.pending_questions[0]);
+                } else {
+                    loadReport();
+                }
+            }
+        }
+
+        async function submitPhoto() {
+            hideError();
+            const file = document.getElementById('photo-input').files[0];
+            if (!file) { showError('Veuillez choisir ou prendre une photo du tableau de bord'); return; }
+            showLoading();
+            try {
+                const data = await photoPost(`/api/photo/${sessionId}/media`, file, {'Content-Type': file.type});
+                hideLoading(); handlePhotoStatus(data);
+            } catch (error) { hideLoading(); showError(error.message); }
+        }
+
+        async function declineRetake() {
+            hideError(); showLoading();
+            try {
+                const data = await photoPost(`/api/photo/${sessionId}/decline-retake`, '{}');
+                hideLoading(); handlePhotoStatus(data);
+            } catch (error) { hideLoading(); showError(error.message); }
+        }
+
+        function showSelection(data) {
+            hide('photo-step'); hide('retake-step');
+            document.getElementById('selection-message').textContent = data.message;
+            const box = document.getElementById('selection-options');
+            box.innerHTML = '';
+            for (const o of data.options) {
+                const label = [o.designation, o.symbol_descriptor, o.colour, o.state, o.displayed_message]
+                    .filter(Boolean).join(' — ');
+                const b = document.createElement('button');
+                b.className = 'choice-btn symbol-option';
+                b.setAttribute('data-entry-id', o.entry_id);
+                b.textContent = label;
+                b.onclick = () => submitSelection(o.entry_id);
+                box.appendChild(b);
+            }
+            show('selection-step');
+        }
+
+        async function submitSelection(entryId) {
+            hideError(); showLoading();
+            try {
+                const data = await photoPost(`/api/photo/${sessionId}/selection`, JSON.stringify({entry_id: entryId}));
+                hideLoading(); hide('selection-step'); handlePhotoStatus(data);
+            } catch (error) { hideLoading(); showError(error.message); }
+        }
+
+        const _baseShowReport = showReport;
+        showReport = function(data) {
+            _baseShowReport(data);
+            const ids = (data.garage_preparation_report && data.garage_preparation_report.dashboard_identifications) || [];
+            if (ids.length === 0) { return; }
+            let html = '<div class="report-section" id="dashboard-identifications"><h3>Voyants du tableau de bord</h3><ul>';
+            for (const i of ids) {
+                const origin = i.origin === 'user_selection'
+                    ? 'indiqué par vous dans la liste du constructeur (non vérifié sur la photo)'
+                    : 'identifié sur la photo et rapproché de la notice du constructeur';
+                html += `<li data-origin="${escapeHtml(i.origin)}">${escapeHtml(i.description)} — ${origin}</li>`;
+            }
+            html += '</ul></div>';
+            document.getElementById('report-container').insertAdjacentHTML('beforeend', html);
+        };
+
+        if (!sessionId) {
+            hide('consent-step');
+            photoNotice("Aucun véhicule identifié pour ce diagnostic. L'identification du véhicule se fait "
+                        + "avant PGDR : ouvrez PGDR depuis le lien reçu après l'identification de votre véhicule.");
+        }
     </script>
 </body>
 </html>
 """
+
+
+@app.get("/", response_class=HTMLResponse)
+def serve_photo_first_frontend():
+    """Primary entry point: the dashboard photograph is the mandatory
+    initial input. No complaint text, location or urgency is asked up front."""
+    return _PHOTO_HTML
 
 
 if __name__ == "__main__":

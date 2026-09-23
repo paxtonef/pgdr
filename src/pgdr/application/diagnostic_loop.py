@@ -70,7 +70,7 @@ class DiagnosticLoop:
         Mirrors the mandate's diagram: Complaint -> observations ->
         evidence(none yet) -> hypotheses -> uncertainty -> ready for
         run_iteration()."""
-        state = DiagnosticCaseState(identity_context=identity_context, safety_state=safety_state)
+        state = self._new_case(identity_context, safety_state)
 
         raw_obs = Observation(kind="raw_complaint", value=raw_complaint, source_type=ObservationSource.USER)
         self._updater.add_observations(state, [raw_obs])
@@ -86,6 +86,36 @@ class DiagnosticLoop:
 
         self._generate_hypotheses_and_evidence(state)
         return state
+
+    def start_without_complaint(
+        self,
+        identity_context: MachineIdentityContext | None = None,
+        safety_state: SafetyState | None = None,
+    ) -> DiagnosticCaseState:
+        """PHOTO-FIRST: a case whose entry point is a dashboard photograph,
+        not a complaint. Absence of a complaint is a valid input state: no
+        `raw_complaint` Observation is fabricated (an empty complaint would
+        otherwise be classified as an 'unknown' symptom and seed a hypothesis
+        from nothing). Everything the case knows comes from governed
+        photo-derived Observations/Evidence added later.
+
+        This is a bounded ENTRY VARIANT, not a second engine: it stops after
+        `_new_case()` — the same case construction `start()` uses — and the
+        case then re-joins the single lifecycle at `run_iteration()`, which
+        applies the identical safety-preemption check, the identical
+        `_generate_hypotheses_and_evidence()` step and the identical
+        anti-loop/max-iteration guards to both entries."""
+        return self._new_case(identity_context, safety_state)
+
+    def _new_case(
+        self,
+        identity_context: MachineIdentityContext | None,
+        safety_state: SafetyState | None,
+    ) -> DiagnosticCaseState:
+        """The single construction point for a DiagnosticCaseState, shared by
+        both entries so they cannot drift apart. Structural only — it carries
+        identity/safety context onto the case and decides nothing."""
+        return DiagnosticCaseState(identity_context=identity_context, safety_state=safety_state)
 
     # -- iteration --------------------------------------------------------
 

@@ -231,6 +231,49 @@ def _build_professional_checks(active_hypotheses: list) -> list[str]:
 # single-source-of-truth DiagnosticCaseState.
 # ---------------------------------------------------------------------------
 
+def _dashboard_identifications(state) -> list[dict]:
+    """B2 photo-first: the dashboard symbols established from the photo,
+    with their provenance kept explicit and distinct (never merged, never
+    phrased alike). Pure translation of Observations already in state."""
+    from pgdr.domain.photo_provenance import PROVIDER_OBSERVATION_KIND, USER_SELECTION_OBSERVATION_KIND
+
+    identifications: list[dict] = []
+    for o in state.observations:
+        if o.kind == PROVIDER_OBSERVATION_KIND and o.context.get("match_status") == "match":
+            identifications.append({
+                "origin": "visual_provider_match",
+                "machine_verified": True,
+                "description": str(o.value),
+                "reference_entry_id": o.context.get("matched_reference_entry_id"),
+                "observation_id": o.id,
+                "adapter_id": o.context.get("adapter_id"),
+            })
+        elif o.kind == USER_SELECTION_OBSERVATION_KIND and o.context.get("selected_reference_entry_id"):
+            identifications.append({
+                "origin": "user_selection",
+                "machine_verified": False,
+                "description": str(o.value),
+                "reference_entry_id": o.context.get("selected_reference_entry_id"),
+                "observation_id": o.id,
+                "adapter_id": o.context.get("adapter_id"),
+                "triggering_match_status": o.context.get("triggering_match_status"),
+            })
+    return identifications
+
+
+def _photo_main_observations(identifications: list[dict]) -> list[str]:
+    lines = []
+    for i in identifications:
+        if i["origin"] == "visual_provider_match":
+            lines.append(f"Voyant identifié sur la photo du tableau de bord : {i['description']}.")
+        else:
+            lines.append(
+                f"Voyant indiqué par vous dans la liste du constructeur : {i['description']} "
+                f"(identification déclarative, non vérifiée sur la photo)."
+            )
+    return lines
+
+
 def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationReport"]:
     """Builds (UserSummary, GaragePreparationReport) from a
     DiagnosticCaseState. Import is deferred inside the function body to
@@ -272,7 +315,10 @@ def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationRepor
         e.source_rule_id == "automotive.media_evidence_acquired" for e in state.evidence
     )
 
+    dashboard_identifications = _dashboard_identifications(state)
+
     garage_report = GaragePreparationReport(
+        dashboard_identifications=dashboard_identifications,
         vehicle={
             "identity_resolution_id": state.identity_context.identity_ref if state.identity_context else None,
             **(state.identity_context.attributes if state.identity_context else {}),
@@ -319,7 +365,7 @@ def build_from_case_state(state) -> tuple["UserSummary", "GaragePreparationRepor
 
     user_summary = UserSummary(
         urgency={"label": urgency_label, "explanation": urgency_explanation},
-        main_observations=[complaint_text] if complaint_text else [],
+        main_observations=([complaint_text] if complaint_text else []) + _photo_main_observations(dashboard_identifications),
         next_actions=_build_next_actions(
             triage=triage,
             active_hypotheses=active_hypotheses,

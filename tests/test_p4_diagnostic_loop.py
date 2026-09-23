@@ -407,5 +407,210 @@ def test_p4_t17_signature_qa_changes_reasoning_not_only_report(loop):
     assert by_family["tyre_or_wheel"] > by_family["engine_running"]
 
 
+# ---------------------------------------------------------------------------
+# PHOTO-FIRST INITIALIZATION AUDIT — regression pin for the TEXT-FIRST path.
+#
+# `start()` and `start_without_complaint()` were unified onto one shared
+# construction point (`_new_case`), and DiagnosticCaseFactory.create() /
+# .create_for_photo() onto one shared context mapping (`_case_context`).
+# That refactor is structural only, so the text-first path must be
+# bit-for-bit unchanged. These two tests pin it CONCRETELY — the exact
+# observations, evidence, hypotheses and question sequence a real
+# complaint produces — rather than relying on an aggregate pass count.
+# ---------------------------------------------------------------------------
+
+def test_textfirst_start_initialization_is_pinned(loop):
+    """`start()` with a real complaint: the exact analytical state the
+    initialization must produce. Every assertion here is a property
+    `start_without_complaint()` deliberately does NOT have — which is the
+    whole point of the two entries being distinct but sharing one lifecycle."""
+    state = loop.start("La voiture tremble au ralenti")
+
+    # The complaint IS recorded, verbatim, as a USER observation, and the
+    # domain derives its symptoms from it.
+    assert [(o.kind, o.value, o.source_type) for o in state.observations] == [
+        ("raw_complaint", "La voiture tremble au ralenti", ObservationSource.USER),
+        ("symptom", "vibration", ObservationSource.USER),
+        ("symptom", "engine_running", ObservationSource.USER),
+    ]
+    # Derived symptoms point back at the raw complaint they came from.
+    raw = state.observations[0]
+    assert all(o.source_ref == raw.id for o in state.observations[1:])
+
+    # Initial evidence: one SUPPORTS at the initial-support weight per symptom.
+    assert [(e.direction, e.weight, e.source_rule_id) for e in state.evidence] == [
+        (EvidenceDirection.SUPPORTS, 0.3, "automotive.initial_symptom_support"),
+        (EvidenceDirection.SUPPORTS, 0.3, "automotive.initial_symptom_support"),
+    ]
+
+    # Hypotheses are seeded AND scored at init time.
+    assert [(h.hypothesis_type, h.confidence) for h in state.hypotheses] == [
+        ("engine_running", 0.6),
+        ("tyre_or_wheel", 0.6),
+    ]
+
+    # start() never iterates or asks anything by itself.
+    assert state.analytical_status == AnalyticalStatus.ACTIVE
+    assert state.stop_reason is None
+    assert state.iteration == 0
+    assert state.questions == []
+
+
+def test_textfirst_full_drive_is_pinned(loop):
+    """The whole text-first conversation, end to end: the question
+    sequence, the Answer->Observation trail, and the terminal state."""
+    state = loop.start("La voiture tremble au ralenti")
+
+    sequence: list[tuple[str, str]] = []
+    for _ in range(30):
+        result = loop.run_iteration(state)
+        state = result.state
+        if result.next_question is None:
+            sequence.append(("STOP", result.stop_reason.value))
+            break
+        q = result.next_question
+        sequence.append((q.id, q.answer_type.value))
+        state = loop.submit_answer(
+            state, q, False if q.answer_type.value == "yes_no" else "je ne sais pas"
+        )
+
+    assert sequence == [
+        ("Q-STATE-001", "single_choice"),
+        ("Q-STATE-002", "single_choice"),
+        ("Q-SYM-001", "single_choice"),
+        ("Q-SYM-002", "single_choice"),
+        ("Q-COND-001", "multiple_choice"),
+        ("Q-EVT-001", "yes_no"),
+        ("Q-EVI-001", "yes_no"),
+        ("STOP", "NO_AVAILABLE_QUESTION"),
+    ]
+
+    assert [o.kind for o in state.observations] == [
+        "raw_complaint", "symptom", "symptom",
+        "answer:Q-STATE-001", "answer:Q-STATE-002", "answer:Q-SYM-001",
+        "answer:Q-SYM-002", "answer:Q-COND-001", "answer:Q-EVT-001", "answer:Q-EVI-001",
+    ]
+    assert (len(state.observations), len(state.evidence), len(state.answers), len(state.questions)) == (10, 16, 7, 7)
+    assert [(h.hypothesis_type, h.confidence, h.active) for h in state.hypotheses] == [
+        ("engine_running", 0.6, True),
+        ("tyre_or_wheel", 0.6, True),
+    ]
+    assert state.analytical_status == AnalyticalStatus.STOPPED
+    assert state.stop_reason == DiagnosticStopReason.NO_AVAILABLE_QUESTION
+    assert state.iteration == 8
+
+
+def test_both_entries_share_one_case_construction_path(loop, monkeypatch):
+    """Structural invariant: `start()` and `start_without_complaint()` build
+    the case through the SAME `_new_case()` call, so they cannot drift apart.
+    Proven by intercepting `_new_case` and showing both entries route through
+    it with identical context arguments."""
+    identity = MachineIdentityContext(identity_ref="VIR-X", confidence=0.9)
+    safety = SafetyState(triage=SafetyTriage(
+        level="monitor_and_document", rationale="pin", triggered_rules=[],
+    ))
+
+    seen: list[tuple] = []
+    original = loop._new_case
+
+    def spy(identity_context, safety_state):
+        seen.append((identity_context, safety_state))
+        return original(identity_context, safety_state)
+
+    monkeypatch.setattr(loop, "_new_case", spy)
+
+    loop.start("La voiture tremble au ralenti", identity_context=identity, safety_state=safety)
+    loop.start_without_complaint(identity_context=identity, safety_state=safety)
+
+    assert len(seen) == 2, "both entries must construct the case via _new_case()"
+    assert seen[0] == seen[1] == (identity, safety)
+
+
+def test_start_without_complaint_fabricates_nothing(loop):
+    """The Photo-First invariant: absence of a complaint is a valid input
+    state. No observation, no evidence, no hypothesis, no question is
+    manufactured — contrast every assertion in
+    test_textfirst_start_initialization_is_pinned above."""
+    state = loop.start_without_complaint()
+
+    assert state.observations == []
+    assert state.evidence == []
+    assert state.hypotheses == []
+    assert state.uncertainties == []
+    assert state.questions == []
+    assert state.answers == []
+    assert state.analytical_status == AnalyticalStatus.ACTIVE
+    assert state.stop_reason is None
+    assert state.iteration == 0
+    # ...but it is a fully-formed case on the same lifecycle.
+    assert state.case_id
+
+
+def test_both_factory_entries_share_one_case_context_mapping(loop, monkeypatch):
+    """Structural invariant at the factory level: create() and
+    create_for_photo() derive the case's identity/safety context through the
+    SAME `_case_context()` call, so a photo-first case can never end up
+    carrying context built by a different rule than a text-first one."""
+    from pgdr.application.case_factory import DiagnosticCaseFactory
+    from pgdr.enums import ResolutionStatus, VehicleLocation, VehicleState
+    from pgdr.models import Consent, InitialComplaint, PreGarageDiagnosticRequest, VehicleIdentityContext
+
+    request = PreGarageDiagnosticRequest(
+        request_id="AUDIT-CTX-001",
+        vehicle_identity_context=VehicleIdentityContext(
+            resolution_id="VIR-CTX", resolution_status=ResolutionStatus.PROVISIONALLY_RESOLVED,
+        ),
+        initial_complaint=InitialComplaint(
+            free_text="La voiture tremble au ralenti",
+            current_vehicle_location=VehicleLocation.HOME,
+            vehicle_current_state=VehicleState.ENGINE_OFF,
+        ),
+        consent=Consent(media_analysis_allowed=True, report_storage_allowed=False),
+    )
+    triage = SafetyTriage(level="monitor_and_document", rationale="pin", triggered_rules=[])
+
+    factory = DiagnosticCaseFactory(loop)
+    calls: list[tuple] = []
+    original = factory._case_context
+
+    def spy(req, safety_triage):
+        result = original(req, safety_triage)
+        calls.append(result)
+        return result
+
+    monkeypatch.setattr(factory, "_case_context", spy)
+
+    text_case = factory.create(request, triage)
+    photo_case = factory.create_for_photo(request, triage)
+
+    assert len(calls) == 2, "both factory entries must map context via _case_context()"
+    # Identical mapping in, identical context carried onto both cases out.
+    assert calls[0][0] == calls[1][0]
+    assert calls[0][1].triage == calls[1][1].triage
+    assert text_case.identity_context == photo_case.identity_context
+    assert text_case.safety_state.triage == photo_case.safety_state.triage
+    # ...and only the text-first case holds the complaint.
+    assert any(o.kind == "raw_complaint" for o in text_case.observations)
+    assert photo_case.observations == []
+
+
+def test_photo_first_case_is_safety_preempted_by_the_same_invariant(loop):
+    """`start()` short-circuits to SAFETY_PREEMPTED at init. A photo-first
+    case has no init step to short-circuit, so it must hit the IDENTICAL
+    invariant at the first run_iteration() — same enum, same stop reason,
+    no photo-specific safety rule."""
+    triage = SafetyTriage(level="emergency_stop", rationale="pin", triggered_rules=[])
+    safety = SafetyState(triage=triage)
+    assert safety.preempts_analysis
+
+    text_first = loop.start("La pédale de frein est molle", safety_state=safety)
+    assert text_first.stop_reason == DiagnosticStopReason.SAFETY_PREEMPTED
+
+    photo_first = loop.start_without_complaint(safety_state=safety)
+    result = loop.run_iteration(photo_first)
+    assert result.stop_reason == DiagnosticStopReason.SAFETY_PREEMPTED
+    assert result.state.analytical_status == AnalyticalStatus.STOPPED
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))

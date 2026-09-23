@@ -1,0 +1,162 @@
+{
+  "_provenance": "Captured, not hand-written: real VIR ResolutionEngine (vehicle-identity-resolver a342aba, FrenchRegistrationProviderAdapter + ManualAdapter) -> real PI handoff_mapper.map_resolution() (pi01-main 3186c8e), dumped with model_dump(mode='json'). Plates AB-123-CD / AC-456-EF are VIR's own stub registration records; the manual resolution is VIR's manual path (Peugeot/3008/2020/diesel), which carries no generation.",
+  "peugeot_3008_ii_by_plate": {
+    "resolution_id": "VIR-RES-9153C955403A",
+    "resolution_status": "provisionally_resolved",
+    "confidence": {
+      "score": 0.8333,
+      "level": "high"
+    },
+    "vehicle_identity": {
+      "manufacturer": "Peugeot",
+      "brand": null,
+      "model": "3008",
+      "generation": "II",
+      "variant": null,
+      "trim": null,
+      "production": {
+        "year": 2020,
+        "start_date": null,
+        "end_date": null
+      },
+      "body": {
+        "type": "suv",
+        "door_count": 5
+      },
+      "fuel": {
+        "primary_type": "diesel"
+      },
+      "engine": {
+        "commercial_name": "BlueHDi 130",
+        "engine_code": null,
+        "displacement_cc": 1499,
+        "cylinders": 4,
+        "power_kw": 96.0,
+        "power_hp": null
+      },
+      "transmission": {
+        "type": "automatic",
+        "gears": 8
+      },
+      "drivetrain": "front_wheel_drive",
+      "identifiers": {
+        "registration_number": "AB-123-CD",
+        "registration_country": "FR",
+        "vin": null
+      }
+    },
+    "unresolved_fields": [
+      "engine.engine_code",
+      "identifiers.vin",
+      "trim",
+      "variant"
+    ],
+    "contradictions": []
+  },
+  "renault_clio_v_by_plate": {
+    "resolution_id": "VIR-RES-5B47210AB71F",
+    "resolution_status": "provisionally_resolved",
+    "confidence": {
+      "score": 0.8333,
+      "level": "high"
+    },
+    "vehicle_identity": {
+      "manufacturer": "Renault",
+      "brand": null,
+      "model": "Clio",
+      "generation": "V",
+      "variant": null,
+      "trim": null,
+      "production": {
+        "year": 2019,
+        "start_date": null,
+        "end_date": null
+      },
+      "body": {
+        "type": "hatchback",
+        "door_count": 5
+      },
+      "fuel": {
+        "primary_type": "diesel"
+      },
+      "engine": {
+        "commercial_name": "1.5 Blue dCi",
+        "engine_code": null,
+        "displacement_cc": 1461,
+        "cylinders": 4,
+        "power_kw": 85.0,
+        "power_hp": null
+      },
+      "transmission": {
+        "type": "manual",
+        "gears": 6
+      },
+      "drivetrain": "front_wheel_drive",
+      "identifiers": {
+        "registration_number": "AC-456-EF",
+        "registration_country": "FR",
+        "vin": null
+      }
+    },
+    "unresolved_fields": [
+      "engine.engine_code",
+      "identifiers.vin",
+      "trim",
+      "variant"
+    ],
+    "contradictions": []
+  },
+  "peugeot_3008_manual_no_generation": {
+    "resolution_id": "VIR-RES-FA37C791105C",
+    "resolution_status": "provisionally_resolved",
+    "confidence": {
+      "score": 0.5357,
+      "level": "medium"
+    },
+    "vehicle_identity": {
+      "manufacturer": "Peugeot",
+      "brand": null,
+      "model": "3008",
+      "generation": null,
+      "variant": null,
+      "trim": null,
+      "production": {
+        "year": 2020,
+        "start_date": null,
+        "end_date": null
+      },
+      "body": {
+        "type": null,
+        "door_count": null
+      },
+      "fuel": {
+        "primary_type": "diesel"
+      },
+      "engine": {
+        "commercial_name": null,
+        "engine_code": null,
+        "displacement_cc": null,
+        "cylinders": null,
+        "power_kw": null,
+        "power_hp": null
+      },
+      "transmission": {
+        "type": null,
+        "gears": null
+      },
+      "drivetrain": null,
+      "identifiers": {
+        "registration_number": null,
+        "registration_country": null,
+        "vin": null
+      }
+    },
+    "unresolved_fields": [
+      "engine.engine_code",
+      "identifiers.vin",
+      "trim",
+      "variant"
+    ],
+    "contradictions": []
+  }
+}
