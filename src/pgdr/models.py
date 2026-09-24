@@ -5,13 +5,14 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from pgdr.domain.media import PrimaryDiagnosticMedia
 from pgdr.enums import (
     AnswerType, ClaimStatus, Confidence, ContradictionImpact,
     ContradictionSeverity, Deadline, DrivingAssessment, DrivingStatus,
-    EventRelation, EvidenceSource, Frequency, QuestionCategory,
+    EventRelation, EvidenceSource, FindingBasis, Frequency, ImmediateRequirement,
+    ManufacturerOperability, PracticalProviderStatus, PracticalRequirement, QuestionCategory,
     ReportStatus, ResolutionAction, ResolutionStatus, Reproducibility,
     RiskLevel, SessionState, Severity, SymptomFamily, TechnicalLevel,
     TriageLevel, Urgency, VehicleLocation, VehicleState, WarningBehavior,
@@ -253,6 +254,11 @@ class GaragePreparationReport(BaseModel):
     contradictions: list[dict[str, Any]] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=_now)
+    manufacturer_first_finding: Optional[dict[str, Any]] = None
+    """PGDR Part 1 (Execution Mandate v0.2 FINAL, §1 C7): the Manufacturer
+    First Finding, additive key. None for cases without a photo. Every
+    pre-existing key above is unchanged (D-C5: the legacy urgency content
+    is not authoritative for Part 1 and never overrides this finding)."""
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +332,173 @@ class PreGarageDiagnosticRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# PGDR Part 1 — Manufacturer First Finding (Execution Mandate v0.2 FINAL, §3)
+#
+# Additive output representation. Every structured item is DOCUMENTED
+# (verbatim source phrase), DERIVED (named §9 rule + the phrase it applies
+# to) or NOT_ESTABLISHED. The manufacturer text carried here is read at
+# runtime from the manufacturer knowledge record (the DashboardReferenceEntry
+# supplied through PI) -- never from PGDR's derivation layer (§4).
+# ---------------------------------------------------------------------------
+
+FINDING_SOURCE_FIELDS = ("documented_meaning", "documented_instruction", "displayed_message")
+NOT_ESTABLISHED_VALUE = "not_established"
+
+
+class FindingItem(BaseModel):
+    """§3 item shape, with the loader invariants enforced structurally."""
+    model_config = ConfigDict(frozen=True)
+
+    value: str
+    basis: FindingBasis
+    rule_id: Optional[str] = None
+    source_field: Optional[str] = None
+    source_phrase: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _invariants(self) -> "FindingItem":
+        if (self.value == NOT_ESTABLISHED_VALUE) != (self.basis == FindingBasis.NOT_ESTABLISHED):
+            raise ValueError("value = not_established <=> basis = not_established")
+        if (self.rule_id is not None) != (self.basis == FindingBasis.DERIVED):
+            raise ValueError("rule_id is required iff basis = derived")
+        established = self.basis != FindingBasis.NOT_ESTABLISHED
+        if established != (self.source_field is not None) or established != (self.source_phrase is not None):
+            raise ValueError("source_field/source_phrase are required iff basis != not_established")
+        if self.source_field is not None and self.source_field not in FINDING_SOURCE_FIELDS:
+            raise ValueError(f"unknown source_field {self.source_field!r}")
+        return self
+
+    @classmethod
+    def not_established(cls) -> "FindingItem":
+        return cls(value=NOT_ESTABLISHED_VALUE, basis=FindingBasis.NOT_ESTABLISHED)
+
+
+class DocumentedPhrase(BaseModel):
+    """A verbatim phrase of the manufacturer record (e.g. a stop condition)."""
+    model_config = ConfigDict(frozen=True)
+
+    source_field: str
+    source_phrase: str
+
+
+class DocumentedFigure(BaseModel):
+    """§3.4 / R-4: a documented range, countdown or quantity. Never an
+    operability limit and never permission to drive. `caution` = the
+    mandatory T6 caution applies (a distance/range figure)."""
+    model_config = ConfigDict(frozen=True)
+
+    source_field: str
+    source_phrase: str
+    meaning: str
+    caution: bool
+
+
+class PracticalAssistanceRequirement(BaseModel):
+    """§3.5 handoff interface to a later Practical Assistance capability.
+    Nothing is acquired or called: provider_status is always NOT_INTEGRATED
+    and its absence never blocks the finding."""
+    model_config = ConfigDict(frozen=True)
+
+    requirement: FindingItem
+    documented_suitability: FindingItem
+    urgency_phrase: FindingItem
+    precise_location_needed: bool
+    provider_status: PracticalProviderStatus = PracticalProviderStatus.NOT_INTEGRATED
+
+
+class FindingProvenance(BaseModel):
+    """§3.8."""
+    model_config = ConfigDict(frozen=True)
+
+    document_id: str
+    document_title: str
+    source_authority: str
+    freshness_status: str
+    entry_id: str
+    manufacturer_designation: str
+    colour: Optional[str] = None
+    state: Optional[str] = None
+    identification_origin: str
+    mapping_fingerprint_match: bool
+    language: str = "en (source representation, untranslated)"
+
+
+_ITEM_VALUE_SETS: dict[str, set[str]] = {
+    "stop_vehicle_engine_off": {v.value for v in ImmediateRequirement},
+    "vehicle_immobilization": {v.value for v in ImmediateRequirement},
+    "exit_vehicle": {v.value for v in ImmediateRequirement},
+    "move_away_from_vehicle": {v.value for v in ImmediateRequirement},
+    "environment_dependent_requirement": {v.value for v in ImmediateRequirement},
+    "operability": {v.value for v in ManufacturerOperability},
+    "professional_attention": {v.value for v in ImmediateRequirement},
+}
+_MAY_DRIVE_VALUES = {ManufacturerOperability.MAY_DRIVE.value, ManufacturerOperability.MAY_DRIVE_WITH_RESTRICTIONS.value}
+
+
+class EntryFinding(BaseModel):
+    """The Manufacturer First Finding for ONE identified manufacturer entry.
+
+    `stop_vehicle_engine_off` (the immediate action, §3.1 / A1) and
+    `operability` (subsequent use of the vehicle, §3.3) are two distinct
+    fields: neither is ever computed from the other's value."""
+    model_config = ConfigDict(frozen=True)
+
+    provenance: FindingProvenance
+    # Manufacturer text, verbatim, from the live manufacturer record.
+    manufacturer_designation: str
+    documented_meaning: str
+    documented_instruction: Optional[str] = None
+    displayed_message: Optional[str] = None
+    combined_with_entry_ids: list[str] = Field(default_factory=list)
+
+    stop_vehicle_engine_off: FindingItem
+    vehicle_immobilization: FindingItem
+    exit_vehicle: FindingItem
+    move_away_from_vehicle: FindingItem
+    environment_dependent_requirement: FindingItem
+    operability: FindingItem
+    max_speed: FindingItem
+    max_distance: FindingItem
+    max_duration: FindingItem
+    stop_conditions: list[DocumentedPhrase] = Field(default_factory=list)
+    documented_figures: list[DocumentedFigure] = Field(default_factory=list)
+    professional_attention: FindingItem
+    urgency_phrase: FindingItem
+    documented_suitability: FindingItem
+    practical_assistance: PracticalAssistanceRequirement
+    audit_flags: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _value_sets(self) -> "EntryFinding":
+        for name, allowed in _ITEM_VALUE_SETS.items():
+            if getattr(self, name).value not in allowed:
+                raise ValueError(f"{name}: invalid value {getattr(self, name).value!r}")
+        if self.practical_assistance.requirement.value not in {v.value for v in PracticalRequirement}:
+            raise ValueError("practical_assistance.requirement: invalid value")
+        # Decision 1 / PGDR-INV-003 / D-C1: permission is never inferred.
+        if self.operability.value in _MAY_DRIVE_VALUES and self.operability.basis != FindingBasis.DOCUMENTED:
+            raise ValueError("MAY_DRIVE* may only be DOCUMENTED")
+        # R-4: a documented figure never becomes a distance/duration limit.
+        figure_phrases = {f.source_phrase for f in self.documented_figures}
+        for limit in (self.max_distance, self.max_duration):
+            if limit.source_phrase is not None and limit.source_phrase in figure_phrases:
+                raise ValueError("R-4: a documented figure cannot populate max_distance/max_duration")
+        return self
+
+
+class ManufacturerFirstFinding(BaseModel):
+    """PGDR Part 1 terminal artifact: one EntryFinding per identified
+    manufacturer entry (possibly none, e.g. when the driver indicated that
+    no offered symbol matched), plus the R-5 composition record."""
+    model_config = ConfigDict(frozen=True)
+
+    entries: list[EntryFinding] = Field(default_factory=list)
+    triage_composition: list[str] = Field(default_factory=list)
+    """R-5 rows that applied (e.g. 'R-5:stop_vehicle_engine_off:oil-pressure-warning'),
+    for traceability. Empty when R-5 applied no row."""
+
+
+# ---------------------------------------------------------------------------
 # Pack 17 — Output contract
 # ---------------------------------------------------------------------------
 
@@ -351,6 +524,9 @@ class PreGarageDiagnosticResult(BaseModel):
     user_summary: Optional[UserSummary] = None
     limitations: list[str] = Field(default_factory=list)
     trace: dict[str, Any] = Field(default_factory=dict)
+    manufacturer_first_finding: Optional[ManufacturerFirstFinding] = None
+    """PGDR Part 1 (§1 C7): present on both terminal paths of a photo-origin
+    case; None for every other case."""
 
 
 # ---------------------------------------------------------------------------

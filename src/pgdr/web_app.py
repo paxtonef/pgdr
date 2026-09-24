@@ -10,6 +10,7 @@ UI language: French only
 """
 from __future__ import annotations
 
+import html
 import importlib
 import os
 import secrets
@@ -34,6 +35,9 @@ from pgdr.models import (
 )
 from pgdr.adapters.peugeot_dashboard_knowledge import PeugeotDashboardKnowledgeAdapter
 from pgdr.application.interpretation_validation import InterpretationValidationError
+from pgdr.application.part1_first_finding import (
+    APPROVED_BANNERS, APPROVED_LABELS, APPROVED_NO_IDENTIFIED_SYMBOL, banner, garage_label, professional_label,
+)
 from pgdr.application.photo_first import PhotoPhase, PhotoStep, UserSelectionError
 from pgdr.application.vehicle_applicability import resolve_dashboard_reference
 from pgdr.domain.dashboard_knowledge import ApplicabilityStatus, DashboardReferenceSet
@@ -202,9 +206,152 @@ def get_report(session_id: str):
         raise HTTPException(status_code=500, detail="Résultat manquant")
 
     # Return the existing PGDR report structure (governed by GGM if enabled)
-    return {
+    payload = {
         "user_summary": session.result.user_summary.model_dump(mode="json"),
         "garage_preparation_report": session.result.garage_preparation_report.model_dump(mode="json"),
+    }
+    finding = session.result.manufacturer_first_finding
+    if finding is not None:
+        # PGDR Part 1: the photo path's terminal artifact and its approved
+        # driver-facing presentation (the page renders ONLY this for Part 1).
+        payload["manufacturer_first_finding"] = finding.model_dump(mode="json")
+        payload["part1_presentation"] = present_first_finding(finding)
+    return payload
+
+
+# --- PGDR Part 1 — Manufacturer First Finding presentation (§5 / §7) ---
+#
+# Every PGDR-authored driver-facing string below is an owner-approved text
+# (APPROVED_BANNERS T1-T8 / APPROVED_LABELS §7.1), byte-for-byte, with only
+# its declared placeholders substituted. Manufacturer text is passed through
+# verbatim (English, untranslated -- Decision 8). The identification-origin
+# wording is the pre-existing B2 photo-first wording, unchanged.
+
+_ORIGIN_TEXT = {
+    "visual_provider_match": "identifié sur la photo et rapproché de la notice du constructeur",
+    "user_selection": "indiqué par vous dans la liste du constructeur (non vérifié sur la photo)",
+}
+_NE = "not_established"
+_REQUIRED = "required"
+_OPERABILITY_LABEL = {
+    "do_not_drive": APPROVED_LABELS["operability = DO_NOT_DRIVE"],
+    "starting_prevented": APPROVED_LABELS["operability = STARTING_PREVENTED"],
+    "may_drive": APPROVED_LABELS["operability = MAY_DRIVE (unused)"],
+    "may_drive_with_restrictions": APPROVED_LABELS["operability = MAY_DRIVE_WITH_RESTRICTIONS (unused)"],
+    "not_established": APPROVED_LABELS["operability = NOT_ESTABLISHED"],
+}
+
+
+def _ne_group_label(label_key: str, items: list) -> Optional[str]:
+    """A §7.1 grouped NOT_ESTABLISHED label ('A / B / C : non établi…'):
+    the approved label verbatim when every item of the group is NE; the
+    matching parts of that same label when only some are."""
+    ne = [item.basis.value == _NE for item in items]
+    if not any(ne):
+        return None
+    label = APPROVED_LABELS[label_key]
+    if all(ne):
+        return label
+    names, _, tail = label.partition(" : ")
+    parts = names.split(" / ")
+    return " / ".join(p for p, is_ne in zip(parts, ne) if is_ne) + " : " + tail
+
+
+def _present_entry(e) -> dict:
+    immediate = []
+    if e.stop_vehicle_engine_off.value == _REQUIRED:          # A4: the immediate action first
+        immediate.append(APPROVED_LABELS["stop_vehicle_engine_off = REQUIRED"])
+    if e.vehicle_immobilization.value == _REQUIRED:
+        immediate.append(APPROVED_LABELS["vehicle_immobilization = REQUIRED"])
+    for name in ("exit_vehicle", "move_away_from_vehicle", "environment_dependent_requirement"):
+        if getattr(e, name).value == _REQUIRED:
+            # No owner-approved REQUIRED wording exists for these items and
+            # no current mapping can produce one: fail loudly, never silently.
+            raise ValueError(f"no approved driver-facing label for {name} = REQUIRED")
+
+    practical = e.practical_assistance.requirement.value
+    suitability = e.documented_suitability
+    if practical == "towing_required":
+        practical_label = APPROVED_LABELS["practical = TOWING_REQUIRED"]
+    elif practical == "garage_required":
+        practical_label = garage_label(suitability)
+    elif practical == "neither_required":
+        practical_label = APPROVED_LABELS["practical = NEITHER_REQUIRED"]
+    else:
+        practical_label = None
+    t7 = (
+        list(banner("T7", documented_suitability=suitability.value if suitability.basis.value != _NE else None))
+        if practical in ("garage_required", "towing_required") else []
+    )
+
+    def _ne(item, label_key: str) -> Optional[str]:
+        return APPROVED_LABELS[label_key] if item.basis.value == _NE else None
+
+    not_established = [
+        label for label in (
+            _ne(e.stop_vehicle_engine_off, "stop_vehicle_engine_off = NOT_ESTABLISHED"),
+            _ne(e.vehicle_immobilization, "vehicle_immobilization = NOT_ESTABLISHED"),
+            _ne_group_label("exit_vehicle / move_away / environment = NOT_ESTABLISHED",
+                            [e.exit_vehicle, e.move_away_from_vehicle, e.environment_dependent_requirement]),
+            _ne_group_label("max_speed / max_distance / max_duration = NOT_ESTABLISHED",
+                            [e.max_speed, e.max_distance, e.max_duration]),
+            _ne(e.professional_attention, "professional_attention = NOT_ESTABLISHED"),
+            _ne(e.practical_assistance.requirement, "practical_assistance = NOT_ESTABLISHED"),
+        ) if label
+    ]
+    return {
+        "entry_id": e.provenance.entry_id,
+        "identified": {
+            "designation": e.manufacturer_designation,
+            "colour": e.provenance.colour,
+            "state": e.provenance.state,
+            "origin": e.provenance.identification_origin,
+            "origin_text": _ORIGIN_TEXT[e.provenance.identification_origin],
+        },
+        "manufacturer_text": {
+            "label": APPROVED_BANNERS["T5"][0],
+            "documented_meaning": e.documented_meaning,
+            "documented_instruction": e.documented_instruction,
+            "displayed_message": e.displayed_message,
+            "combined_with_entry_ids": e.combined_with_entry_ids,
+        },
+        "immediate_safety": immediate,
+        "vehicle_use": _OPERABILITY_LABEL[e.operability.value],
+        "restrictions": {
+            "stop_conditions": [p.source_phrase for p in e.stop_conditions],
+            "figures": [
+                {"figure": f.source_phrase, "caution": banner("T6", meaning=f.meaning)[0] if f.caution else None}
+                for f in e.documented_figures
+            ],
+        },
+        "professional": (
+            {"label": professional_label(e.urgency_phrase),
+             "documented_suitability": suitability.value if suitability.basis.value != _NE else None}
+            if e.professional_attention.value == _REQUIRED else None
+        ),
+        "practical": {"requirement": practical, "label": practical_label, "notice": t7},
+        "not_established": not_established,
+    }
+
+
+def present_first_finding(finding) -> dict:
+    """The §5 user-facing order, as approved strings. With no identified
+    entry (the driver indicated that none of the offered symbols matched)
+    only the approved no-identification text, then T8, is presented."""
+    entries = [_present_entry(e) for e in finding.entries]
+    sources, seen = [], set()
+    for e in finding.entries:
+        key = (e.provenance.document_id, e.provenance.document_title)
+        if key not in seen:
+            seen.add(key)
+            sources.append(banner("T3", document_title=key[1], document_id=key[0])[0])
+    return {
+        "banner": list(APPROVED_BANNERS["T2"]) if entries else [],
+        "entries": entries,
+        "legend": APPROVED_BANNERS["T4"][0] if any(x["not_established"] for x in entries) else None,
+        "sources": sources,
+        "no_identification": None if entries else APPROVED_NO_IDENTIFIED_SYMBOL,
+        "end": APPROVED_BANNERS["T8"][0],
     }
 
 
@@ -761,10 +908,7 @@ _PHOTO_HTML = """<!DOCTYPE html>
         <h1>PGDR — Pré-Garage Diagnostic Runner</h1>
         <p class="subtitle">Photographiez le tableau de bord : PGDR prépare la suite</p>
 
-        <div class="disclaimer">
-            <strong>⚠️ PGDR ne fournit jamais un diagnostic mécanique définitif</strong>
-            PGDR vous aide à structurer et documenter un problème véhicule. Il ne remplace pas l'examen professionnel d'un mécanicien qualifié. Les observations produites sont des hypothèses compatibles avec les symptômes décrits, nécessitant toujours une vérification professionnelle.
-        </div>
+        <div class="disclaimer" id="part1-t1">__PART1_T1__</div>
 
         <!-- Photo-first entry -->
         <div id="photo-flow">
@@ -1095,12 +1239,10 @@ _PHOTO_HTML = """<!DOCTYPE html>
             } else if (data.status === 'analysed') {
                 hidePhotoSteps(); hide('photo-notice');
                 document.getElementById('photo-flow').classList.add('hidden');
-                if (data.escalated && data.safety_triage) { showSafetyAlert(data.safety_triage); }
-                if (data.pending_questions && data.pending_questions.length > 0) {
-                    showQuestion(data.pending_questions[0]);
-                } else {
-                    loadReport();
-                }
+                // PGDR Part 1: the photo path ends with the Manufacturer First
+                // Finding. No question follows the photo; the legacy safety
+                // alert is not shown (the finding carries the safety content).
+                loadReport();
             }
         }
 
@@ -1149,8 +1291,109 @@ _PHOTO_HTML = """<!DOCTYPE html>
             } catch (error) { hideLoading(); showError(error.message); }
         }
 
+        function el(tag, text, attrs) {
+            const node = document.createElement(tag);
+            if (text !== undefined && text !== null) { node.textContent = text; }
+            for (const [k, v] of Object.entries(attrs || {})) { node.setAttribute(k, v); }
+            return node;
+        }
+
+        function section(parent, title, name) {
+            const s = el('div', null, {'class': 'report-section', 'data-section': name});
+            s.appendChild(el('h3', title));
+            parent.appendChild(s);
+            return s;
+        }
+
+        function list(parent, items, cls) {
+            const ul = el('ul', null, cls ? {'class': cls} : {});
+            for (const item of items) { ul.appendChild(el('li', item)); }
+            parent.appendChild(ul);
+            return ul;
+        }
+
+        // PGDR Part 1 — Manufacturer First Finding, in the approved §5 order.
+        // Every string comes from the server (approved texts or verbatim
+        // manufacturer text); nothing is composed here.
+        function showFirstFinding(p) {
+            const container = document.getElementById('report-container');
+            container.innerHTML = '';
+            const root = el('div', null, {'id': 'manufacturer-first-finding'});
+            container.appendChild(root);
+            if (p.banner.length) {
+                const b = el('div', null, {'class': 'disclaimer', 'id': 'part1-t2'});
+                b.appendChild(el('strong', p.banner[0]));
+                for (const line of p.banner.slice(1)) { b.appendChild(el('p', line)); }
+                root.appendChild(b);
+            }
+            if (p.entries.length) {
+                const ident = section(root, 'Voyant identifié', 'identified');
+                ident.id = 'dashboard-identifications';
+                const ul = el('ul');
+                for (const e of p.entries) {
+                    const parts = [e.identified.designation, e.identified.colour, e.identified.state].filter(Boolean);
+                    ul.appendChild(el('li', parts.join(' / ') + ' — ' + e.identified.origin_text,
+                                      {'data-origin': e.identified.origin, 'data-entry-id': e.entry_id}));
+                }
+                ident.appendChild(ul);
+            }
+            for (const e of p.entries) {
+                const block = el('div', null, {'class': 'finding-entry', 'data-entry-id': e.entry_id});
+                root.appendChild(block);
+                const mt = section(block, 'Ce que dit le constructeur', 'manufacturer-text');
+                mt.appendChild(el('p', e.manufacturer_text.label, {'class': 'question-reason'}));
+                const verbatim = [e.manufacturer_text.documented_meaning, e.manufacturer_text.documented_instruction,
+                                  e.manufacturer_text.displayed_message].filter(Boolean);
+                for (const v of verbatim) { mt.appendChild(el('blockquote', v, {'lang': 'en'})); }
+                if (e.manufacturer_text.combined_with_entry_ids.length) {
+                    mt.appendChild(el('p', e.manufacturer_text.combined_with_entry_ids.join(', '), {'lang': 'en', 'class': 'combined-with'}));
+                }
+                if (e.immediate_safety.length) {
+                    list(section(block, 'Sécurité immédiate', 'immediate-safety'), e.immediate_safety);
+                }
+                section(block, 'Utilisation du véhicule', 'vehicle-use').appendChild(el('p', e.vehicle_use));
+                const r = e.restrictions;
+                if (r.stop_conditions.length || r.figures.length) {
+                    const rs = section(block, "Restrictions / conditions d'arrêt", 'restrictions');
+                    for (const sc of r.stop_conditions) { rs.appendChild(el('blockquote', sc, {'lang': 'en'})); }
+                    for (const f of r.figures) {
+                        rs.appendChild(el('blockquote', f.figure, {'lang': 'en', 'class': 'documented-figure'}));
+                        if (f.caution) { rs.appendChild(el('p', f.caution, {'class': 'figure-caution'})); }
+                    }
+                }
+                if (e.professional) {
+                    const ps = section(block, "Intervention d'un professionnel", 'professional');
+                    ps.appendChild(el('p', e.professional.label));
+                    if (e.professional.documented_suitability) {
+                        ps.appendChild(el('blockquote', e.professional.documented_suitability, {'lang': 'en'}));
+                    }
+                }
+                if (e.practical.label || e.practical.notice.length) {
+                    const pa = section(block, 'Assistance pratique', 'practical');
+                    pa.setAttribute('data-requirement', e.practical.requirement);
+                    if (e.practical.label) { pa.appendChild(el('p', e.practical.label)); }
+                    for (const line of e.practical.notice) { pa.appendChild(el('p', line)); }
+                }
+                if (e.not_established.length) {
+                    const ne = section(block, 'Points non établis par la notice', 'not-established');
+                    list(ne, e.not_established);
+                    if (p.legend) { ne.appendChild(el('p', p.legend, {'class': 'question-reason'})); }
+                }
+            }
+            if (p.no_identification) {
+                root.appendChild(el('p', p.no_identification, {'id': 'part1-no-identification'}));
+            }
+            if (p.sources.length) {
+                const src = section(root, 'Source', 'source');
+                for (const s of p.sources) { src.appendChild(el('p', s)); }
+            }
+            root.appendChild(el('div', p.end, {'class': 'report-disclaimer', 'id': 'part1-t8'}));
+            container.classList.remove('hidden');
+        }
+
         const _baseShowReport = showReport;
         showReport = function(data) {
+            if (data.part1_presentation) { showFirstFinding(data.part1_presentation); return; }
             _baseShowReport(data);
             const ids = (data.garage_preparation_report && data.garage_preparation_report.dashboard_identifications) || [];
             if (ids.length === 0) { return; }
@@ -1180,7 +1423,13 @@ _PHOTO_HTML = """<!DOCTYPE html>
 def serve_photo_first_frontend():
     """Primary entry point: the dashboard photograph is the mandatory
     initial input. No complaint text, location or urgency is asked up front."""
-    return _PHOTO_HTML
+    return _PHOTO_HTML.replace("__PART1_T1__", _T1_HTML)
+
+
+# PGDR Part 1 (§7 T1): replaces the legacy banner on the photo-first page.
+_T1_HTML = "<strong>" + html.escape(APPROVED_BANNERS["T1"][0]) + "</strong>" + "".join(
+    html.escape(line) for line in APPROVED_BANNERS["T1"][1:]
+)
 
 
 if __name__ == "__main__":

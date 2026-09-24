@@ -189,14 +189,18 @@ def test_flow_1_consent_photo_match_to_final_report(live_server, page, provider)
     assert provider.calls[-1]["sha256"] == sup.sha(image) and provider.calls[-1]["length"] == len(image)
     assert len(web._media_store) == 0  # not retained
 
+    # PGDR Part 1 (mandate v0.2 §11 step 5, rewritten): no question at all
+    # follows the photo; the page goes straight to the First Finding.
     prompts: list[str] = []
     _drive_to_report(page, prompts)
-    assert prompts, "the existing diagnostic flow continued with residual questions"
-    assert not any("Où se trouve" in p for p in prompts)      # no elevation -> no location question
-    assert not any("photo" in p.lower() for p in prompts)     # never asks whether a photo exists
+    assert prompts == []
+    expect(page.locator("#question-container")).to_be_hidden()
 
-    # final rendered state
-    expect(page.locator("#report-container")).to_contain_text("Synthèse pour l'automobiliste")
+    # final rendered state: the Manufacturer First Finding, not the legacy synthesis
+    expect(page.locator("#manufacturer-first-finding")).to_be_visible()
+    expect(page.locator("#report-container")).to_contain_text("Premier Constat Constructeur")
+    expect(page.locator("#part1-t8")).to_be_visible()
+    expect(page.locator("#report-container")).not_to_contain_text("Synthèse pour l'automobiliste")
     li = page.locator("#dashboard-identifications li")
     expect(li).to_have_count(1)
     assert li.first.get_attribute("data-origin") == "visual_provider_match"
@@ -358,7 +362,10 @@ def test_flow_5b_driver_can_decline_the_retake_and_go_straight_to_the_fallback(l
 
 # ----------------------------------------------------- flow 6: safety ---
 
-def test_flow_6a_photo_derived_signal_asks_the_single_location_question_before_ordinary_questions(live_server, page, provider):
+def test_flow_6a_photo_derived_signal_raises_safety_and_the_page_shows_the_first_finding(live_server, page, provider):
+    """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): the
+    photo-derived elevation still happens, but no location question (or any
+    question) is rendered -- the page shows the First Finding and ends."""
     image = provider.script(
         sup.png_bytes(130),
         sup.match(sup.OIL, "Voyant rouge de pression d'huile"),
@@ -369,44 +376,41 @@ def test_flow_6a_photo_derived_signal_asks_the_single_location_question_before_o
     payload = _upload_photo(page, image)
     assert payload["safety_triage"]["level"] == "prompt_inspection"
 
-    # the FIRST rendered question is the safety-gated location question
-    page.wait_for_selector("#question-container:not(.hidden) .question-prompt", timeout=10000)
-    first_prompt = page.locator("#question-container .question-prompt").text_content()
-    assert "Où se trouve le véhicule actuellement" in first_prompt
+    assert payload["pending_questions"] == []
 
-    prompts = [first_prompt]
-    page.locator("#question-container .choice-btn", has_text="garage").click()
+    prompts: list[str] = []
     _drive_to_report(page, prompts)
-    assert sum("Où se trouve" in p for p in prompts) == 1, prompts   # exactly ONE location-related question
-    assert len(prompts) > 1                                          # ordinary questions followed it
-    expect(page.locator("#report-container")).to_contain_text("Inspection rapide recommandée")
-    expect(page.locator("#report-container")).to_contain_text("Voyants du tableau de bord")
+    assert prompts == []                                             # no question rendered at all
+    expect(page.locator("#question-container")).to_be_hidden()
+    expect(page.locator("#report-container")).to_contain_text("Premier Constat Constructeur")
+    expect(page.locator("#report-container")).to_contain_text("Voyant identifié")
+    expect(page.locator("#dashboard-identifications li")).to_have_count(2)
     state = _case(sid)
     assert state.safety_state.triage.level.value == "prompt_inspection"
-    assert any(o.kind == f"answer:{LOCATION_QUESTION_ID}" and o.value == "garage" for o in state.observations)
+    assert not [o for o in state.observations if o.kind == f"answer:{LOCATION_QUESTION_ID}"]
+    assert web._sessions[sid].state.value.lower() == "completed"
     assert page.locator("select#location").count() == 0
 
 
-def test_flow_6b_critical_photo_signal_shows_safety_alert_then_the_single_location_question(live_server, page, provider):
+def test_flow_6b_critical_photo_signal_escalates_and_the_page_shows_the_first_finding(live_server, page, provider):
+    """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2 / §5): the
+    escalation is kept; the legacy safety alert and the location question
+    are replaced by the First Finding page (§5 order), then the session ends."""
     image = provider.script(sup.png_bytes(131), sup.match(sup.BRAKE, "Voyant rouge de frein"))
     sid, _ = _open_on_vir_intake(page, live_server, consent=True)
     _continue_to_photo_step(page, sid)
     payload = _upload_photo(page, image)
     assert payload["escalated"] is True
 
-    alert = page.locator("#safety-alert")
-    expect(alert).to_be_visible()
-    expect(alert).to_contain_text("Signal de sécurité détecté")
-    expect(alert).to_contain_text("do_not_drive")
-    page.wait_for_selector("#question-container:not(.hidden) .question-prompt", timeout=10000)
-    prompt = page.locator("#question-container .question-prompt").text_content()
-    assert "Où se trouve le véhicule actuellement" in prompt
-    with page.expect_response(lambda r: r.url.endswith(f"/api/session/{sid}/answer")) as info:
-        page.locator("#question-container .choice-btn", has_text="bord de route").click()
-    assert info.value.status == 200 and info.value.json()["pending_questions"] == []
+    assert payload["safety_triage"]["level"] == "do_not_drive" and payload["pending_questions"] == []
     page.wait_for_function("() => !document.getElementById('report-container').classList.contains('hidden')")
-    expect(page.locator("#report-container")).to_contain_text("Ne pas conduire")
+    expect(page.locator("#question-container")).to_be_hidden()
+    expect(page.locator("#safety-alert")).to_be_hidden()
+    expect(page.locator("#manufacturer-first-finding")).to_be_visible()
+    expect(page.locator("#part1-t8")).to_be_visible()
     assert web._sessions[sid].state.value.lower() == "escalated"
+    assert httpx.post(f"{live_server}/api/session/{sid}/answer",
+                      json={"question_id": LOCATION_QUESTION_ID, "value": "bord de route"}).status_code == 400
 
 
 # --------------------------------------------- flow 7: concurrent sessions ---
@@ -429,9 +433,12 @@ def test_flow_7_two_concurrent_sessions_remain_isolated(live_server, playwright,
         assert _upload_photo(page_a, img_a)["status"] == "selection_required"
         assert _upload_photo(page_b, img_b)["status"] == "analysed"
         expect(page_a.locator("#selection-step")).to_be_visible()
-        page_b.wait_for_selector("#question-container:not(.hidden) .question-prompt", timeout=10000)
+        # PGDR Part 1 (rewritten, beyond the §11 step 5 list): B's photo
+        # session ends with its First Finding -- no questions in between.
+        page_b.wait_for_selector("#manufacturer-first-finding", timeout=10000)
+        expect(page_b.locator("#question-container")).to_be_hidden()
 
-        # A finishes through the fallback while B is still mid-questions
+        # A finishes through the fallback while B has already finished
         with _post_response(page_a) as info:
             page_a.locator('#selection-options .symbol-option[data-entry-id="engine-diag-fixed"]').click()
         assert info.value.json()["status"] == "analysed"

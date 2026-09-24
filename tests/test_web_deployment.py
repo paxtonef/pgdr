@@ -98,24 +98,31 @@ def test_web2_start_session_creates_session(client, provider):
     sid, payload = _photo_session(client, provider, 201, _oil())
     assert payload["status"] == "analysed"
     assert payload["session_id"] == sid and sid in _sessions
-    assert payload["state"] in [SessionState.SYMPTOM_COLLECTION.value, SessionState.ESCALATED.value]
+    # PGDR Part 1 (rewritten, beyond the mandate v0.2 §11 step 5 list): the
+    # photo session ends with the Manufacturer First Finding -- terminal.
+    assert payload["state"] in [SessionState.COMPLETED.value, SessionState.ESCALATED.value]
+    assert payload["pending_questions"] == []
 
 
 # --- WEB-3: Question/answer state progresses correctly ---
 
 def test_web3_question_answer_progression(client, provider):
-    """WEB-3: Question/answer state progression works correctly."""
+    """WEB-3: Question/answer state progression works correctly.
+
+    Rewritten for PGDR Part 1 (beyond the mandate v0.2 §11 step 5 list: this
+    test asserted a post-photo question, which C1 removes). A photo session
+    ends without any question, and the answer endpoint then refuses answers."""
     sid, session_data = _photo_session(client, provider, 202, _oil())
     assert not session_data.get("escalated")
-    assert len(session_data.get("pending_questions", [])) > 0
-    first_question = session_data["pending_questions"][0]
+    assert session_data.get("pending_questions") == []
+    assert session_data["completed"] is True
 
     answer_resp = client.post(f"/api/session/{sid}/answer", json={
-        "question_id": first_question["question_id"],
+        "question_id": "Q-STATE-001",
         "value": "je ne sais pas",
     })
-    assert answer_resp.status_code == 200
-    assert "state" in answer_resp.json()
+    assert answer_resp.status_code == 400
+    assert answer_resp.json()["detail"] == "Session déjà terminée"
 
 
 # --- WEB-5: Final report is reachable ---
@@ -259,14 +266,22 @@ def test_web12_no_english_in_french_session(client, provider):
     Questions, answers, and reports must all be in French. UI chrome is
     allowed to be French (no i18n framework needed).
     """
-    _, data = _photo_session(client, provider, 209, _oil())
-    assert data["pending_questions"]
-    for q in data.get("pending_questions", []):
-        prompt = q.get("prompt", "")
-        assert "what" not in prompt.lower()
-        assert "where" not in prompt.lower()
-        assert "when" not in prompt.lower()
-        assert any(word in prompt.lower() for word in ["où", "quand", "quel", "comment", "vous", "le", "la"])
+    # Rewritten for PGDR Part 1 (beyond the mandate v0.2 §11 step 5 list: this
+    # test read post-photo questions, which C1 removes). No question exists;
+    # every PGDR-authored driver-facing string of the First Finding is French.
+    # Manufacturer text is shown verbatim in English by design (Decision 8),
+    # always under the approved T5 label -- it is not PGDR-authored text.
+    sid, data = _photo_session(client, provider, 209, _oil())
+    assert data["pending_questions"] == []
+    presentation = client.get(f"/api/session/{sid}/report").json()["part1_presentation"]
+    pgdr_texts = list(presentation["banner"]) + list(presentation["sources"]) + [presentation["end"]]
+    for e in presentation["entries"]:
+        pgdr_texts += [e["manufacturer_text"]["label"], e["vehicle_use"], *e["immediate_safety"], *e["not_established"]]
+    for text in pgdr_texts:
+        low = text.lower()
+        assert not any(w in low.split() for w in ("what", "where", "when", "the", "and")), text
+    combined = " ".join(pgdr_texts).lower().split()
+    assert all(word in combined for word in ["le", "la", "de", "du", "ce"])
 
 
 # --- WEB-13: Accented characters round-trip correctly ---

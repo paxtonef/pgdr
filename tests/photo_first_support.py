@@ -190,3 +190,36 @@ class DeterministicDashboardProvider:
         if digest not in self._plans:
             raise AssertionError("deterministic provider received bytes it was not scripted for")
         return [factory(media) for factory in self._plans[digest]]
+
+
+# ---- PGDR Part 1: the 11 REAL owner-attested Peugeot entries --------------
+#
+# Copied verbatim (by literal extraction) from PI's seed_peugeot_3008.py --
+# see fixtures/peugeot_3008_manufacturer_entries.json `_provenance`. TEST
+# FIXTURE ONLY: the manufacturer knowledge record lives in PI persistence.
+
+_REAL = json.loads((Path(__file__).parent / "fixtures" / "peugeot_3008_manufacturer_entries.json").read_text(encoding="utf-8"))
+REAL_DOC = ManufacturerDocumentReference(
+    manufacturer=_REAL["document"]["manufacturer"], document_id=_REAL["document"]["document_id"],
+    document_title=_REAL["document"]["document_title"], source_authority=SourceAuthority.MANUFACTURER_OFFICIAL,
+    source_locator=_REAL["document"]["source_locator"],
+)
+REAL_ENTRIES = {
+    raw["entry_id"]: DashboardReferenceEntry(applicability=REAL_DOC, **raw) for raw in _REAL["entries"]
+}
+REAL_ENTRY_IDS = list(REAL_ENTRIES)
+
+
+class RealPeugeotKnowledgeRepository(InMemoryKnowledgeRepository):
+    """KnowledgeRepositoryPort test double serving the 11 real attested
+    entries (Peugeot 3008 II only)."""
+
+    def find_applicable_documents(self, vehicle: VehicleApplicabilityContext):
+        key = (vehicle.manufacturer, vehicle.model, vehicle.generation)
+        return [REAL_DOC] if key == self._key else []
+
+    def entries_for_document(self, document_id: str):
+        return list(REAL_ENTRIES.values()) if document_id == REAL_DOC.document_id else []
+
+    def get_document_by_id(self, document_id: str):
+        return REAL_DOC if document_id == REAL_DOC.document_id else None

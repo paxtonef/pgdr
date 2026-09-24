@@ -1,0 +1,202 @@
+# PGDR PART 1 — MANUFACTURER FIRST FINDING — derivation/rule layer.
+#
+# Transcribes Execution Mandate v0.2 FINAL §8 (per-entry mapping) and §9
+# (R-1..R-5) one-to-one.
+#
+# KNOWLEDGE BOUNDARY (§4, confirmed by the owner): this file is a governed
+# derivation/rule layer over manufacturer knowledge. It is NOT a manufacturer
+# knowledge store and NOT a translation. Manufacturer text (designation,
+# meaning, instruction, displayed message) is always read at runtime from the
+# manufacturer knowledge record supplied through PI. This file holds only:
+# item values, bases, rule ids, verbatim `source_phrase` anchors (verified at
+# runtime as exact substrings of the live record), the fixed T6 {meaning}
+# strings, and a fingerprint binding each record to the exact source text.
+#
+# fingerprint = sha256("document_id|entry_id|documented_meaning|
+#                       documented_instruction|displayed_message"), absent = "".
+# Omitted items are NOT_ESTABLISHED. A fingerprint mismatch makes the whole
+# entry NOT_ESTABLISHED (audit flag). Only R-1/R-2 ever produce a stored
+# DERIVED value; R-3/R-4 are review notes (why nothing is derived) and R-5
+# is the triage composition (computed, never stored).
+
+header:
+  approved_by: owner
+  approval_date: "2026-09-24"
+  approval_reference: "PGDR Part 1 Execution Mandate v0.2 FINAL (frozen); Final Owner Authority Decisions D-C1..D-C7, A1..A4, KB"
+  nature: "derivation layer over OWNER_ATTESTED_UNVERIFIED manufacturer text"
+  not_a: "not a manufacturer knowledge store; not a translation"
+
+rules:
+  R-1: "Stop without resume condition -> operability DO_NOT_DRIVE, vehicle_immobilization REQUIRED"
+  R-2: "Towing: operability in {DO_NOT_DRIVE, STARTING_PREVENTED} + professional_attention REQUIRED + no documented driver-side remedy -> TOWING_REQUIRED"
+  R-3: "Directional instructions (go to / contact / have the vehicle checked) are not permission to drive"
+  R-4: "Figures are not limits"
+  R-5: "Monotonic triage composition (may raise, never lower)"
+
+entries:
+  # §8.1
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: oil-pressure-warning
+    fingerprint: 2a63234aae6938d35548f412e348c9ac3a352c7217dbdba3df1aa4c6814bc5ce
+    items:
+      stop_vehicle_engine_off:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Stop the vehicle as soon as it is safe to do so and switch off the ignition"}
+      operability:
+        {value: do_not_drive, basis: derived, rule_id: R-1, source_field: documented_instruction,
+         source_phrase: "Stop the vehicle as soon as it is safe to do so and switch off the ignition"}
+      vehicle_immobilization:
+        {value: required, basis: derived, rule_id: R-1, source_field: documented_instruction,
+         source_phrase: "Stop the vehicle as soon as it is safe to do so and switch off the ignition"}
+      professional_attention:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or a qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or a qualified workshop"}
+      practical_assistance:
+        {value: towing_required, basis: derived, rule_id: R-2, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}
+    stop_conditions:
+      - {source_field: documented_instruction, source_phrase: "Stop the vehicle as soon as it is safe to do so"}
+
+  # §8.2 — operability NE (R-3, D-C1)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: engine-diag-fixed
+    fingerprint: 73940eb5511189d5d8f42367f754632f7e55d64180867fb27d283ec893c5de62
+    items:
+      professional_attention:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Go to a PEUGEOT dealer or a qualified workshop"}
+      urgency_phrase:
+        {value: "without delay", basis: documented, source_field: documented_instruction,
+         source_phrase: "without delay"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or a qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or a qualified workshop"}
+      practical_assistance:
+        {value: garage_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Go to a PEUGEOT dealer or a qualified workshop"}
+
+  # §8.3 — operability NE (R-3)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: engine-diag-flashing
+    fingerprint: b7df42d31063d95fc5f93d2ead76586879f681a573ee0d9f4a2bcc5302971c7d
+    items:
+      professional_attention:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or a qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or a qualified workshop"}
+      practical_assistance:
+        {value: garage_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}
+
+  # §8.4 — operability NE (R-4, Decision 9)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: adblue-level-state-a
+    fingerprint: 901d56bdf3178f8fec9c3ef645dd9360d9ba4dcbbaec73e201d7b1ed7e7ec412
+    items:
+      practical_assistance:
+        {value: neither_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Top up AdBlue®."}
+    documented_figures:
+      - {source_field: documented_meaning, source_phrase: "1,500–500 miles (2,400–800 km) of range remaining",
+         meaning: "l'autonomie AdBlue® restante", caution: true}
+
+  # §8.5 — operability NE (R-4)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: adblue-level-state-b
+    fingerprint: e505e1aa84eff31503a7871564db2f9b2e50042fd9eb09cc8f3c100100fbf46a
+    items:
+      urgency_phrase:
+        {value: "Promptly", basis: documented, source_field: documented_instruction, source_phrase: "Promptly"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or a qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or a qualified workshop"}
+      practical_assistance:
+        {value: neither_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Promptly top up AdBlue®, or go to a PEUGEOT dealer or a qualified workshop"}
+    documented_figures:
+      - {source_field: documented_meaning, source_phrase: "500–62 miles (800–100 km) of range remaining",
+         meaning: "l'autonomie AdBlue® restante", caution: true}
+
+  # §8.6 — operability NE (R-4; the risk is future)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: adblue-level-state-c
+    fingerprint: eb8520b46b8d9916805421a30d69273d872a1b163db47d434d5c4eb39bf2c175
+    items:
+      practical_assistance:
+        {value: neither_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Top up AdBlue® to avoid engine starting being prevented, or go to a PEUGEOT dealer or a qualified workshop"}
+    documented_figures:
+      - {source_field: displayed_message, source_phrase: "less than 62 miles (100 km) remaining",
+         meaning: "l'autonomie AdBlue® restante avant que le démarrage puisse être empêché", caution: true}
+
+  # §8.7 — R-2 does not apply: a driver-side remedy is documented
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: adblue-level-state-d
+    fingerprint: 37305cf4b0bf31cea5cc69d4d3aa8317d7bf60590ba70a1a31a65ba4c4623f91
+    items:
+      operability:
+        {value: starting_prevented, basis: documented, source_field: documented_meaning,
+         source_phrase: "The legally required engine immobiliser prevents engine starting"}
+      practical_assistance:
+        {value: neither_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Top up AdBlue® (at least 5 litres) or contact a PEUGEOT dealer or a qualified workshop"}
+    documented_figures:
+      - {source_field: documented_instruction, source_phrase: "at least 5 litres",
+         meaning: "la quantité minimale d'AdBlue® à ajouter", caution: false}
+
+  # §8.8 — all items NE (combination pointer shown, not reasoned over)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: service-warning-lamp-fixed
+    fingerprint: 62ee2ea2ec9c1ee3d8617e8970516b31491abda82c9f508316e543b3042e0469
+    items: {}
+
+  # §8.9 — all items NE
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: scr-malfunction-detected
+    fingerprint: 91b5aa56eb9c45800d5450fe33ab57ce3629a53e2eacee775ae3f3d8a26fd32f
+    items: {}
+
+  # §8.10 — operability NE (R-4 and R-3)
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: scr-malfunction-confirmed-countdown
+    fingerprint: e018cccdb600cd220767ed78afc63683ada34521bc8a4145df48a75f08598c71
+    items:
+      professional_attention:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Have the vehicle checked by a PEUGEOT dealer or qualified workshop"}
+      urgency_phrase:
+        {value: "without delay", basis: documented, source_field: documented_instruction,
+         source_phrase: "without delay"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or qualified workshop"}
+      practical_assistance:
+        {value: garage_required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Have the vehicle checked by a PEUGEOT dealer or qualified workshop"}
+    documented_figures:
+      - {source_field: documented_meaning,
+         source_phrase: "Up to 685 miles / 1,100 km may remain before engine immobilisation",
+         meaning: "le kilométrage restant avant blocage du démarrage", caution: true}
+
+  # §8.11
+  - document_id: "9999_9999_326_en-GB"
+    entry_id: scr-starting-prevented
+    fingerprint: 2e4614460a8f56c93033309e0cc60de37f43d14d0362fa7cfdbe64212a1ed192
+    items:
+      operability:
+        {value: starting_prevented, basis: documented, source_field: documented_meaning,
+         source_phrase: "Starting prevention has been activated"}
+      professional_attention:
+        {value: required, basis: documented, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}
+      documented_suitability:
+        {value: "a PEUGEOT dealer or a qualified workshop", basis: documented, source_field: documented_instruction,
+         source_phrase: "a PEUGEOT dealer or a qualified workshop"}
+      practical_assistance:
+        {value: towing_required, basis: derived, rule_id: R-2, source_field: documented_instruction,
+         source_phrase: "Contact a PEUGEOT dealer or a qualified workshop"}

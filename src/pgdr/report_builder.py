@@ -529,3 +529,17 @@ def build_result_from_case_state(request_id: str, state) -> "PreGarageDiagnostic
         limitations=garage_report.limitations,
         trace={"case_id": state.case_id, "iteration": state.iteration},
     )
+
+
+# ---------------------------------------------------------------------------
+# PGDR Part 1 — Manufacturer First Finding (Execution Mandate v0.2 FINAL,
+# §1 C7). Additive: attaches the already-built finding to the result and,
+# under the new key `manufacturer_first_finding`, to the garage report.
+# Every pre-existing key is unchanged; the legacy urgency content is not
+# authoritative for Part 1 and never overrides the finding (D-C5).
+# ---------------------------------------------------------------------------
+
+def attach_manufacturer_first_finding(result: "PreGarageDiagnosticResult", finding) -> None:
+    result.manufacturer_first_finding = finding
+    if result.garage_preparation_report is not None:
+        result.garage_preparation_report.manufacturer_first_finding = finding.model_dump(mode="json")

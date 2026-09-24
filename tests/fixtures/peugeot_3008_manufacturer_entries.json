@@ -1,0 +1,161 @@
+{
+  "_provenance": {
+    "source": "PI src/product_integration/knowledge/seed_peugeot_3008.py (_ENTRIES), copied verbatim by AST literal extraction",
+    "pi_commit": "fae3cbad8a9cd5c98b3c499085420447a935def5",
+    "freshness_status": "OWNER_ATTESTED_UNVERIFIED",
+    "note": "TEST FIXTURE ONLY. The manufacturer knowledge record lives in PI persistence; this copy exists so PGDR tests can exercise the Part 1 First Finding against the exact attested text. Not a knowledge store."
+  },
+  "document": {
+    "manufacturer": "Peugeot",
+    "document_id": "9999_9999_326_en-GB",
+    "document_title": "MY PEUGEOT 3008 / MY PEUGEOT 5008 HANDBOOK",
+    "source_locator": "Peugeot Service Box, document 9999_9999_326_en-GB.pdf",
+    "source_authority": "manufacturer_official",
+    "freshness_status": "owner_attested_unverified"
+  },
+  "entries": [
+    {
+      "entry_id": "oil-pressure-warning",
+      "manufacturer_designation": "Engine oil pressure",
+      "symbol_descriptor": null,
+      "colour": "red",
+      "state": "fixed",
+      "displayed_message": null,
+      "audible_signal": null,
+      "documented_meaning": "Fault with the engine lubrication system.",
+      "documented_instruction": "(1) Stop the vehicle as soon as it is safe to do so and switch off the ignition. (2) Contact a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "engine-diag-fixed",
+      "manufacturer_designation": "Engine self-diagnostic system",
+      "symbol_descriptor": null,
+      "colour": "orange",
+      "state": "fixed",
+      "displayed_message": null,
+      "audible_signal": null,
+      "documented_meaning": "Fault in the emissions control system. The warning lamp should go off when the engine is started.",
+      "documented_instruction": "Go to a PEUGEOT dealer or a qualified workshop without delay.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "engine-diag-flashing",
+      "manufacturer_designation": "Engine self-diagnostic system",
+      "symbol_descriptor": null,
+      "colour": "orange",
+      "state": "flashing",
+      "displayed_message": null,
+      "audible_signal": null,
+      "documented_meaning": "Fault in the engine management system. Risk of catalytic-converter destruction.",
+      "documented_instruction": "Contact a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "adblue-level-state-a",
+      "manufacturer_designation": "AdBlue® (BlueHDi)",
+      "symbol_descriptor": "Illuminates for approximately 30 seconds when starting",
+      "colour": "orange",
+      "state": null,
+      "displayed_message": "Driving-range message: 1,500–500 miles (2,400–800 km) remaining",
+      "audible_signal": null,
+      "documented_meaning": "AdBlue® driving-range warning: 1,500–500 miles (2,400–800 km) of range remaining.",
+      "documented_instruction": "Top up AdBlue®.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "adblue-level-state-b",
+      "manufacturer_designation": "AdBlue® (BlueHDi)",
+      "symbol_descriptor": null,
+      "colour": "orange",
+      "state": "fixed",
+      "displayed_message": "Driving-range message: 500–62 miles (800–100 km) remaining",
+      "audible_signal": "Yes (further detail not specified in the supplied source)",
+      "documented_meaning": "AdBlue® driving-range warning: 500–62 miles (800–100 km) of range remaining.",
+      "documented_instruction": "Promptly top up AdBlue®, or go to a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "adblue-level-state-c",
+      "manufacturer_designation": "AdBlue® (BlueHDi)",
+      "symbol_descriptor": null,
+      "colour": "orange",
+      "state": "flashing",
+      "displayed_message": "Driving-range message: less than 62 miles (100 km) remaining",
+      "audible_signal": "Yes (further detail not specified in the supplied source)",
+      "documented_meaning": "Risk that engine starting will be prevented.",
+      "documented_instruction": "Top up AdBlue® to avoid engine starting being prevented, or go to a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "adblue-level-state-d",
+      "manufacturer_designation": "AdBlue® (BlueHDi)",
+      "symbol_descriptor": null,
+      "colour": "orange",
+      "state": "flashing",
+      "displayed_message": "Message indicating that starting is prevented (exact wording not specified in the supplied source for this state)",
+      "audible_signal": "Yes (further detail not specified in the supplied source)",
+      "documented_meaning": "AdBlue® tank empty. The legally required engine immobiliser prevents engine starting.",
+      "documented_instruction": "Top up AdBlue® (at least 5 litres) or contact a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": []
+    },
+    {
+      "entry_id": "service-warning-lamp-fixed",
+      "manufacturer_designation": "Service warning lamp",
+      "symbol_descriptor": null,
+      "colour": null,
+      "state": "fixed",
+      "displayed_message": null,
+      "audible_signal": null,
+      "documented_meaning": "Documented only as part of the confirmed SCR emissions-control-system malfunction combination (see combined_with_entry_ids); the supplied source gives this lamp no independent standalone meaning.",
+      "documented_instruction": null,
+      "combined_with_entry_ids": [
+        "scr-malfunction-confirmed-countdown"
+      ]
+    },
+    {
+      "entry_id": "scr-malfunction-detected",
+      "manufacturer_designation": "SCR emissions control system (BlueHDi)",
+      "symbol_descriptor": null,
+      "colour": null,
+      "state": "fixed",
+      "displayed_message": null,
+      "audible_signal": "Yes (further detail not specified in the supplied source)",
+      "documented_meaning": "SCR emissions-control-system malfunction detected. An audible signal and a display message are documented for this state; the supplied source does not include the exact message wording for this initial phase. The alert disappears if exhaust emissions return to normal.",
+      "documented_instruction": null,
+      "combined_with_entry_ids": [
+        "scr-malfunction-confirmed-countdown"
+      ]
+    },
+    {
+      "entry_id": "scr-malfunction-confirmed-countdown",
+      "manufacturer_designation": "SCR emissions control system (BlueHDi) -- confirmed malfunction",
+      "symbol_descriptor": "Combination: AdBlue® warning lamp flashing, together with the Service warning lamp and Engine self-diagnostics warning lamp both fixed",
+      "colour": null,
+      "state": null,
+      "displayed_message": "Emissions control fault: starting prevented in X miles (kms)",
+      "audible_signal": "Yes",
+      "documented_meaning": "Confirmed SCR emissions-control-system malfunction, reached after the initial fault indication has remained permanently displayed for 31 miles / 50 km of driving. Up to 685 miles / 1,100 km may remain before engine immobilisation, counting down from that point.",
+      "documented_instruction": "Have the vehicle checked by a PEUGEOT dealer or qualified workshop without delay to avoid starting being prevented.",
+      "combined_with_entry_ids": [
+        "service-warning-lamp-fixed",
+        "engine-diag-fixed",
+        "scr-malfunction-detected",
+        "scr-starting-prevented"
+      ]
+    },
+    {
+      "entry_id": "scr-starting-prevented",
+      "manufacturer_designation": "SCR emissions control system (BlueHDi) -- starting prevented",
+      "symbol_descriptor": null,
+      "colour": null,
+      "state": null,
+      "displayed_message": "Emissions control fault: Starting prevented",
+      "audible_signal": null,
+      "documented_meaning": "Starting prevention has been activated.",
+      "documented_instruction": "Contact a PEUGEOT dealer or a qualified workshop.",
+      "combined_with_entry_ids": [
+        "scr-malfunction-confirmed-countdown"
+      ]
+    }
+  ]
+}

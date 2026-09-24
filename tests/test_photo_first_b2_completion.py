@@ -270,7 +270,7 @@ class TestRealBytesThroughRealPipeline:
 # ------------------------------------------------------------------ MATCH ---
 
 class TestMatchFlow:
-    def test_match_reaches_case_state_b2r_relevance_and_the_existing_flow(self, env):
+    def test_match_reaches_case_state_b2r_relevance_and_ends_with_the_first_finding(self, env):
         client, provider = env
         image = provider.script(sup.png_bytes(11), sup.match(sup.OIL, "Voyant rouge de pression d'huile"))
         sid = _intake(client)
@@ -292,14 +292,17 @@ class TestMatchFlow:
                         and (e.source_rule_id or "").startswith("automotive.dashboard.")]
         assert b2r_evidence and all(e.direction == EvidenceDirection.NEUTRAL and e.weight == 0.0 for e in b2r_evidence)
 
-        # No photo-derived safety elevation -> no location question, ordinary questions follow.
+        # PGDR Part 1 (mandate v0.2 §11 step 5, rewritten): no question at all
+        # follows the photo -- no location question, no generic question, no
+        # "do you have a photo?" -- and the session ends with the First Finding.
         assert payload["safety_triage"]["level"] == TriageLevel.MONITOR_AND_DOCUMENT.value
-        asked = _drive_questions(client, sid, payload)
-        assert asked, "existing diagnostic flow must continue with residual questions"
-        assert LOCATION_QUESTION_ID not in asked
-        assert "Q-EVI-001" not in asked and "Q-EVI-002" not in asked  # never asks "do you have a photo?"
+        assert payload["pending_questions"] == []
+        assert _drive_questions(client, sid, payload) == []
+        assert web._sessions[sid].state.value == "completed"
 
         report = client.get(f"/api/session/{sid}/report").json()
+        finding = report["manufacturer_first_finding"]
+        assert [e["provenance"]["entry_id"] for e in finding["entries"]] == ["oil-pressure-warning"]
         idents = report["garage_preparation_report"]["dashboard_identifications"]
         assert [i["origin"] for i in idents] == ["visual_provider_match"]
         assert idents[0]["machine_verified"] is True
@@ -525,7 +528,10 @@ class TestSafetyReevaluation:
         payload = _upload(client, sid, brake).json()
         assert payload["safety_triage"]["level"] == TriageLevel.DO_NOT_DRIVE.value
 
-    def test_photo_derived_signal_triggers_one_location_question_before_ordinary_questions(self, env):
+    def test_photo_derived_signal_raises_safety_and_no_question_follows(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): the
+        photo-derived safety elevation still happens through the unmodified
+        SafetyEngine, but the former location question is no longer asked."""
         client, provider = env
         image = provider.script(
             sup.png_bytes(51),
@@ -537,32 +543,29 @@ class TestSafetyReevaluation:
 
         assert payload["status"] == "analysed"
         assert payload["safety_triage"]["level"] == TriageLevel.PROMPT_INSPECTION.value
-        assert [q["question_id"] for q in payload["pending_questions"]] == [LOCATION_QUESTION_ID]
-        asked = [LOCATION_QUESTION_ID]
-        asked += _drive_questions(client, sid, client.post(
-            f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "garage"}).json())
-        assert asked[0] == LOCATION_QUESTION_ID
-        assert asked.count(LOCATION_QUESTION_ID) == 1, "exactly one location-related question"
-        assert len(asked) > 1, "ordinary diagnostic questions follow the safety clarification"
-        assert web._sessions[sid].state.value == "COMPLETED" or web._sessions[sid].state.value.lower() == "completed"
-        # The location answer was recorded through the real case state.
-        assert any(o.kind == f"answer:{LOCATION_QUESTION_ID}" and o.value == "garage" for o in _case(sid).observations)
+        assert payload["pending_questions"] == []
+        assert web._sessions[sid].state.value == "completed"
+        assert not [o for o in _case(sid).observations if o.kind == f"answer:{LOCATION_QUESTION_ID}"]
+        finding = client.get(f"/api/session/{sid}/report").json()["manufacturer_first_finding"]
+        assert [e["provenance"]["entry_id"] for e in finding["entries"]] == ["oil-pressure-warning", "test-airbag-warning"]
 
-    def test_critical_photo_signal_escalates_and_still_asks_the_single_location_question(self, env):
+    def test_critical_photo_signal_escalates_and_no_question_follows(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2)."""
         client, provider = env
         image = provider.script(sup.png_bytes(52), sup.match(sup.BRAKE, "Voyant rouge de frein"))
         sid = _intake(client)
         payload = _upload(client, sid, image).json()
         assert payload["escalated"] is True
         assert payload["safety_triage"]["level"] == TriageLevel.DO_NOT_DRIVE.value
-        assert [q["question_id"] for q in payload["pending_questions"]] == [LOCATION_QUESTION_ID]
+        assert payload["pending_questions"] == []
         answered = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "bord de route"})
-        assert answered.status_code == 200 and answered.json()["pending_questions"] == []
+        assert answered.status_code == 400 and "signal de sécurité" in answered.json()["detail"]
         # No ordinary question can follow an escalated session; existing 400 unchanged.
         assert client.post(f"/api/session/{sid}/answer",
                            json={"question_id": "Q-SYM-001", "value": "toujours"}).status_code == 400
         report = client.get(f"/api/session/{sid}/report").json()
         assert report["user_summary"]["safety_level"] == TriageLevel.DO_NOT_DRIVE.value
+        assert [e["provenance"]["entry_id"] for e in report["manufacturer_first_finding"]["entries"]] == ["test-brake-warning"]
 
     def test_user_selected_symbol_is_evaluated_by_the_same_safety_engine(self, env):
         client, provider = env
@@ -571,15 +574,24 @@ class TestSafetyReevaluation:
         _upload(client, sid, image)
         payload = client.post(f"/api/photo/{sid}/selection", json={"entry_id": "test-airbag-warning"}).json()
         assert payload["safety_triage"]["level"] == TriageLevel.PROMPT_INSPECTION.value
-        assert [q["question_id"] for q in payload["pending_questions"]] == [LOCATION_QUESTION_ID]
+        # Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): no question follows.
+        assert payload["pending_questions"] == []
+        assert web._sessions[sid].state.value == "completed"
+        finding = client.get(f"/api/session/{sid}/report").json()["manufacturer_first_finding"]
+        assert [(e["provenance"]["entry_id"], e["provenance"]["identification_origin"]) for e in finding["entries"]] == \
+            [("test-airbag-warning", "user_selection")]
 
-    def test_no_elevation_means_no_location_question_at_all(self, env):
+    def test_no_elevation_means_no_question_at_all(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5): not only no
+        location question -- no question of any kind follows the photo."""
         client, provider = env
         image = provider.script(sup.png_bytes(54), sup.match(sup.ENGINE_FLASHING, "Voyant orange clignotant"))
         sid = _intake(client)
         payload = _upload(client, sid, image).json()
         assert payload["safety_triage"]["level"] == TriageLevel.MONITOR_AND_DOCUMENT.value
-        assert LOCATION_QUESTION_ID not in _drive_questions(client, sid, payload)
+        assert payload["pending_questions"] == [] and _drive_questions(client, sid, payload) == []
+        assert web._sessions[sid].state.value == "completed"
+        assert client.get(f"/api/session/{sid}/report").json()["manufacturer_first_finding"]["entries"]
 
 
 # ------------------------------------------------------ session isolation ---
@@ -771,29 +783,36 @@ class TestEscalatedSessionAnswerBoundary:
 
     # ---- A. the newly authorized case --------------------------------------
 
-    def test_A_escalated_session_with_the_safety_question_pending_may_answer_it(self, env):
+    def test_A_escalated_photo_session_has_no_safety_question_to_answer(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): the
+        post-photo location question no longer exists, so an escalated photo
+        session has nothing pending and ends with the First Finding."""
         client, provider = env
         image = provider.script(sup.png_bytes(70), sup.match(sup.BRAKE, "Voyant rouge de frein"))
         sid = _intake(client)
         payload = _upload(client, sid, image).json()
         assert payload["escalated"] is True
-        assert [q["question_id"] for q in payload["pending_questions"]] == [LOCATION_QUESTION_ID]
+        assert payload["pending_questions"] == []
 
         r = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "bord de route"})
-        assert r.status_code == 200
-        assert r.json()["pending_questions"] == []
-        assert any(o.kind == f"answer:{LOCATION_QUESTION_ID}" and o.value == "bord de route" for o in _case(sid).observations)
-        assert web._sessions[sid].state.value.lower() == "escalated"          # still escalated: no ordinary questioning
-        assert client.get(f"/api/session/{sid}/report").status_code == 200
+        assert r.status_code == 400 and "signal de sécurité" in r.json()["detail"]
+        assert not [o for o in _case(sid).observations if o.kind == f"answer:{LOCATION_QUESTION_ID}"]
+        assert web._sessions[sid].state.value.lower() == "escalated"
+        report = client.get(f"/api/session/{sid}/report")
+        assert report.status_code == 200 and report.json()["manufacturer_first_finding"]["entries"]
 
-    def test_A_non_escalated_elevation_continues_with_ordinary_questions_after_the_answer(self, env):
+    def test_A_non_escalated_elevation_ends_the_session_without_questions(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5): a raised but
+        not escalated photo case no longer continues with ordinary questions."""
         client, provider = env
         image = provider.script(sup.png_bytes(71), sup.match(sup.OIL, "Voyant rouge d'huile"), sup.match(sup.AIRBAG, "Voyant airbag"))
         sid = _intake(client)
         payload = _upload(client, sid, image).json()
-        assert payload["escalated"] is False
-        r = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "garage"}).json()
-        assert r["pending_questions"] and r["pending_questions"][0]["question_id"] != LOCATION_QUESTION_ID
+        assert payload["escalated"] is False and payload["pending_questions"] == []
+        assert web._sessions[sid].state.value == "completed"
+        r = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "garage"})
+        assert r.status_code == 400 and r.json()["detail"] == "Session déjà terminée"
+        assert client.get(f"/api/session/{sid}/report").json()["manufacturer_first_finding"]["entries"]
 
     # ---- B. pre-existing prohibited cases: still 400 -----------------------
 
@@ -815,19 +834,24 @@ class TestEscalatedSessionAnswerBoundary:
                         json={"question_id": LOCATION_QUESTION_ID, "value": "garage"})
         assert r.status_code == 400, "even the location question cannot be answered when it is not pending"
 
-    def test_B_photo_escalation_after_the_safety_question_was_answered_returns_400(self, env):
+    def test_B_photo_escalation_returns_400_to_every_answer(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): there is
+        no safety question to answer first -- every answer is refused."""
         client, provider = env
         image = provider.script(sup.png_bytes(72), sup.match(sup.BRAKE, "Voyant rouge de frein"))
         sid = _intake(client)
-        _upload(client, sid, image)
-        assert client.post(f"/api/session/{sid}/answer",
-                           json={"question_id": LOCATION_QUESTION_ID, "value": "garage"}).status_code == 200
+        assert _upload(client, sid, image).json()["pending_questions"] == []
+        first = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "garage"})
+        assert first.status_code == 400 and "signal de sécurité" in first.json()["detail"]
         again = client.post(f"/api/session/{sid}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "parking"})
         assert again.status_code == 400 and "signal de sécurité" in again.json()["detail"]
+        assert client.get(f"/api/session/{sid}/report").json()["manufacturer_first_finding"]["entries"]
 
     def test_B_photo_escalation_with_no_safety_question_pending_returns_400(self, env):
-        """A critical photo-derived escalation for which the location
-        clarification does not apply (already asked) leaves nothing pending."""
+        """A critical photo-derived escalation leaves nothing pending.
+        Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): the former
+        'location clarification already asked' precondition no longer exists
+        -- no photo escalation ever leaves a question pending."""
         client, provider = env
         image = provider.script(sup.png_bytes(73), sup.match(sup.BRAKE, "Voyant rouge de frein"))
         controller = web._get_or_create_controller()
@@ -839,7 +863,6 @@ class TestEscalatedSessionAnswerBoundary:
             consent=Consent(media_analysis_allowed=True),
         )
         session = controller.start_photo_case(request)
-        controller.photo_case_state(session).location_clarification_asked = True
         reference = web._media_store.store(image, "image/png")
         reference_set = web._resolve_reference_set(_vir_context())
         try:
@@ -847,18 +870,21 @@ class TestEscalatedSessionAnswerBoundary:
         finally:
             web._media_store.discard(reference)      # consent does not authorize retention
         assert session.state.value.lower() == "escalated" and session.pending_questions == []
+        assert session.result.manufacturer_first_finding is not None
         web._sessions[session.session_id] = session
         r = client.post(f"/api/session/{session.session_id}/answer", json={"question_id": LOCATION_QUESTION_ID, "value": "garage"})
         assert r.status_code == 400 and "signal de sécurité" in r.json()["detail"]
 
-    def test_B_escalated_session_with_a_pending_question_rejects_a_different_question_id(self, env):
+    def test_B_escalated_photo_session_rejects_any_question_id(self, env):
+        """Rewritten for PGDR Part 1 (mandate v0.2 §11 step 5 / D-C2): with no
+        pending question, a generic question id is refused like any other."""
         client, provider = env
         image = provider.script(sup.png_bytes(74), sup.match(sup.BRAKE, "Voyant rouge de frein"))
         sid = _intake(client)
         _upload(client, sid, image)
         r = client.post(f"/api/session/{sid}/answer", json={"question_id": "Q-SYM-001", "value": "toujours"})
-        assert r.status_code == 400 and r.json()["detail"] == "Question invalide"
-        assert web._sessions[sid].pending_questions, "the safety question is still pending"
+        assert r.status_code == 400 and "signal de sécurité" in r.json()["detail"]
+        assert web._sessions[sid].pending_questions == []
 
     def test_B_completed_session_still_returns_400(self, env):
         client, provider = env

@@ -244,24 +244,37 @@ def _assert_non_definitive(report_text: str) -> None:
     assert "aucune réparation spécifique n'est recommandée avec certitude" in low
 
 
+def _assert_first_finding_non_definitive(page_text: str) -> None:
+    """PGDR Part 1: the rendered First Finding page carries the approved T2
+    banner (no cause diagnosis, no replacement of a professional examination)
+    and no definitive / cost claim. The legacy report disclaimer is not
+    rendered on the Part 1 page; it remains in the API user_summary."""
+    low = page_text.lower()
+    for pat in _DEFINITIVE_CLAIM_PATTERNS:
+        assert not re.search(pat, low), f"unsupported/definitive claim matched {pat!r}"
+    assert "ce constat ne recherche pas la cause mécanique de la panne" in low
+    assert "ne remplace pas l'examen du véhicule par un professionnel" in low
+
+
 # --- E2E-A: complete governed French lifecycle from a photo ---
 
 def test_e2e_a_complete_french_lifecycle(live_server, page: Page, governance_traces, provider):
     """E2E-A: complete governed French lifecycle, browser to final report.
 
+    Rewritten for PGDR Part 1 (beyond the mandate v0.2 §11 step 5 list: this
+    test asserted the post-photo generic questionnaire that C1 removes).
     Browser -> rendered French UI -> consent + real image bytes -> HTTP ->
     web adapter -> SessionController -> governed B2 chain -> safety triage ->
-    DiagnosticLoop -> questions/answers -> Evidence -> hypotheses ->
-    canonical GGM governance -> governed report -> rendered French report
-    inspected in the browser. No silent alternate path: the photo must NOT
-    safety-escalate, every question is answered through the UI, and the
-    report must actually render."""
+    Manufacturer First Finding -> canonical GGM governance -> governed report
+    -> rendered French First Finding inspected in the browser. No question is
+    asked after the photo; the photo must NOT safety-escalate and the page
+    must actually render."""
     observation = "Voyant rouge de pression d'huile"
 
     page.goto(live_server)
     expect(page.locator("html")).to_have_attribute("lang", "fr")
     expect(page.locator("h1")).to_contain_text("PGDR")
-    assert "ne fournit jamais un diagnostic" in page.locator(".disclaimer").first.text_content().lower()
+    assert "pgdr lit le voyant de votre tableau de bord" in page.locator(".disclaimer").first.text_content().lower()
 
     sid = _start_photo_diagnostic(page, live_server, provider, 301, sup.match(sup.OIL, observation))
 
@@ -269,26 +282,25 @@ def test_e2e_a_complete_french_lifecycle(live_server, page: Page, governance_tra
     assert _sessions[sid].state != SessionState.ESCALATED
 
     answers = _drive_to_report(page, pick=0)
-    assert len(answers) >= 3, f"lifecycle too short to be meaningful: {answers}"
+    assert answers == [], f"a question followed the photo: {answers}"
 
     session = _sessions[sid]
     assert session.state == SessionState.COMPLETED
-    assert len(session.answers) == len(answers)
+    assert session.answers == [] and session.pending_questions == []
     case = _case(sid)
-    assert case.answers, "no answers recorded in the diagnostic case"
+    assert not case.answers, "no answer can exist: no question is asked in Part 1"
     assert case.observations, "no observations produced"
     assert case.evidence, "no Evidence produced"
-    assert case.hypotheses, "no hypotheses produced"
-    assert session.result is not None
+    assert case.hypotheses, "no (internal) hypotheses produced"
+    assert session.result is not None and session.result.manufacturer_first_finding is not None
 
     report = page.locator("#report-container")
     text = report.text_content()
-    assert "Synthèse pour l'automobiliste" in text
-    assert "Rapport de préparation garage" in text
-    assert observation in text
-    assert "garage" in text.lower()
-    assert "Important" in text
-    _assert_non_definitive(text)
+    assert "Premier Constat Constructeur" in text
+    assert "Ce que dit le constructeur" in text
+    assert "Fault with the engine lubrication system." in text          # manufacturer text, verbatim
+    assert "Synthèse pour l'automobiliste" not in text
+    _assert_first_finding_non_definitive(text)
 
     api = page.request.get(f"{live_server}/api/session/{sid}/report").json()
     assert api["garage_preparation_report"]["customer_reported_problem"] == ""   # no complaint exists in photo-first
@@ -332,10 +344,12 @@ def test_e2e_b_unknown_session_error(live_server, page: Page):
 def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governance_traces, provider):
     """E2E-C: two independent browser contexts, interleaved, fully isolated.
 
-    Two users with different photos and different answers are driven in
-    lock-step through the real UI. Verifies different session ids,
-    independent diagnostic state / answers / Evidence / hypotheses / reports,
-    no leakage in either direction, and both sessions completing."""
+    Rewritten for PGDR Part 1 (beyond the mandate v0.2 §11 step 5 list: this
+    test drove the post-photo generic questionnaire that C1 removes). Two
+    users with different photos reach their own First Finding through the
+    real UI. Verifies different session ids, independent diagnostic state /
+    Evidence / hypotheses / reports, no leakage in either direction, and both
+    sessions completing with no question asked."""
     # Two distinct photos -> two distinct governed interpretations.
     complaint_1 = "Voyant rouge de pression d'huile allumé"          # (kept as the per-session marker text)
     complaint_2 = "Voyant orange clignotant du moteur"
@@ -354,42 +368,18 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
         assert page_1.locator("#safety-alert").is_hidden()
         assert page_2.locator("#safety-alert").is_hidden()
 
-        # Interleave: user 1 always takes the first offered choice, user 2 the
-        # second — genuinely different answers to the same questions.
-        answers_1: list[str] = []
-        answers_2: list[str] = []
-        for _ in range(20):
-            done_1, done_2 = _report_visible(page_1), _report_visible(page_2)
-            if done_1 and done_2:
-                break
-            if not done_1:
-                _answer_visible_question(page_1, 0, answers_1)
-            if not done_2:
-                _answer_visible_question(page_2, 1, answers_2)
-        else:
-            pytest.fail("sessions did not both complete")
-
-        # Both operable through the whole lifecycle.
+        # Both reach their First Finding with no question asked.
+        for pg in (page_1, page_2):
+            pg.wait_for_selector("#manufacturer-first-finding", timeout=15000)
+            expect(pg.locator("#question-container")).to_be_hidden()
         s1, s2 = _sessions[sid_1], _sessions[sid_2]
         assert s1.state == SessionState.COMPLETED
         assert s2.state == SessionState.COMPLETED
-        assert answers_1 and answers_2 and answers_1 != answers_2
+        assert s1.answers == [] and s2.answers == []
 
         # Independent request state (no complaint exists in photo-first).
         assert s1.request.request_id != s2.request.request_id
         assert s1.request.initial_complaint.free_text == "" == s2.request.initial_complaint.free_text
-
-        # Independent answers: each session holds exactly its own values,
-        # and they differ where the same question was asked of both.
-        assert len(s1.answers) == len(answers_1)
-        assert len(s2.answers) == len(answers_2)
-        common = {a.question_id for a in s1.answers} & {a.question_id for a in s2.answers}
-        assert common, "expected shared questions to compare answers on"
-        v1 = {a.question_id: a.value for a in s1.answers}
-        v2 = {a.question_id: a.value for a in s2.answers}
-        assert any(v1[q] != v2[q] for q in common)
-        assert {a.question_id for a in s1.answers} <= {q.question_id for q in s1.questions_asked}
-        assert {a.question_id for a in s2.answers} <= {q.question_id for q in s2.questions_asked}
 
         # Independent diagnostic state (case state: observations, Evidence,
         # hypotheses, answers) — no shared objects between the sessions.
@@ -423,13 +413,15 @@ def test_e2e_c_concurrent_sessions_no_leakage(live_server, playwright, governanc
         assert "oil-pressure-warning" in own_1 and "engine-diag-flashing" not in own_1
         assert "engine-diag-flashing" in own_2 and "oil-pressure-warning" not in own_2
 
-        # Rendered UI: each browser shows only its own report.
+        # Rendered UI: each browser shows only its own First Finding.
         text_1 = page_1.locator("#report-container").text_content()
         text_2 = page_2.locator("#report-container").text_content()
-        assert complaint_1 in text_1 and complaint_2 not in text_1
-        assert complaint_2 in text_2 and complaint_1 not in text_2
-        _assert_non_definitive(text_1)
-        _assert_non_definitive(text_2)
+        meaning_1 = "Fault with the engine lubrication system."
+        meaning_2 = "Fault in the engine management system."
+        assert meaning_1 in text_1 and meaning_2 not in text_1
+        assert meaning_2 in text_2 and meaning_1 not in text_2
+        _assert_first_finding_non_definitive(text_1)
+        _assert_first_finding_non_definitive(text_2)
 
         # Server API keeps them separate and each remains operable/readable.
         st_1 = page_1.request.get(f"{live_server}/api/session/{sid_1}/state").json()

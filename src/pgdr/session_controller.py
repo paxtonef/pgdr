@@ -61,13 +61,15 @@ from pgdr.application.photo_first import (
     FallbackOffer, PhotoCaseState, PhotoPhase, PhotoStep, build_user_selection_intake, fallback_offer,
     fallback_trigger, warning_indicator_from_entry,
 )
-from pgdr.domain.dashboard_knowledge import DashboardReferenceSet
-from pgdr.domain.photo_provenance import LOCATION_QUESTION_ID, MAX_RETAKES
+from pgdr.domain.dashboard_knowledge import DashboardReferenceEntry, DashboardReferenceSet
+from pgdr.domain.photo_provenance import MAX_RETAKES, USER_SELECTION_OBSERVATION_KIND
 from pgdr.domain.safety_state import SafetyState
-from pgdr.enums import TriageLevel
 from pgdr.ports.dashboard_interpretation import DashboardInterpretationPort, MatchStatus
 from pgdr.ports.media_resolver import MediaResolverPort
-from pgdr.report_builder import build_result_from_case_state
+from pgdr.application.part1_first_finding import (
+    build_manufacturer_first_finding, compose_triage, load_part1_mapping, raised_instructions,
+)
+from pgdr.report_builder import attach_manufacturer_first_finding, build_result_from_case_state
 from pgdr.safety_engine import SafetyEngine
 
 
@@ -107,6 +109,11 @@ class SessionController:
         # PHOTO-FIRST (B2 completion): per-session photo acquisition state.
         # Keyed by session id, so concurrent sessions cannot share it.
         self._photo_state: dict[str, PhotoCaseState] = {}
+
+        # PGDR Part 1 (§4): the derivation/rule layer over manufacturer
+        # knowledge, validated at startup, fail-closed (ConfigurationError),
+        # exactly like the safety envelope.
+        self._part1_mapping = load_part1_mapping()
 
         # Only used to recover a question's original QuestionCategory for
         # the legacy pgdr.models.DiagnosticQuestion shape (session.pending_questions) —
@@ -334,17 +341,20 @@ class SessionController:
         return PhotoStep(phase=PhotoPhase.COMPLETED)
 
     def _complete_photo_acquisition(self, session: DiagnosticSession, intake: DiagnosticIntakeResult) -> None:
-        """B2-R relevance -> safety re-evaluation -> existing flow.
+        """B2-R relevance -> safety re-evaluation -> Manufacturer First
+        Finding -> END OF PART 1 (Execution Mandate v0.2 FINAL, §1 C1/C2/C6/C10).
 
-        Order matters: safety is re-evaluated (unmodified SafetyEngine, on
-        the governed entries only) BEFORE any ordinary question is
-        selected. The provider's raw output never reaches this point: only
-        a governed DiagnosticIntakeResult does."""
+        The provider's raw output never reaches this point: only a governed
+        DiagnosticIntakeResult does. After the photo NO question of any kind
+        is asked: the generic questionnaire is never entered (C1) and the
+        former safety-gated location question is no longer asked (C2 /
+        D-C2). The session ends with the First Finding attached."""
         ps = self._photo_state[session.session_id]
         case_state = self._case_states[session.session_id]
         ps.phase = PhotoPhase.COMPLETED
 
-        # B2-R1/R2/R5: existing dashboard relevance, unmodified.
+        # B2-R1/R2/R5: existing dashboard relevance, unmodified (its
+        # hypotheses stay internal, for traceability -- Decision 3).
         new_hypotheses, new_evidence = self._domain.apply_dashboard_diagnostic_relevance(intake, case_state)
         if new_hypotheses:
             case_state.hypotheses.extend(new_hypotheses)
@@ -352,52 +362,32 @@ class SessionController:
         if new_evidence:
             self._updater.add_evidence(case_state, new_evidence)
 
-        # E4: safety re-evaluation from GOVERNED reference entries.
-        previous = session.safety_triage
+        # E4: safety re-evaluation from GOVERNED reference entries, by the
+        # unmodified SafetyEngine.
         for obs_id, entry in intake.matched_reference_entries.items():
             session.warning_indicators.append(warning_indicator_from_entry(entry, photo_evidence_id=obs_id))
-        triage = self.safety_engine.evaluate(session)
+        engine_triage = self.safety_engine.evaluate(session)
+
+        # Part 1: the Manufacturer First Finding, then R-5 (may raise the
+        # SafetyEngine result, never lower it -- D-C4).
+        finding = build_manufacturer_first_finding(_identified_entries(intake), mapping=self._part1_mapping)
+        triage, applied_rows = compose_triage(
+            engine_triage, finding, raised_instruction=raised_instructions(finding),
+        )
+        finding = finding.model_copy(update={"triage_composition": applied_rows})
         session.safety_triage = triage
         case_state.safety_state = SafetyState(triage=triage)
+        session.pending_questions = []
 
-        elevated = _severity_index(triage.level) > _severity_index(previous.level if previous else None)
-        needs_location = (
-            elevated
-            and _severity_index(triage.level) >= _severity_index(TriageLevel.PROMPT_INSPECTION)
-            and not ps.location_clarification_asked
-        )
-        if needs_location:
-            # ONE safety-gated location question, before any ordinary question.
-            question = self._domain.safety_clarification_question(case_state)
-            case_state.questions.append(question)
-            ps.location_clarification_asked = True
-            session.pending_questions = [self._legacy_question(question)]
-            if triage.level.value in ("emergency_stop", "do_not_drive"):
-                session.log_transition(
-                    session.state, SessionState.ESCALATED, f"Critical safety signal: {triage.level.value}",
-                )
-                session.result = build_result_from_case_state(session.request.request_id, case_state)
-            return
-
+        # END OF PART 1 (C10): terminal on both paths, never questioning.
         if triage.level.value in ("emergency_stop", "do_not_drive"):
             session.log_transition(
                 session.state, SessionState.ESCALATED, f"Critical safety signal: {triage.level.value}",
             )
             session.result = build_result_from_case_state(session.request.request_id, case_state)
-            session.pending_questions = []
-            return
-
-        session.pending_questions = self._advance(session, case_state)
-        if not session.pending_questions:
+        else:
             self._finalize(session, case_state)
-
-    def _legacy_question(self, nq) -> DiagnosticQuestion:
-        category = self._category_by_question_id.get(nq.id, None) or "clarification"
-        return DiagnosticQuestion(
-            question_id=nq.id, target=nq.domain_ref or "", category=category, prompt=nq.text,
-            answer_type=nq.answer_type, required=False, risk_level=nq.risk_level or "none",
-            selection_reason="Précision nécessaire suite à l'analyse de sécurité.", choices=nq.choices,
-        )
+        attach_manufacturer_first_finding(session.result, finding)
 
     def submit_answer(self, session: DiagnosticSession, answer: Answer) -> DiagnosticSession:
         case_state = self._case_states[session.session_id]
@@ -517,11 +507,11 @@ class SessionController:
         }
 
 
-_SEVERITY_ORDER = [
-    TriageLevel.MONITOR_AND_DOCUMENT, TriageLevel.STANDARD_APPOINTMENT, TriageLevel.PROMPT_INSPECTION,
-    TriageLevel.LIMITED_MOVEMENT_ONLY, TriageLevel.DO_NOT_DRIVE, TriageLevel.EMERGENCY_STOP,
-]
-
-
-def _severity_index(level: TriageLevel | None) -> int:
-    return -1 if level is None else _SEVERITY_ORDER.index(level)
+def _identified_entries(intake: DiagnosticIntakeResult) -> list[tuple[DashboardReferenceEntry, str]]:
+    """(live manufacturer entry, identification origin) pairs, in intake
+    order. The two origins are never merged (B2 photo-first provenance)."""
+    kinds = {o.id: o.kind for o in intake.observations}
+    return [
+        (entry, "user_selection" if kinds.get(obs_id) == USER_SELECTION_OBSERVATION_KIND else "visual_provider_match")
+        for obs_id, entry in intake.matched_reference_entries.items()
+    ]

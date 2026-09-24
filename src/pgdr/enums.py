@@ -248,3 +248,49 @@ class ReportStatus(str, Enum):
     CLARIFICATION_REQUIRED = "clarification_required"
     SAFETY_ESCALATION = "safety_escalation"
     BLOCKED = "blocked"
+
+
+# ---------------------------------------------------------------------------
+# PGDR Part 1 — Manufacturer First Finding (Execution Mandate v0.2 FINAL, §3).
+# Additive. DrivingAssessment above is NOT modified: it keeps its
+# PGDR-INV-003 "no safe_to_drive" guard. ManufacturerOperability is a
+# separate representation of what the governed manufacturer evidence says
+# about subsequent use of the vehicle.
+# ---------------------------------------------------------------------------
+
+class FindingBasis(str, Enum):
+    """§3: how a structured First Finding item is established."""
+    DOCUMENTED = "documented"
+    DERIVED = "derived"
+    NOT_ESTABLISHED = "not_established"
+
+
+class ImmediateRequirement(str, Enum):
+    """§3.1/§3.2/§3.5: deliberately no NOT_REQUIRED value -- no current
+    source can establish a negative."""
+    REQUIRED = "required"
+    NOT_ESTABLISHED = "not_established"
+
+
+class ManufacturerOperability(str, Enum):
+    """§3.3 (Decision 1 / PGDR-INV-003 / D-C1): MAY_DRIVE* may only ever be
+    DOCUMENTED by a phrase positively stating that driving may continue --
+    never DERIVED, never produced by default or by elimination."""
+    MAY_DRIVE = "may_drive"
+    MAY_DRIVE_WITH_RESTRICTIONS = "may_drive_with_restrictions"
+    DO_NOT_DRIVE = "do_not_drive"
+    STARTING_PREVENTED = "starting_prevented"
+    NOT_ESTABLISHED = "not_established"
+
+
+class PracticalRequirement(str, Enum):
+    """§3.5 (Decision 7)."""
+    GARAGE_REQUIRED = "garage_required"
+    TOWING_REQUIRED = "towing_required"
+    NEITHER_REQUIRED = "neither_required"
+    NOT_ESTABLISHED = "not_established"
+
+
+class PracticalProviderStatus(str, Enum):
+    """§3.5: no garage/towing provider is integrated (Decisions 6/7)."""
+    NOT_INTEGRATED = "not_integrated"
