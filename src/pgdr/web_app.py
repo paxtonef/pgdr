@@ -979,9 +979,9 @@ _PHOTO_HTML = """<!DOCTYPE html>
         function showSafetyAlert(triage) {
             const alertDiv = document.getElementById('safety-alert');
             let html = '<h2>⚠️ Signal de sécurité détecté</h2>';
-            html += `<p><strong>Niveau :</strong> ${triage.level}</p>`;
+            html += `<p><strong>Niveau :</strong> ${escapeHtml(triage.level)}</p>`;
             if (triage.user_instruction) {
-                html += `<p class="safety-instruction">${triage.user_instruction}</p>`;
+                html += `<p class="safety-instruction">${escapeHtml(triage.user_instruction)}</p>`;
             }
             if (triage.emergency_services_required) {
                 html += '<p style="color: #dc3545; font-weight: bold;">→ APPELEZ LES SECOURS</p>';
@@ -998,9 +998,9 @@ _PHOTO_HTML = """<!DOCTYPE html>
             const container = document.getElementById('question-container');
 
             let html = '<div class="question-box">';
-            html += `<div class="question-prompt">${question.prompt}</div>`;
+            html += `<div class="question-prompt">${escapeHtml(question.prompt)}</div>`;
             if (question.selection_reason) {
-                html += `<div class="question-reason">${question.selection_reason}</div>`;
+                html += `<div class="question-reason">${escapeHtml(question.selection_reason)}</div>`;
             }
 
             if (question.answer_type === 'yes_no') {
@@ -1011,7 +1011,9 @@ _PHOTO_HTML = """<!DOCTYPE html>
             } else if (question.answer_type === 'single_choice' && question.choices) {
                 html += '<div class="choices">';
                 for (const choice of question.choices) {
-                    html += `<button class="choice-btn" onclick="submitAnswer('${escapeHtml(choice)}')">${escapeHtml(choice)}</button>`;
+                    // Valeur portée par un attribut data- (échappé), jamais insérée dans un
+                    // gestionnaire onclick : le navigateur y décoderait &#039; avant le JavaScript.
+                    html += `<button class="choice-btn" data-choice="${escapeHtml(choice)}">${escapeHtml(choice)}</button>`;
                 }
                 html += '</div>';
             } else {
@@ -1021,6 +1023,9 @@ _PHOTO_HTML = """<!DOCTYPE html>
 
             html += '</div>';
             container.innerHTML = html;
+            for (const b of container.querySelectorAll('.choice-btn[data-choice]')) {
+                b.addEventListener('click', () => submitAnswer(b.dataset.choice));
+            }
             container.classList.remove('hidden');
         }
 
@@ -1102,22 +1107,22 @@ _PHOTO_HTML = """<!DOCTYPE html>
             html += '<div class="report-section">';
             if (us.urgency && us.urgency.label) {
                 html += `<h3>Urgence</h3>`;
-                html += `<p><strong>${us.urgency.label}</strong></p>`;
+                html += `<p><strong>${escapeHtml(us.urgency.label)}</strong></p>`;
                 if (us.urgency.explanation) {
-                    html += `<p>${us.urgency.explanation}</p>`;
+                    html += `<p>${escapeHtml(us.urgency.explanation)}</p>`;
                 }
             }
             if (us.main_observations && us.main_observations.length > 0) {
                 html += '<h3>Observations principales</h3><ul>';
                 for (const obs of us.main_observations) {
-                    html += `<li>${obs}</li>`;
+                    html += `<li>${escapeHtml(obs)}</li>`;
                 }
                 html += '</ul>';
             }
             if (us.next_actions && us.next_actions.length > 0) {
                 html += '<h3>Actions recommandées</h3><ul>';
                 for (const action of us.next_actions) {
-                    html += `<li>${action}</li>`;
+                    html += `<li>${escapeHtml(action)}</li>`;
                 }
                 html += '</ul>';
             }
@@ -1125,12 +1130,12 @@ _PHOTO_HTML = """<!DOCTYPE html>
 
             html += '<h2>🔧 Rapport de préparation garage</h2>';
             html += '<div class="report-section">';
-            html += `<p><strong>Problème signalé :</strong> ${gpr.customer_reported_problem}</p>`;
+            html += `<p><strong>Problème signalé :</strong> ${escapeHtml(gpr.customer_reported_problem)}</p>`;
 
             if (gpr.systems_to_examine && gpr.systems_to_examine.length > 0) {
                 html += '<h3>Systèmes à examiner</h3><ul>';
                 for (const sys of gpr.systems_to_examine) {
-                    html += `<li>${sys.system_family} (confiance : ${sys.confidence})</li>`;
+                    html += `<li>${escapeHtml(sys.system_family)} (confiance : ${escapeHtml(sys.confidence)})</li>`;
                 }
                 html += '</ul>';
             }
@@ -1138,7 +1143,7 @@ _PHOTO_HTML = """<!DOCTYPE html>
             if (gpr.suggested_professional_checks && gpr.suggested_professional_checks.length > 0) {
                 html += '<h3>Contrôles suggérés</h3><ul>';
                 for (const check of gpr.suggested_professional_checks) {
-                    html += `<li>${check}</li>`;
+                    html += `<li>${escapeHtml(check)}</li>`;
                 }
                 html += '</ul>';
             }
@@ -1146,7 +1151,7 @@ _PHOTO_HTML = """<!DOCTYPE html>
             if (gpr.unresolved_questions && gpr.unresolved_questions.length > 0) {
                 html += '<h3>Questions ouvertes</h3><ul>';
                 for (const q of gpr.unresolved_questions) {
-                    html += `<li>${q}</li>`;
+                    html += `<li>${escapeHtml(q)}</li>`;
                 }
                 html += '</ul>';
             }
@@ -1155,7 +1160,7 @@ _PHOTO_HTML = """<!DOCTYPE html>
 
             if (us.disclaimer && us.disclaimer.length > 0) {
                 html += '<div class="report-disclaimer">';
-                html += '<strong>Important :</strong> ' + us.disclaimer.join(' ');
+                html += '<strong>Important :</strong> ' + us.disclaimer.map(escapeHtml).join(' ');
                 html += '</div>';
             }
 
@@ -1182,7 +1187,8 @@ _PHOTO_HTML = """<!DOCTYPE html>
         }
 
         function escapeHtml(unsafe) {
-            return unsafe
+            // Toute valeur (texte, nombre, null) : jamais insérée brute dans du HTML (E9).
+            return (unsafe === null || unsafe === undefined ? '' : String(unsafe))
                 .replace(/&/g, "&amp;")
                 .replace(/</g, "&lt;")
                 .replace(/>/g, "&gt;")
@@ -1402,7 +1408,7 @@ _PHOTO_HTML = """<!DOCTYPE html>
                 const origin = i.origin === 'user_selection'
                     ? 'indiqué par vous dans la liste du constructeur (non vérifié sur la photo)'
                     : 'identifié sur la photo et rapproché de la notice du constructeur';
-                html += `<li data-origin="${escapeHtml(i.origin)}">${escapeHtml(i.description)} — ${origin}</li>`;
+                html += `<li data-origin="${escapeHtml(i.origin)}">${escapeHtml(i.description)} — ${escapeHtml(origin)}</li>`;
             }
             html += '</ul></div>';
             document.getElementById('report-container').insertAdjacentHTML('beforeend', html);
