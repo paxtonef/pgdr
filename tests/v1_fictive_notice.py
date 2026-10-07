@@ -12,7 +12,8 @@ from pathlib import Path
 
 import yaml
 
-from pgdr.adapters.manifest_notice_repository import content_fingerprint
+from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository, content_fingerprint
+from pgdr.application.part1_first_finding import entry_fingerprint
 
 VEHICLE = {"manufacturer": "Fictiva", "model": "Testmobile", "generation": "X1"}
 VIR_IDENTITY = {"manufacturer": "Fictiva", "model": "Testmobile", "generation": "X1"}
@@ -112,3 +113,40 @@ def load(path: Path) -> dict:
 
 def save(path: Path, d: dict) -> None:
     path.write_text(yaml.safe_dump(d, allow_unicode=True, sort_keys=False), encoding="utf-8")
+
+
+STOP_PHRASE = "stop the fictive vehicle in a safe place"
+CONTACT_PHRASE = "contact a fictive workshop"
+
+
+def build_findings(manifest: Path, *, status: str = "VALIDE", approved_by: str = "Fictive Owner") -> Path:
+    """FICTIVE structured classification (Part 1 mapping format) of the
+    fictive notice: the red entry's linked warning 7) carries a stop
+    instruction and a contact instruction. Amber/green/white: no record
+    (every structured field « non établi »)."""
+    repo = ManifestNoticeRepository(manifest)
+    live = {e.entry_id: e for e in repo.entries_for_document("FICTIVE-NOTICE-001")}
+    doc = {
+        "header": {"status": status, "approved_by": approved_by, "approval_date": "2026-10-07",
+                   "nature": "FICTIVE derivation layer for tests", "catalogue_content_sha256": repo.catalogue.content_sha256},
+        "rules": {r: "fictive" for r in ("R-1", "R-2", "R-3", "R-4", "R-5")},
+        "entries": [{
+            "document_id": "FICTIVE-NOTICE-001", "entry_id": "fx_red_fluid",
+            "fingerprint": entry_fingerprint(live["fx_red_fluid"]),
+            "items": {
+                "stop_vehicle_engine_off": {"value": "required", "basis": "documented",
+                                            "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
+                "operability": {"value": "do_not_drive", "basis": "derived", "rule_id": "R-1",
+                                "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
+                "vehicle_immobilization": {"value": "required", "basis": "derived", "rule_id": "R-1",
+                                           "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
+                "professional_attention": {"value": "required", "basis": "documented",
+                                           "source_field": "linked_warnings", "source_phrase": CONTACT_PHRASE},
+                "documented_suitability": {"value": "a fictive workshop", "basis": "documented",
+                                           "source_field": "linked_warnings", "source_phrase": "a fictive workshop"},
+            },
+        }],
+    }
+    path = manifest.parent / "classement.yaml"
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path

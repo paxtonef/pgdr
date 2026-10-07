@@ -103,8 +103,21 @@ whose applicability to the vehicle is not established is refused, except in
 the local development trial (`outils/essai_dev_v1/lancer.sh`, which sets
 `PGDR_V1_DEV_TRIAL=1`, a SIMULATED VIR identity, and shows a permanent banner).
 
-Tests: `tests/test_v1_parcours.py` (unit + integration) and
-`tests/test_v1_browser_e2e.py` (Playwright), on a FICTIVE notice built at test time.
+After confirmation the parcours shows the existing **Premier Constat
+Constructeur** (Part 1): the unmodified SafetyEngine on the selected entries,
+`build_manufacturer_first_finding` with origin `user_selection` (the driver's
+explicit selection replaces only the automatic identification), R-5
+`compose_triage` (raises, never lowers) and `present_first_finding` (approved
+banners/labels only), above the exact manufacturer passage, then T3/T8. No
+question is asked afterwards (C1/C2). Structured fields come only from a
+VALIDATED classification (`PGDR_V1_FINDINGS`: Part 1 mapping format, header
+`status: VALIDE`, named approval, bound to the catalogue content fingerprint;
+anchors may cite a linked warning with `source_field: linked_warnings`).
+Without it every structured field is « non établi ».
+
+Tests: `tests/test_v1_parcours.py`, `tests/test_v1_premier_constat.py` (unit +
+integration) and `tests/test_v1_browser_e2e.py` (Playwright), on a FICTIVE
+notice (and fictive classification) built at test time.
 
 ### Preparation package tests (`outils/preparation_v1/`)
 

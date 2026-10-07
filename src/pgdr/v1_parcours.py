@@ -26,6 +26,19 @@ Configuration (environment):
   PGDR_V1_DEV_TRIAL     "1" enables the development trial mode
   PGDR_V1_DEV_VEHICLE   dev trial only: JSON VIR vehicle identity used by
                         GET /v1/essai-dev (stands in for the VIR handoff)
+  PGDR_V1_FINDINGS      optional: VALIDATED structured classification of the
+                        notice entries (Part 1 mapping format, header status
+                        VALIDE, bound to the catalogue content fingerprint).
+                        Absent, draft or mismatching = not used: every
+                        structured field is « non établi ».
+
+Premier Constat (after explicit confirmation): the EXISTING Part 1 pieces,
+unmodified in behaviour -- unmodified SafetyEngine on the selected entries,
+build_manufacturer_first_finding (origin "user_selection": the driver's
+explicit selection replaces only the automatic identification), R-5
+compose_triage (may raise, never lower) and the approved presentation
+present_first_finding (APPROVED_BANNERS / APPROVED_LABELS only). No question
+is asked afterwards (decisions C1/C2): the parcours ends with T8.
 """
 from __future__ import annotations
 
@@ -41,6 +54,13 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
+from pgdr.application.part1_first_finding import (
+    Part1Mapping, build_manufacturer_first_finding, compose_triage, load_part1_mapping, raised_instructions,
+)
+from pgdr.application.photo_first import warning_indicator_from_entry
+from pgdr.errors import ConfigurationError
+from pgdr.models import Consent, DiagnosticSession, InitialComplaint, PreGarageDiagnosticRequest
+from pgdr.safety_engine import SafetyEngine
 from pgdr.adapters.manifest_notice_repository import (
     ManifestNoticeRepository, NoticeCatalogue, NoticeEntry, NoticeRejected, Pictogram,
 )
@@ -100,6 +120,40 @@ class V1Wiring:
     dev_trial: bool = False
     dev_vehicle: Optional[dict] = None
     error: Optional[str] = None
+    findings: Part1Mapping = field(default_factory=dict)
+    findings_status: str = "absent"
+
+
+def load_v1_findings(path, repository: ManifestNoticeRepository) -> Part1Mapping:
+    """A structured classification is used ONLY when validated by name and
+    bound to this exact catalogue content. Anything else raises
+    ConfigurationError (the caller then uses no classification at all)."""
+    try:
+        raw = yaml.safe_load(open(path, encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as exc:
+        raise ConfigurationError(f"classification unreadable: {exc}") from None
+    catalogue = repository.catalogue
+    header = (raw or {}).get("header") or {}
+    if header.get("status") != "VALIDE":
+        raise ConfigurationError("classification not validated")
+    if header.get("catalogue_content_sha256") != catalogue.content_sha256:
+        raise ConfigurationError("classification bound to another catalogue content")
+    mapping = load_part1_mapping(path)
+    if any(doc != catalogue.document.document_id for doc, _ in mapping):
+        raise ConfigurationError("classification record for another document")
+    # Every record must bind to a live entry (fingerprint) and every anchor
+    # must be verbatim in it: checked now, never discovered mid-parcours.
+    live = {e.entry_id: e for e in repository.entries_for_document(catalogue.document.document_id)}
+    for _, entry_id in mapping:
+        if entry_id not in live:
+            raise ConfigurationError(f"classification record for unknown entry {entry_id}")
+        finding = build_manufacturer_first_finding(
+            [(live[entry_id], "user_selection")], mapping=mapping,
+            linked_warnings={entry_id: [w.text for w in catalogue.entry(entry_id).linked_warnings]},
+        )
+        if finding.entries[0].audit_flags:
+            raise ConfigurationError(f"classification record does not match entry {entry_id}")
+    return mapping
 
 
 _wiring: Optional[V1Wiring] = None
@@ -117,7 +171,15 @@ def get_wiring() -> V1Wiring:
                 repo = ManifestNoticeRepository(path)
             except NoticeRejected as exc:
                 error = str(exc)
-        _wiring = V1Wiring(repository=repo, dev_trial=dev, dev_vehicle=vehicle, error=error)
+        findings, findings_status = {}, "absent"
+        if repo is not None and os.environ.get("PGDR_V1_FINDINGS"):
+            try:
+                findings = load_v1_findings(os.environ["PGDR_V1_FINDINGS"], repo)
+                findings_status = "validated"
+            except ConfigurationError as exc:
+                findings_status = f"refused: {exc}"
+        _wiring = V1Wiring(repository=repo, dev_trial=dev, dev_vehicle=vehicle, error=error,
+                           findings=findings, findings_status=findings_status)
     return _wiring
 
 
@@ -369,6 +431,43 @@ def selection(pid: str, req: SelectionRequest):
         for x in p.selection]}
 
 
+_safety_engine: Optional[SafetyEngine] = None
+
+
+def premier_constat(p: Parcours) -> dict:
+    """The existing Part 1 chain on the driver's confirmed selection."""
+    global _safety_engine
+    from pgdr.web_app import present_first_finding  # lazy: web_app mounts this router
+    if _safety_engine is None:
+        _safety_engine = SafetyEngine()
+    w = get_wiring()
+    c = _catalogue()
+    live = {e.entry_id: e for e in w.repository.entries_for_document(c.document.document_id)}
+    chosen = [live[x] for x in p.selection]
+    session = DiagnosticSession(request=PreGarageDiagnosticRequest(
+        request_id=f"PGDR-V1-{uuid.uuid4().hex[:12]}",
+        vehicle_identity_context=VehicleIdentityContext(
+            resolution_id="V1-PARCOURS", resolution_status="resolved", vehicle_identity=p.vehicle),
+        initial_complaint=InitialComplaint(free_text=""),
+        # The optional photo is never analysed nor kept.
+        consent=Consent(media_analysis_allowed=False, report_storage_allowed=False),
+    ))
+    session.warning_indicators = [warning_indicator_from_entry(e, photo_evidence_id=None) for e in chosen]
+    engine = _safety_engine.evaluate(session)
+    finding = build_manufacturer_first_finding(
+        [(e, "user_selection") for e in chosen], mapping=w.findings,
+        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in p.selection},
+    )
+    triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
+    return {
+        "presentation": present_first_finding(finding),
+        "triage": {"level": triage.level.value, "driving_assessment": triage.driving_assessment.value,
+                   "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
+                   "r5_rows": rows},
+        "classification_status": w.findings_status,
+    }
+
+
 @router.post("/api/v1/parcours/{pid}/confirm")
 def confirm(pid: str, req: ConfirmRequest):
     p = _get(pid)
@@ -378,7 +477,7 @@ def confirm(pid: str, req: ConfirmRequest):
     p.confirmed = True
     p.phase = "restitution"
     c = _catalogue()
-    return {**_state(pid, p), "document": _document(c),
+    return {**_state(pid, p), "document": _document(c), "premier_constat": premier_constat(p),
             "sections": [_section(pid, c.entry(x)) for x in p.selection]}
 
 
@@ -461,6 +560,13 @@ V1_HTML = """<!DOCTYPE html>
  .page { color: #444; font-size: .9em; }
  .fallback h1 { color: #b00020; }
  .muted { color: #555; font-size: .9em; }
+ #premier-constat { border: 3px solid #1f4e79; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+ #part1-t2 { background: #eef4fb; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; }
+ .finding-entry { border-top: 1px solid #ccc; padding-top: 10px; margin-top: 12px; }
+ .finding-entry h3 { font-size: 1em; margin: 12px 0 4px; }
+ .finding-entry blockquote { margin: 4px 0; padding: 6px 10px; background: #fbfbf4; border-left: 4px solid #999; }
+ .passage-title { margin-top: 8px; }
+ .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
  [hidden] { display: none !important; }
 </style>
 </head>
@@ -513,11 +619,14 @@ V1_HTML = """<!DOCTYPE html>
  </section>
 
  <section class="screen" id="screen-restitution" hidden>
-  <h1>Ce que dit la notice</h1>
+  <div id="premier-constat"></div>
+  <h2 class="passage-title">Ce que dit la notice</h2>
   <p class="muted">Notice : <span id="restitution-document"></span></p>
   <p id="language-note" hidden></p>
   <p class="muted">Ces extraits de la notice ne constituent pas une autorisation de rouler.</p>
   <div id="restitution"></div>
+  <div id="part1-sources"></div>
+  <div id="part1-t8" class="end"></div>
   <button class="return">Revenir aux images de la notice</button>
  </section>
 
@@ -638,12 +747,66 @@ function manufacturer(article, label, value) {   // manufacturer text: notice la
   const p = make("div"); p.append(make("span", label + " : ", "label"));
   const v = make("span", value, "exact"); v.lang = noticeLang; p.append(v); article.append(p);
 }
+// Premier Constat: every string comes from the server (approved banners and
+// labels, or verbatim manufacturer text); nothing is composed here.
+function sec(parent, title, cls) { const s = make("div", null, cls); s.append(make("h3", title)); parent.append(s); return s; }
+function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
+function renderConstat(pc) {
+  const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
+  if (p.banner.length) {
+    const b = make("div"); b.id = "part1-t2"; b.append(make("strong", p.banner[0]));
+    for (const line of p.banner.slice(1)) b.append(make("p", line));
+    root.append(b);
+  }
+  if (p.entries.length) {
+    const ident = sec(root, "Voyant identifié", "identified"); const ul = make("ul");
+    for (const e of p.entries) {
+      const li = make("li"); li.dataset.entryId = e.entry_id; li.dataset.origin = e.identified.origin;
+      const d = make("span", e.identified.designation); d.lang = noticeLang;
+      li.append(d, document.createTextNode(" — " + e.identified.origin_text)); ul.append(li);
+    }
+    ident.append(ul);
+  }
+  for (const e of p.entries) {
+    const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
+    const mt = sec(block, "Ce que dit le constructeur", "manufacturer-text");
+    mt.append(make("p", e.manufacturer_text.label));
+    for (const v of [e.manufacturer_text.documented_meaning, e.manufacturer_text.documented_instruction,
+                     e.manufacturer_text.displayed_message]) if (v) quote(mt, v);
+    if (e.immediate_safety.length) { const s = sec(block, "Sécurité immédiate", "immediate-safety"); for (const l of e.immediate_safety) s.append(make("p", l)); }
+    sec(block, "Utilisation du véhicule", "vehicle-use").append(make("p", e.vehicle_use));
+    const r = e.restrictions;
+    if (r.stop_conditions.length || r.figures.length) {
+      const rs = sec(block, "Restrictions / conditions d'arrêt", "restrictions");
+      for (const sc of r.stop_conditions) quote(rs, sc);
+      for (const f of r.figures) { quote(rs, f.figure); if (f.caution) rs.append(make("p", f.caution)); }
+    }
+    if (e.professional) {
+      const ps = sec(block, "Intervention d'un professionnel", "professional"); ps.append(make("p", e.professional.label));
+      if (e.professional.documented_suitability) quote(ps, e.professional.documented_suitability);
+    }
+    if (e.practical.label || e.practical.notice.length) {
+      const pa = sec(block, "Assistance pratique", "practical"); pa.dataset.requirement = e.practical.requirement;
+      if (e.practical.label) pa.append(make("p", e.practical.label));
+      for (const line of e.practical.notice) pa.append(make("p", line));
+    }
+    if (e.not_established.length) {
+      const ne = sec(block, "Points non établis par la notice", "not-established"); const ul = make("ul");
+      for (const l of e.not_established) ul.append(make("li", l)); ne.append(ul);
+      if (p.legend) ne.append(make("p", p.legend, "legend"));
+    }
+  }
+  const src = el("part1-sources"); src.replaceChildren();
+  if (p.sources.length) { const s = sec(src, "Source", "source"); for (const line of p.sources) s.append(make("p", line)); }
+  el("part1-t8").textContent = p.end;
+}
 el("confirm").onclick = async () => {
   try {
     const s = await call("/confirm", {entry_ids: state.selection, confirmed: true}); applyState(s);
     noticeLang = s.document.language || "en";
     const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
     const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
+    renderConstat(s.premier_constat);
     const root = el("restitution"); root.replaceChildren();
     for (const x of s.sections) {
       const a = make("article", null, "restitution"); a.dataset.entryId = x.entry_id;

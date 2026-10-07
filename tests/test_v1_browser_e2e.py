@@ -22,6 +22,7 @@ import v1_fictive_notice as fx
 from pgdr import v1_parcours as v1
 from pgdr import web_app as web
 from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
+from pgdr.application.part1_first_finding import APPROVED_BANNERS, APPROVED_LABELS
 
 _PORT = 8771
 TOKEN = "v1-e2e-handoff-token"
@@ -74,6 +75,7 @@ def _no_english_ui(page: Page) -> None:
 @pytest.fixture(scope="module")
 def live_server(tmp_path_factory):
     notice = fx.build(tmp_path_factory.mktemp("fictive") / "notice")
+    globals()["NOTICE"] = notice
     saved = (v1._wiring, os.environ.get(web.IDENTITY_HANDOFF_TOKEN_ENV), web._photo_wiring)
     v1._wiring = v1.V1Wiring(repository=ManifestNoticeRepository(notice), dev_trial=True)
     v1._parcours.clear()
@@ -227,7 +229,49 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
     assert "Fictive curation note." not in page.locator("body").inner_text()
     _no_english_ui(page)
 
+    # Premier Constat (approved French only), separated from and above the exact passage, then T3/T8.
+    pc = page.locator("#premier-constat")
+    expect(pc.locator("#part1-t2 strong")).to_have_text(APPROVED_BANNERS["T2"][0])
+    expect(pc.locator(".finding-entry")).to_have_count(2)
+    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .vehicle-use p')).to_have_text(
+        APPROVED_LABELS["operability = NOT_ESTABLISHED"])
+    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .not-established')).to_contain_text(
+        APPROVED_LABELS["stop_vehicle_engine_off = NOT_ESTABLISHED"])
+    expect(page.locator("#part1-t8")).to_have_text(APPROVED_BANNERS["T8"][0])
+    order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
+        id => document.getElementById(id).getBoundingClientRect().top)""")
+    assert order == sorted(order)
+    expect(page.locator("#screen-restitution input, #screen-restitution select, #screen-restitution textarea")).to_have_count(0)
+    _no_english_ui(page)
     traffic.assert_clean(photo)
+
+
+def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_server):
+    """FICTIVE validated classification: the stop instruction of linked warning 7) is shown
+    with its approved French label, the exact warning stays complete below."""
+    w = v1._wiring
+    saved = (w.findings, w.findings_status)
+    w.findings = v1.load_v1_findings(fx.build_findings(NOTICE), w.repository)
+    w.findings_status = "validated"
+    try:
+        _open(page, live_server)
+        _to_catalogue(page, None)
+        page.click('.tile[data-entry-id="fx_red_fluid"]')
+        page.click('.tile[data-entry-id="fx_green_lamps"]')
+        page.click("#selection-continue")
+        page.click("#confirm")
+        red = page.locator('#premier-constat .finding-entry[data-entry-id="fx_red_fluid"]')
+        expect(red.locator(".immediate-safety")).to_contain_text(APPROVED_LABELS["stop_vehicle_engine_off = REQUIRED"])
+        expect(red.locator(".vehicle-use p")).to_have_text(APPROVED_LABELS["operability = DO_NOT_DRIVE"])
+        expect(red.locator(".professional blockquote")).to_have_text("a fictive workshop")
+        green = page.locator('#premier-constat .finding-entry[data-entry-id="fx_green_lamps"]')
+        expect(green.locator(".immediate-safety")).to_have_count(0)
+        expect(green.locator(".vehicle-use p")).to_have_text(APPROVED_LABELS["operability = NOT_ESTABLISHED"])
+        assert page.locator('article.restitution[data-entry-id="fx_red_fluid"] .warning .exact').text_content() == fx.SHARED_WARNING
+        expect(page.locator("#part1-t8")).to_have_text(APPROVED_BANNERS["T8"][0])
+        _no_english_ui(page)
+    finally:
+        w.findings, w.findings_status = saved
 
 
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):

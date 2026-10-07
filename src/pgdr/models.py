@@ -341,7 +341,10 @@ class PreGarageDiagnosticRequest(BaseModel):
 # supplied through PI) -- never from PGDR's derivation layer (§4).
 # ---------------------------------------------------------------------------
 
-FINDING_SOURCE_FIELDS = ("documented_meaning", "documented_instruction", "displayed_message")
+# "linked_warnings" (V1): a phrase of one of the numbered manual warnings linked
+# to the entry (e.g. a stop instruction printed in a note), verified verbatim
+# against the live warning texts passed to the builder.
+FINDING_SOURCE_FIELDS = ("documented_meaning", "documented_instruction", "displayed_message", "linked_warnings")
 NOT_ESTABLISHED_VALUE = "not_established"
 
 

@@ -24,7 +24,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional, Sequence
 
 import yaml
 
@@ -221,15 +221,16 @@ def load_part1_mapping(path: Path | str = MAPPING_PATH) -> Part1Mapping:
 # Builder
 # ---------------------------------------------------------------------------
 
-def _check_phrases(record: MappingRecord, entry: DashboardReferenceEntry) -> None:
+def _check_phrases(record: MappingRecord, entry: DashboardReferenceEntry, linked_warnings: Sequence[str] = ()) -> None:
     """§4 rule 2 against the LIVE record: every anchor must be an exact
-    substring of its source field. Fail closed."""
+    substring of its source field (for "linked_warnings": of one of the
+    entry's live linked warning texts). Fail closed."""
     anchors = [(n, i.source_field, i.source_phrase) for n, i in record.items.items()]
     anchors += [("stop_condition", p.source_field, p.source_phrase) for p in record.stop_conditions]
     anchors += [("documented_figure", f.source_field, f.source_phrase) for f in record.documented_figures]
     for name, field, phrase in anchors:
-        text = getattr(entry, field) or ""
-        if phrase not in text:
+        texts = list(linked_warnings) if field == "linked_warnings" else [getattr(entry, field) or ""]
+        if not any(phrase in text for text in texts):
             raise ConfigurationError(
                 f"part1_manufacturer_findings.yaml ({record.entry_id}): {name} source_phrase {phrase!r} "
                 f"is not a substring of the live {field}"
@@ -238,6 +239,7 @@ def _check_phrases(record: MappingRecord, entry: DashboardReferenceEntry) -> Non
 
 def build_entry_finding(
     entry: DashboardReferenceEntry, *, identification_origin: str, mapping: Part1Mapping,
+    linked_warnings: Sequence[str] = (),
 ) -> EntryFinding:
     document = entry.applicability
     record = mapping.get((document.document_id, entry.entry_id))
@@ -249,7 +251,7 @@ def build_entry_finding(
         audit_flags.append("mapping_fingerprint_mismatch")
         record = None  # a stale interpretation never survives a source change
     else:
-        _check_phrases(record, entry)
+        _check_phrases(record, entry, linked_warnings)
 
     def item(name: str) -> FindingItem:
         if record is None or name not in record.items:
@@ -298,12 +300,18 @@ def build_entry_finding(
 
 def build_manufacturer_first_finding(
     identified: Iterable[tuple[DashboardReferenceEntry, str]], *, mapping: Part1Mapping,
+    linked_warnings: Mapping[str, Sequence[str]] | None = None,
 ) -> ManufacturerFirstFinding:
     """`identified`: (live manufacturer entry, identification origin) pairs,
     in identification order. Origin is 'visual_provider_match' or
-    'user_selection' (never merged)."""
+    'user_selection' (never merged). `linked_warnings`: entry_id -> the live
+    texts of the warnings linked to that entry (V1 notices), for anchors
+    whose source_field is "linked_warnings"."""
+    warnings = linked_warnings or {}
     return ManufacturerFirstFinding(entries=[
-        build_entry_finding(entry, identification_origin=origin, mapping=mapping) for entry, origin in identified
+        build_entry_finding(entry, identification_origin=origin, mapping=mapping,
+                            linked_warnings=warnings.get(entry.entry_id, ()))
+        for entry, origin in identified
     ])
 
 
