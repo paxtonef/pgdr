@@ -16,10 +16,13 @@ PICTOGRAM_COLUMNS=('position','text_before','text_after','image_file','image_sha
 # Optional per-entry provenance: pictograms printed inside documented_meaning, free-text notes,
 # and field_sources {entry field: source passage} for fields documented outside the entry passage.
 SOURCE_COLUMNS=('text','printed_page','pdf_page')
+# Optional per-entry presentation facts: where_provided (bool, the manual says « where provided » / « on some
+# versions ») and documented_startup_check (exact manual sentence saying the light switches on at start-up, or null).
+PRESENTATION_COLUMNS=('where_provided','documented_startup_check')
 # Fields --export-cpl carries. Any other manifest field is listed in not_exported_fields, never silently dropped.
 DOCUMENT_EXPORTED=('schema_version','document_id','title','edition','source_authority','source_locator','vehicle',
                    'applicability_period_start','applicability_period_end','applicability_period_note','manual_file','manual_sha256','review','entries')
-ENTRY_EXPORTED=ENTRY_COLUMNS+ASSET_COLUMNS+('linked_warnings','inline_pictograms','notes','field_sources')
+ENTRY_EXPORTED=ENTRY_COLUMNS+ASSET_COLUMNS+PRESENTATION_COLUMNS+('linked_warnings','inline_pictograms','notes','field_sources')
 
 def relative_file(root,name):
     if not isinstance(name,str) or not name or Path(name).is_absolute(): raise ValueError('Relative file path required')
@@ -83,6 +86,9 @@ def check_provenance(root,e,pages,seen):
         if k not in ENTRY_COLUMNS or not isinstance(v,dict) or set(v)!=set(SOURCE_COLUMNS): raise ValueError('Invalid field source')
         for c in ('text','printed_page'): nonempty(v[c],c)
         check_page(v['pdf_page'],pages)
+    # Absent = not recorded (exported as null), never silently turned into False.
+    if 'where_provided' in e and type(e['where_provided']) is not bool: raise ValueError('Invalid where_provided')
+    if e.get('documented_startup_check') is not None: nonempty(e['documented_startup_check'],'documented_startup_check')
 
 def read_structure(path):
     d=yaml.safe_load(path.read_text(encoding='utf-8')); root=path.parent
@@ -158,6 +164,7 @@ def cpl_rows(d):
             'entry_inline_pictograms':[dict(entry_id=e['entry_id'],pictogram_order=j,**{k:copy.deepcopy(p[k]) for k in PICTOGRAM_COLUMNS})
                                        for e in d['entries'] for j,p in enumerate(e.get('inline_pictograms',[]))],
             'entry_notes':[dict(entry_id=e['entry_id'],note_order=i,note=n) for e in d['entries'] for i,n in enumerate(e.get('notes',[]))],
+            'entry_presentation':[dict(entry_id=e['entry_id'],**{k:e.get(k) for k in PRESENTATION_COLUMNS}) for e in d['entries']],
             'entry_field_sources':[dict(entry_id=e['entry_id'],field=k,**{c:v[c] for c in SOURCE_COLUMNS})
                                    for e in d['entries'] for k,v in sorted(e.get('field_sources',{}).items())],
             'not_exported_fields':not_exported(d)}

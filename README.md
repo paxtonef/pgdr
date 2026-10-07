@@ -78,6 +78,30 @@ Test suite:
 
 See `docs/release/PGDR_v2_RELEASE_MANIFEST.md` for capability breakdown.
 
+### V1 parcours (`/v1`)
+
+VIR handoff (`POST /api/v1/vir-handoff`, same credential as the photo-first
+handoff) → consent → optional photo (kept in the browser only: not analysed,
+not sent, not kept) → the complete manual catalogue in manual order → the
+driver's own selection by `entry_id` → explicit confirmation → exact
+restitution (one section per image: image, designation, exact text and
+pictograms, complete linked warnings, « selon équipement », « s'allume au
+démarrage », pages). « Aucune ne correspond » / « Je ne sais pas » → colour →
+the validated ENGLISH fallback screens (`src/pgdr/config/v1_fallback_screens.en.yaml`,
+byte-identical to `outils/preparation_v1/config/fallback_screens.en.yaml`).
+No model provider is called. The notice is read by
+`pgdr.adapters.manifest_notice_repository.ManifestNoticeRepository` (read-only
+KnowledgeRepositoryPort): it recomputes the content fingerprint, checks every
+file digest and refuses a pending/obsolete review.
+
+Configuration: `PGDR_V1_MANIFEST` (notice manifest, outside the repo). A notice
+whose applicability to the vehicle is not established is refused, except in
+the local development trial (`outils/essai_dev_v1/lancer.sh`, which sets
+`PGDR_V1_DEV_TRIAL=1`, a SIMULATED VIR identity, and shows a permanent banner).
+
+Tests: `tests/test_v1_parcours.py` (unit + integration) and
+`tests/test_v1_browser_e2e.py` (Playwright), on a FICTIVE notice built at test time.
+
 ### Preparation package tests (`outils/preparation_v1/`)
 
 The preparation package has its own tests and dependencies (PyYAML, pypdf,

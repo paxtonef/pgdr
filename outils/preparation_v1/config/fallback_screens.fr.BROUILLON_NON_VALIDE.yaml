@@ -1,0 +1,27 @@
+# BROUILLON NON VALIDÉ — traduction française proposée de fallback_screens.en.yaml.
+# NE PAS AFFICHER comme consigne de sécurité active. Aucun code ne lit ce fichier :
+# l'interface V1 sert uniquement les textes anglais validés (src/pgdr/config/v1_fallback_screens.en.yaml).
+# Un test vérifie qu'aucune de ces phrases n'apparaît dans l'interface ni dans l'API.
+# Pour l'activer un jour : validation humaine nommée, puis changement explicite du code et des tests.
+schema_version: 1
+status: BROUILLON_NON_VALIDE
+translates: fallback_screens.en.yaml
+screens:
+  red_or_uncertain:
+    heading: Arrêtez-vous en sécurité — vérification humaine nécessaire
+    paragraphs:
+    - Arrêtez le véhicule dès que vous pouvez le faire en sécurité. Si vous êtes déjà
+      à l'arrêt, restez à l'arrêt.
+    - Nous n'avons pas pu faire correspondre votre voyant à une image de la notice. Sa
+      signification et la consigne du constructeur applicable n'ont pas été établies.
+    - Faites vérifier la situation par une personne avant de reprendre la route.
+  other_colour:
+    heading: Voyant non identifié — vérification humaine nécessaire
+    paragraphs:
+    - Nous n'avons pas pu faire correspondre votre voyant à une image de la notice. La
+      couleur que vous avez choisie ne suffit pas à établir sa signification ni à savoir
+      s'il est sûr de rouler.
+    - Ce résultat ne vous autorise pas à continuer à rouler. Faites vérifier la situation
+      par une personne avant de décider de continuer.
+shared:
+  return_button: Revenir aux images de la notice

@@ -79,11 +79,19 @@ CREATE TABLE cpl.manufacturer_knowledge_entry_field_sources (
  pdf_page INTEGER NOT NULL CHECK (pdf_page >= 1),
  PRIMARY KEY (entry_row_id, field_name)
 );
+-- Presentation facts of an entry, one row per entry. where_provided: the manual qualifies the
+-- entry with « where provided » / « on some versions » (NULL = not recorded in the manifest).
+-- documented_startup_check: exact manual sentence saying the light switches on at start-up, or NULL.
+CREATE TABLE cpl.manufacturer_knowledge_entry_presentation (
+ entry_row_id UUID PRIMARY KEY REFERENCES cpl.manufacturer_knowledge_dashboard_entries(entry_row_id) ON DELETE CASCADE,
+ where_provided BOOLEAN NULL,
+ documented_startup_check TEXT NULL CHECK (documented_startup_check IS NULL OR length(trim(documented_startup_check)) > 0)
+);
 COMMIT;
 -- Importer MUST resolve exactly one document_row_id and one entry_row_id per entry,
 -- verify the full content fingerprint, and write all rows in one transaction.
 -- Importer MUST write every entry_warnings row and every inline pictogram of the export,
--- and every entry_inline_pictograms, entry_notes and entry_field_sources row,
+-- and every entry_inline_pictograms, entry_notes, entry_field_sources and entry_presentation row,
 -- and resolve identified_entry_ids within the same document generation.
 -- Fields listed in the export's not_exported_fields have NO table here: the importer
 -- MUST refuse or explicitly acknowledge them, never drop them silently.

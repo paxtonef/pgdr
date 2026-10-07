@@ -169,7 +169,7 @@ class EntryProvenance(unittest.TestCase):
         e['inline_pictograms']=[{'position':15,'text_before':'test symbol','text_after':'means a','image_file':'picto.png','image_sha256':self.sha,'pdf_page':1,'printed_page':'A-1','identified_entry_ids':['1'],'identification_basis':'Same synthetic drawing as entry 1.'}]
         e['notes']=['First synthetic note.','Second synthetic note.']
         e['field_sources']={'audible_signal':{'text':'A synthetic chime sounds.','printed_page':'A-1','pdf_page':1}}
-        e['where_provided']=False; b.d['coverage']={'entries':2}
+        e['where_provided']=True; e['documented_startup_check']='The synthetic light switches on at start-up.'; e['dedicated_message_mentioned']=False; b.d['coverage']={'entries':2}
         b.approve()
     def rows(self): return cpl_rows(self.base.valid())
     def mutate_rejected(self,f): f(self.base.d['entries'][0]); self.base.rejected()
@@ -182,7 +182,7 @@ class EntryProvenance(unittest.TestCase):
     def test_field_sources_exported(self):
         self.assertEqual(self.rows()['entry_field_sources'],[{'entry_id':'0','field':'audible_signal','text':'A synthetic chime sounds.','printed_page':'A-1','pdf_page':1}])
     def test_unsupported_fields_reported_not_silently_dropped(self):
-        self.assertEqual(self.rows()['not_exported_fields'],{'document':['coverage'],'entries':{'where_provided':1}})
+        self.assertEqual(self.rows()['not_exported_fields'],{'document':['coverage'],'entries':{'dedicated_message_mentioned':1}})
     def test_entry_without_provenance(self):
         r=self.rows(); self.assertNotIn('1',[x['entry_id'] for k in ('entry_inline_pictograms','entry_notes','entry_field_sources') for x in r[k]])
     def test_obsolete_after_pictogram_position_change(self):
@@ -199,7 +199,18 @@ class EntryProvenance(unittest.TestCase):
     def test_obsolete_after_source_text_change(self): self.mutate_rejected(lambda e:e['field_sources']['audible_signal'].update(text='Changed.'))
     def test_obsolete_after_source_page_change(self): self.mutate_rejected(lambda e:e['field_sources']['audible_signal'].update(printed_page='A-9'))
     def test_obsolete_after_source_removed(self): self.mutate_rejected(lambda e:e['field_sources'].pop('audible_signal'))
-    def test_obsolete_after_unsupported_field_change(self): self.mutate_rejected(lambda e:e.update(where_provided=True))
+    def test_obsolete_after_unsupported_field_change(self): self.mutate_rejected(lambda e:e.update(dedicated_message_mentioned=True))
+    def test_presentation_exported_one_row_per_entry(self):
+        self.assertEqual(self.rows()['entry_presentation'],[{'entry_id':'0','where_provided':True,'documented_startup_check':'The synthetic light switches on at start-up.'},
+                                                           {'entry_id':'1','where_provided':None,'documented_startup_check':None}])
+    def test_presentation_false_kept_distinct_from_absent(self):
+        self.base.d['entries'][1]['where_provided']=False; self.base.approve()
+        self.assertIs(self.rows()['entry_presentation'][1]['where_provided'],False)
+    def test_obsolete_after_where_provided_change(self): self.mutate_rejected(lambda e:e.update(where_provided=False))
+    def test_obsolete_after_startup_check_change(self): self.mutate_rejected(lambda e:e.update(documented_startup_check='Changed.'))
+    def test_obsolete_after_startup_check_removed(self): self.mutate_rejected(lambda e:e.pop('documented_startup_check'))
+    def test_where_provided_not_boolean_rejected(self): self.base.d['entries'][0]['where_provided']='yes'; self.base.rejected(True)
+    def test_empty_startup_check_rejected(self): self.base.d['entries'][0]['documented_startup_check']=' '; self.base.rejected(True)
     def test_pictogram_position_mismatch(self): self.base.d['entries'][0]['inline_pictograms'][0]['position']=3; self.base.rejected(True)
     def test_pictogram_hash_mismatch(self): self.base.d['entries'][0]['inline_pictograms'][0]['image_sha256']='0'*64; self.base.rejected(True)
     def test_empty_note_rejected(self): self.base.d['entries'][0]['notes']=['']; self.base.rejected(True)

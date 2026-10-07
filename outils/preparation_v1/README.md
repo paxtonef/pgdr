@@ -23,7 +23,7 @@ Le script refuse les modifications locales et bases divergentes, sans reset ni p
 
 ## Textes de repli : une seule référence
 
-`config/fallback_screens.en.yaml` reprend exactement les deux écrans anglais de la note. `colour_fallback()` lit ce fichier ; il ne maintient plus ses propres formulations françaises. Rouge ou incertain utilise l’écran d’arrêt ; les autres couleurs l’écran non résolu. Aucun statut de vérification ni handoff n’est impliqué. Une traduction française future devra être validée séparément.
+`config/fallback_screens.en.yaml` reprend exactement les deux écrans anglais de la note. `colour_fallback()` lit ce fichier ; il ne maintient plus ses propres formulations françaises. Rouge ou incertain utilise l’écran d’arrêt ; les autres couleurs l’écran non résolu. Aucun statut de vérification ni handoff n’est impliqué. Une traduction française est proposée dans `config/fallback_screens.fr.BROUILLON_NON_VALIDE.yaml` : BROUILLON NON VALIDÉ, lu par aucun code, jamais affiché (test à l'appui).
 
 Le YAML runtime consigne aussi la conservation des sélections par ID, le retour en ordre manuel, la reconfirmation explicite, la conservation de la couleur et les sections distinctes par image. **Ce sont les règles du futur parcours web, pas une interface déjà réalisée.**
 
@@ -35,7 +35,7 @@ Lire `CPL_MAPPING.md` pour la correspondance champ par champ et `cpl/migration_a
 
 Une entrée peut porter `linked_warnings` : les avertissements numérotés de la notice rattachés par renvoi imprimé (numéro, texte exact, page imprimée, page PDF) et les pictogrammes imprimés dans leur texte (position, texte avant/après, fichier, empreinte, pages, entrées représentées, justification). Le champ est facultatif (absent = aucun avertissement ; les manifestes v2 sans ce champ restent valides). `--export-cpl` les exporte intégralement sous `entry_warnings`, et deux tables proposées (non appliquées) les reçoivent.
 
-Une entrée peut aussi porter `inline_pictograms` (pictogrammes imprimés dans `documented_meaning`, même structure), `notes` (liste de textes) et `field_sources` (passage source d’un champ documenté ailleurs que dans le passage de l’entrée). Ils sont exportés sous `entry_inline_pictograms`, `entry_notes` et `entry_field_sources`, avec trois tables proposées non appliquées. Tout autre champ du manifeste est nommé dans `not_exported_fields` et signalé sur la sortie d’erreur : aucun champ n’est perdu en silence.
+Une entrée peut aussi porter `inline_pictograms` (pictogrammes imprimés dans `documented_meaning`, même structure), `notes` (liste de textes) et `field_sources` (passage source d’un champ documenté ailleurs que dans le passage de l’entrée). Ils sont exportés sous `entry_inline_pictograms`, `entry_notes` et `entry_field_sources`, avec trois tables proposées non appliquées. `where_provided` (booléen) et `documented_startup_check` (phrase exacte ou null) sont exportés sous `entry_presentation`, une ligne par entrée (absent = null, jamais converti en false), avec une table proposée non appliquée. Tout autre champ du manifeste est nommé dans `not_exported_fields` et signalé sur la sortie d’erreur : aucun champ n’est perdu en silence.
 
 Chaque entrée doit avoir une image PNG/JPEG valide, une page PDF existante et une référence imprimée. La validation vérifie les fichiers et leurs empreintes, l’absence de chemins sortant du dossier, les IDs uniques et les références combinées dans la même notice. Elle ne démontre pas la justesse du texte constructeur : cette association est vérifiée par une personne.
 

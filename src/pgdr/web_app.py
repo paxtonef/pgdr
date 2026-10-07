@@ -1438,6 +1438,11 @@ _T1_HTML = "<strong>" + html.escape(APPROVED_BANNERS["T1"][0]) + "</strong>" + "
 )
 
 
+# V1 parcours: complete manual catalogue, driver's own selection, exact restitution.
+from pgdr.v1_parcours import router as _v1_router  # noqa: E402  (after app/_require_handoff_credential)
+app.include_router(_v1_router)
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)
