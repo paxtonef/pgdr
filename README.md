@@ -78,6 +78,21 @@ Test suite:
 
 See `docs/release/PGDR_v2_RELEASE_MANIFEST.md` for capability breakdown.
 
+### Preparation package tests (`outils/preparation_v1/`)
+
+The preparation package has its own tests and dependencies (PyYAML, pypdf,
+Pillow). They are NOT part of the PGDR suite above: `pytest` only collects
+`tests/` (`testpaths` in `pyproject.toml`). Run them with the package's own
+installer, which creates a separate environment in `outils/preparation_v1/.venv/`
+(git-ignored). Never install the package dependencies into the PGDR environment.
+
+```bash
+cd outils/preparation_v1
+bash installer.sh                      # creates .venv/, installs requirements.txt, runs the 42 tests
+.venv/bin/python -m unittest discover -s tests -v   # re-run the tests later
+.venv/bin/python scripts/verifier_yaml.py
+```
+
 Since the original v2 freeze, an additive, self-contained capability was
 built and proved end-to-end: turning a validated dashboard-photo
 interpretation of a manufacturer-official indicator into a governed,

@@ -6,3 +6,6 @@ __pycache__/
 .DS_Store
 # GGM wheels are never committed (canonical GGM 1.0.0 is supplied out-of-band)
 *.whl
+
+# Environnement propre au paquet de préparation V1 (créé par son installer.sh)
+outils/preparation_v1/.venv/

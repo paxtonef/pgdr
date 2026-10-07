@@ -82,6 +82,17 @@ GGM_WHEEL_PATH="$(pwd)/$GGM_WHEEL" pytest -q
 # The 11 tests that were skipped should now pass
 ```
 
+`pytest -q` collects `tests/` only (`testpaths` in `pyproject.toml`). The
+preparation package `outils/preparation_v1/` is tested separately, with its own
+installer and its own environment (`outils/preparation_v1/.venv/`, git-ignored),
+without touching the PGDR environment:
+
+```bash
+cd outils/preparation_v1
+bash installer.sh                      # creates .venv/, installs its requirements, runs its 42 tests
+.venv/bin/python scripts/verifier_yaml.py
+```
+
 ---
 
 ## 4. Start web application with real GGM
