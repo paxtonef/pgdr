@@ -26,8 +26,16 @@ This package defines and exports the mapping; it does not execute an import. `no
 | inline_pictograms[].position, text_before, text_after | Same columns; position is a character offset in the warning text |
 | inline_pictograms[].image_file, image_sha256, pdf_page, printed_page | Same columns |
 | inline_pictograms[].identified_entry_ids, identification_basis | Same columns; ids JSONB, may be empty when the pictogram is not catalogued |
+| inline_pictograms (optional per entry) | Proposed manufacturer_knowledge_entry_pictograms; same columns as warning pictograms, position is a character offset in documented_meaning |
+| notes (optional per entry, list of texts) | Proposed manufacturer_knowledge_entry_notes (note_order, note_text) |
+| field_sources (optional per entry, {entry field: {text, printed_page, pdf_page}}) | Proposed manufacturer_knowledge_entry_field_sources (field_name, source_text, printed_page, pdf_page) |
+| Any other document or entry field | No CPL destination: listed in `not_exported_fields` (export JSON) and warned on stderr |
 
 `--export-cpl` emits every linked warning under `entry_warnings` (entry_id, warning_order, all warning fields, and every inline pictogram with all its fields plus pictogram_order). Warning and pictogram key sets are exact: an unknown key rejects the manifest rather than being silently dropped. The same numbered warning attached to several entries appears once per entry. Validation checks pages, pictogram files and hashes, that each position matches text_before/text_after in the warning text, and that identified entries exist in the document. The review fingerprint already covers these fields: any change to a warning or pictogram, or its removal, makes the review obsolete.
+
+Entry provenance is exported the same way: `entry_inline_pictograms` (entry_id, pictogram_order, all pictogram fields), `entry_notes` (entry_id, note_order, note) and `entry_field_sources` (entry_id, field, text, printed_page, pdf_page). A field source must name an entry column. All three are optional (absent = empty) and covered by the review fingerprint.
+
+No field is silently lost: `not_exported_fields` lists, by name, every document field and every entry field (with its number of entries) that has no CPL destination yet, and `--export-cpl` repeats it as a warning on stderr. These fields stay covered by the review fingerprint. Before any import they must get a destination or be explicitly accepted as not imported.
 
 One V1 catalogue item corresponds to one existing CPL entry and one image association. An image representing different fixed/flashing entries must have distinct entry IDs and retain the documented variants; do not collapse those entries. Identical images/texts may legitimately repeat.
 

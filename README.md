@@ -88,7 +88,7 @@ installer, which creates a separate environment in `outils/preparation_v1/.venv/
 
 ```bash
 cd outils/preparation_v1
-bash installer.sh                      # creates .venv/, installs requirements.txt, runs the 89 tests
+bash installer.sh                      # creates .venv/, installs requirements.txt, runs the 110 tests
 .venv/bin/python -m unittest discover -s tests -v   # re-run the tests later
 .venv/bin/python scripts/verifier_yaml.py
 ```

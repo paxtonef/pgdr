@@ -1,8 +1,8 @@
-Export des avertissements liés — 2026-10-07
-89 tests réussis, aucun ignoré (42 précédents + 20 nouveaux sur les avertissements liés + 27 tests de validation rejoués sur une notice fictive portant des avertissements).
+Export sans perte — 2026-10-07
+110 tests réussis, aucun ignoré (42 d'origine + 20 avertissements liés + 21 pictogrammes/notes/sources des entrées + 27 tests de validation rejoués sur une notice fictive portant des avertissements).
 Dépendances utilisées : PyYAML 6.0.3, pypdf 6.10.0, Pillow 12.3.0.
 Validation notice : fichiers, formats, empreintes, pages, chemins, IDs, champs CPL, références combinées, identité/date/revue obsolète.
-Avertissements liés : champs exacts, texte, pages, pictogrammes (fichier, empreinte, position cohérente avec le texte, entrées représentées, justification) ; export complet ; revue obsolète après modification ou retrait.
+Avertissements liés, pictogrammes des entrées, notes, sources de champs : structure exacte, positions cohérentes avec le texte, export fidèle, revue obsolète après modification ou retrait ; champs non pris en charge listés dans not_exported_fields.
 Tri : JSON brut/bloc, contrat strict, simulation de 70 images en 18 requêtes de 5 images maximum.
 Les tests utilisent des PDF/images et une notice synthétiques ; pas de manuel réel admis, pas de fournisseur réel appelé.
 Vérification YAML réussie ; syntaxe installer.sh valide.

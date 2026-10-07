@@ -29,6 +29,9 @@ entries:
   pdf_page: null
   page_reference: ''
   linked_warnings: []
+  inline_pictograms: []
+  notes: []
+  field_sources: {}
 review:
   status: pending
   reviewer_id: ''

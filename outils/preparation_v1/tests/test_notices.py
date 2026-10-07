@@ -157,3 +157,51 @@ class ScreenCopy(unittest.TestCase):
         r=colour_fallback('rouge'); self.assertEqual(r['paragraphs'][-1],'Have the situation checked by a person before resuming your journey.'); self.assertFalse(r['show_status_indicator']); self.assertFalse(r['handoff_implied'])
     def test_exact_note_other_screen(self):
         r=colour_fallback('vert'); self.assertEqual(r['heading'],'Warning light unresolved — human verification required'); self.assertEqual(r['paragraphs'][-1],'This result does not authorise you to continue driving. Have the situation checked by a person before deciding whether to continue.')
+
+class EntryProvenance(unittest.TestCase):
+    # Synthetic notice only: entry-level pictograms, notes and field sources.
+    MEANING='The test symbol means a synthetic fault.'
+    def setUp(self):
+        self.base=NoticeValidation('test_complete_package_and_existing_fields_exported'); self.base.setUp(); self.addCleanup(self.base.doCleanups)
+        b=self.base; Image.new('RGB',(4,4),'black').save(b.root/'picto.png')
+        self.sha=hashlib.sha256((b.root/'picto.png').read_bytes()).hexdigest()
+        e=b.d['entries'][0]; e['documented_meaning']=self.MEANING
+        e['inline_pictograms']=[{'position':15,'text_before':'test symbol','text_after':'means a','image_file':'picto.png','image_sha256':self.sha,'pdf_page':1,'printed_page':'A-1','identified_entry_ids':['1'],'identification_basis':'Same synthetic drawing as entry 1.'}]
+        e['notes']=['First synthetic note.','Second synthetic note.']
+        e['field_sources']={'audible_signal':{'text':'A synthetic chime sounds.','printed_page':'A-1','pdf_page':1}}
+        e['where_provided']=False; b.d['coverage']={'entries':2}
+        b.approve()
+    def rows(self): return cpl_rows(self.base.valid())
+    def mutate_rejected(self,f): f(self.base.d['entries'][0]); self.base.rejected()
+    def test_pictograms_exported_faithfully(self):
+        out=self.rows()['entry_inline_pictograms']; src=self.base.d['entries'][0]['inline_pictograms']
+        self.assertEqual([(o['entry_id'],o['pictogram_order']) for o in out],[('0',0)])
+        self.assertEqual([{k:v for k,v in o.items() if k not in ('entry_id','pictogram_order')} for o in out],src)
+    def test_notes_exported_in_order(self):
+        self.assertEqual(self.rows()['entry_notes'],[{'entry_id':'0','note_order':0,'note':'First synthetic note.'},{'entry_id':'0','note_order':1,'note':'Second synthetic note.'}])
+    def test_field_sources_exported(self):
+        self.assertEqual(self.rows()['entry_field_sources'],[{'entry_id':'0','field':'audible_signal','text':'A synthetic chime sounds.','printed_page':'A-1','pdf_page':1}])
+    def test_unsupported_fields_reported_not_silently_dropped(self):
+        self.assertEqual(self.rows()['not_exported_fields'],{'document':['coverage'],'entries':{'where_provided':1}})
+    def test_entry_without_provenance(self):
+        r=self.rows(); self.assertNotIn('1',[x['entry_id'] for k in ('entry_inline_pictograms','entry_notes','entry_field_sources') for x in r[k]])
+    def test_obsolete_after_pictogram_position_change(self):
+        def f(e): p=e['inline_pictograms'][0]; p.update(position=8,text_before='The test',text_after='symbol')
+        self.mutate_rejected(f)
+    def test_obsolete_after_pictogram_reference_change(self): self.mutate_rejected(lambda e:e['inline_pictograms'][0].update(identified_entry_ids=[]))
+    def test_obsolete_after_pictogram_image_change(self):
+        Image.new('RGB',(4,4),'white').save(self.base.root/'picto2.png'); sha=hashlib.sha256((self.base.root/'picto2.png').read_bytes()).hexdigest()
+        self.mutate_rejected(lambda e:e['inline_pictograms'][0].update(image_file='picto2.png',image_sha256=sha))
+    def test_obsolete_after_pictogram_removed(self): self.mutate_rejected(lambda e:e['inline_pictograms'].pop())
+    def test_obsolete_after_note_change(self): self.mutate_rejected(lambda e:e['notes'].__setitem__(0,'Changed note.'))
+    def test_obsolete_after_note_removed(self): self.mutate_rejected(lambda e:e['notes'].pop())
+    def test_obsolete_after_notes_field_removed(self): self.mutate_rejected(lambda e:e.pop('notes'))
+    def test_obsolete_after_source_text_change(self): self.mutate_rejected(lambda e:e['field_sources']['audible_signal'].update(text='Changed.'))
+    def test_obsolete_after_source_page_change(self): self.mutate_rejected(lambda e:e['field_sources']['audible_signal'].update(printed_page='A-9'))
+    def test_obsolete_after_source_removed(self): self.mutate_rejected(lambda e:e['field_sources'].pop('audible_signal'))
+    def test_obsolete_after_unsupported_field_change(self): self.mutate_rejected(lambda e:e.update(where_provided=True))
+    def test_pictogram_position_mismatch(self): self.base.d['entries'][0]['inline_pictograms'][0]['position']=3; self.base.rejected(True)
+    def test_pictogram_hash_mismatch(self): self.base.d['entries'][0]['inline_pictograms'][0]['image_sha256']='0'*64; self.base.rejected(True)
+    def test_empty_note_rejected(self): self.base.d['entries'][0]['notes']=['']; self.base.rejected(True)
+    def test_source_for_unknown_field_rejected(self): self.base.d['entries'][0]['field_sources']={'not_a_field':{'text':'x','printed_page':'1','pdf_page':1}}; self.base.rejected(True)
+    def test_source_page_out_of_range(self): self.base.d['entries'][0]['field_sources']['audible_signal']['pdf_page']=2; self.base.rejected(True)
