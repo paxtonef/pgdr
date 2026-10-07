@@ -1,0 +1,42 @@
+declaration_version: '1'
+schema_authority: application_integration_draft
+entry_mode: source
+source_authority: Décision V1 du propriétaire dans ce chat
+baseline_refs:
+- 'CBS WHAT / REQUIREMENTS / AMD GRAPH FREEZE : IF-01, IF-03, IF-11'
+unresolved_conditions:
+- Adaptation au schéma canonique SourceExpression IF-01 lors du build CBS.
+- CBS ne sélectionne pas les fournisseurs et ne réalise pas les capabilities.
+application: PGDR
+requirements:
+- id: PGDR-V1-01
+  required_result: Recevoir le passage VIR puis la photo avec consentement.
+  constraints:
+  - Le consentement nomme tous les destinataires effectifs.
+  - Photo non conservée après le parcours.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
+- id: PGDR-V1-02
+  required_result: Afficher toutes les images de la notice applicable avec tri facultatif.
+  constraints:
+  - Le modèle trie seulement, sans repérage, filtre, masque ou affirmation.
+  - 'Sans modèle ou tri invalide : ordre de la notice.'
+  - Bouton voir toutes les images toujours visible.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
+- id: PGDR-V1-03
+  required_result: Permettre la sélection humaine multiple et restituer exactement
+    les passages et pages.
+  constraints:
+  - Aucune sélection implicite.
+  - Aucune sortie du modèle dans la restitution constructeur.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
+- id: PGDR-V1-04
+  required_result: Traiter aucune ne correspond et je ne sais pas par couleur déclarée
+    et vérification humaine.
+  constraints:
+  - 'Rouge ou incertain : consigne d’arrêt.'
+  - Jamais de permission implicite de rouler.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser

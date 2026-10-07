@@ -1,0 +1,21 @@
+schema_version: 1
+screens:
+  red_or_uncertain:
+    heading: Stop safely — human verification required
+    paragraphs:
+    - Stop the vehicle as soon as you can do so safely. If you are already stopped,
+      remain stopped.
+    - We could not match your warning light to an image in the manual. Its meaning
+      and the applicable manufacturer instruction have not been established.
+    - Have the situation checked by a person before resuming your journey.
+  other_colour:
+    heading: Warning light unresolved — human verification required
+    paragraphs:
+    - We could not match your warning light to an image in the manual. The colour
+      you selected is not enough to establish its meaning or whether driving is safe.
+    - This result does not authorise you to continue driving. Have the situation checked
+      by a person before deciding whether to continue.
+shared:
+  return_button: Return to manual images
+  show_status_indicator: false
+  handoff_implied: false

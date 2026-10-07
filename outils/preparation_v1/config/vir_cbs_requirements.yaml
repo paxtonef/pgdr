@@ -1,0 +1,24 @@
+declaration_version: '1'
+schema_authority: application_integration_draft
+entry_mode: source
+source_authority: Décision V1 du propriétaire dans ce chat
+baseline_refs:
+- 'CBS WHAT / REQUIREMENTS / AMD GRAPH FREEZE : IF-01, IF-03, IF-11'
+unresolved_conditions:
+- Adaptation au schéma canonique SourceExpression IF-01 lors du build CBS.
+- CBS ne sélectionne pas les fournisseurs et ne réalise pas les capabilities.
+application: VIR
+requirements:
+- id: VIR-V1-01
+  required_result: Résoudre et transmettre l’identité complète du véhicule à PGDR.
+  constraints:
+  - Conserver generation, incertitudes et contradictions.
+  - Aucune identité déduite de la photo.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
+- id: VIR-V1-02
+  required_result: Déclarer les besoins des adaptateurs plaque/VIN.
+  constraints:
+  - Ne pas confondre adaptateur disponible et fournisseur configuré.
+  evidence_refs:
+  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser

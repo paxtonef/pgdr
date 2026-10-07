@@ -1,0 +1,36 @@
+schema_version: 2
+document_id: ''
+title: ''
+edition: ''
+source_authority: manufacturer_official
+source_locator: ''
+vehicle:
+  manufacturer: ''
+  model: ''
+  generation: ''
+applicability_period_start: null
+applicability_period_end: null
+applicability_period_note: null
+manual_file: manuel.pdf
+manual_sha256: ''
+entries:
+- entry_id: ''
+  manufacturer_designation: ''
+  symbol_descriptor: null
+  colour: null
+  state: null
+  displayed_message: null
+  audible_signal: null
+  documented_meaning: ''
+  documented_instruction: null
+  combined_with_entry_ids: []
+  image_file: images/voyant-001.png
+  image_sha256: ''
+  pdf_page: null
+  page_reference: ''
+review:
+  status: pending
+  reviewer_id: ''
+  reviewer_name: ''
+  reviewed_at: ''
+  content_sha256: ''

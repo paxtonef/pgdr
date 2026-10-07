@@ -1,0 +1,54 @@
+schema_version: 1
+providers:
+  none:
+    enabled: false
+  lmstudio:
+    enabled: false
+    recipient_name: LM Studio sur votre serveur
+    endpoint: http://127.0.0.1:1234/v1/chat/completions
+    model_id: null
+    api_key_env: null
+    max_images_per_request: null
+    max_request_bytes: null
+    max_batches: null
+    real_trial_completed: false
+  openrouter:
+    enabled: false
+    recipient_name: OpenRouter et FOURNISSEUR_AMONT_A_RENSEIGNER
+    endpoint: https://openrouter.ai/api/v1/chat/completions
+    model_id: null
+    api_key_env: OPENROUTER_API_KEY
+    max_images_per_request: null
+    max_request_bytes: null
+    max_batches: null
+    real_trial_completed: false
+    routing_verified: false
+    provider_routing:
+      only: []
+      allow_fallbacks: false
+llm_catalog:
+- name: Xiaomi MiMo-V2.6-Pro
+  provider_model_id: null
+  availability_verified: false
+  image_input_verified: false
+  admitted_for_v1_sorting: false
+v1:
+  model_role: order_only
+  complete_catalog_required: true
+  always_show_all_images_button: true
+  selection_origin: user
+  machine_verified: false
+  unknown_colour: stop_then_human_verification
+  photo_retention: none_after_journey
+  cpl_access: read_only
+package_version: '1.1'
+sorting_strategy: bounded_batches_then_round_robin_not_global_rank
+ui:
+  selection_key: entry_id
+  view_switch_preserves_selection: true
+  return_view: manual_order
+  return_requires_confirmation: true
+  return_preserves_colour: true
+  group_passages_by_image: true
+  deduplicate_passages: false
+  page_reference_per_section: true
