@@ -465,6 +465,11 @@ def premier_constat(p: Parcours) -> dict:
                    "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
                    "r5_rows": rows},
         "classification_status": w.findings_status,
+        # Verbatim linked warnings, shown inside the synthesis next to the
+        # manufacturer text: a stop instruction printed in a note must never
+        # appear only below a « non établi » label.
+        "linked_warnings": {x: [{"number": lw.number, "text": lw.text} for lw in c.entry(x).linked_warnings]
+                            for x in p.selection},
     }
 
 
@@ -773,6 +778,10 @@ function renderConstat(pc) {
     mt.append(make("p", e.manufacturer_text.label));
     for (const v of [e.manufacturer_text.documented_meaning, e.manufacturer_text.documented_instruction,
                      e.manufacturer_text.displayed_message]) if (v) quote(mt, v);
+    for (const w of (pc.linked_warnings[e.entry_id] || [])) {
+      const q = make("blockquote", null, "linked-warning"); q.append(make("strong", "Avertissement " + w.number + " "));
+      const s = make("span", w.text); s.lang = noticeLang; q.append(s); mt.append(q);
+    }
     if (e.immediate_safety.length) { const s = sec(block, "Sécurité immédiate", "immediate-safety"); for (const l of e.immediate_safety) s.append(make("p", l)); }
     sec(block, "Utilisation du véhicule", "vehicle-use").append(make("p", e.vehicle_use));
     const r = e.restrictions;

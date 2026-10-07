@@ -237,6 +237,7 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
         APPROVED_LABELS["operability = NOT_ESTABLISHED"])
     expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .not-established')).to_contain_text(
         APPROVED_LABELS["stop_vehicle_engine_off = NOT_ESTABLISHED"])
+    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .linked-warning span')).to_have_text(fx.SHARED_WARNING)
     expect(page.locator("#part1-t8")).to_have_text(APPROVED_BANNERS["T8"][0])
     order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
         id => document.getElementById(id).getBoundingClientRect().top)""")

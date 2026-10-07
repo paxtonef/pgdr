@@ -106,6 +106,8 @@ class TestPremierConstatWithoutClassification:
         assert APPROVED_LABELS["stop_vehicle_engine_off = NOT_ESTABLISHED"] in e["not_established"]
         assert APPROVED_LABELS["professional_attention = NOT_ESTABLISHED"] in e["not_established"]
         assert p["legend"] == APPROVED_BANNERS["T4"][0]
+        # The linked warnings are in the synthesis too (verbatim), not only below it.
+        assert pc["linked_warnings"]["fx_red_fluid"] == [{"number": "7)", "text": fx.SHARED_WARNING}]
         # The exact passage and its complete linked warnings stay available.
         red = r["sections"][0]
         assert "".join(s["text"] for s in red["warnings"][0]["text"] if "text" in s) == fx.SHARED_WARNING
