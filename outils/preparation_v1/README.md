@@ -11,7 +11,7 @@ bash installer.sh
 .venv/bin/python scripts/verifier_yaml.py
 ```
 
-L’installateur installe les dépendances et lance les 42 tests du paquet. Il n’applique aucune migration, ne charge aucune notice, n’envoie aucune photo et ne modifie pas les dépôts.
+L’installateur installe les dépendances et lance les 89 tests du paquet. Il n’applique aucune migration, ne charge aucune notice, n’envoie aucune photo et ne modifie pas les dépôts.
 
 Pour préparer des branches locales sur la base contenant E9 :
 
@@ -32,6 +32,8 @@ Le YAML runtime consigne aussi la conservation des sélections par ID, le retour
 Le gabarit `config/notice_a_remplir.yaml` utilise les noms de colonnes CPL pour les entrées. Il conserve couleur, état, message affiché, signal sonore, signification, consigne et références de voyants combinés. Les valeurs absentes de la source restent explicitement null ; aucune couleur ou consigne n’est inférée. L’ordre est celui de la liste d’entrées.
 
 Lire `CPL_MAPPING.md` pour la correspondance champ par champ et `cpl/migration_assets_proposal.sql` pour l’extension additive proposée : une table de fichiers/revue par document et une table image/page/ordre par entrée. Cette proposition doit être intégrée aux modèles et à la chaîne Alembic CPL. **Elle n’est pas appliquée, et la transaction d’import et le contrôle de revue à la lecture restent à coder.**
+
+Une entrée peut porter `linked_warnings` : les avertissements numérotés de la notice rattachés par renvoi imprimé (numéro, texte exact, page imprimée, page PDF) et les pictogrammes imprimés dans leur texte (position, texte avant/après, fichier, empreinte, pages, entrées représentées, justification). Le champ est facultatif (absent = aucun avertissement ; les manifestes v2 sans ce champ restent valides). `--export-cpl` les exporte intégralement sous `entry_warnings`, et deux tables proposées (non appliquées) les reçoivent.
 
 Chaque entrée doit avoir une image PNG/JPEG valide, une page PDF existante et une référence imprimée. La validation vérifie les fichiers et leurs empreintes, l’absence de chemins sortant du dossier, les IDs uniques et les références combinées dans la même notice. Elle ne démontre pas la justesse du texte constructeur : cette association est vérifiée par une personne.
 
@@ -55,7 +57,7 @@ Chaque entrée doit avoir une image PNG/JPEG valide, une page PDF existante et u
 .venv/bin/python scripts/notices.py /chemin/notice/manifest.yaml --select ID_1 ID_2
 ```
 
-Une modification du manifeste, de l’ordre, des textes, de l’applicabilité ou des empreintes rend la validation obsolète. Une modification des fichiers est refusée. Le contenu exporté n’est PAS chargé dans CPL. La revue est une attestation nommée ; l’authentification et l’audit du vérificateur restent à raccorder côté CPL. Il ne s’agit pas d’une signature cryptographique.
+Une modification du manifeste, de l’ordre, des textes, des avertissements liés ou de leurs pictogrammes, de l’applicabilité ou des empreintes rend la validation obsolète. Une modification des fichiers est refusée. Le contenu exporté n’est PAS chargé dans CPL. La revue est une attestation nommée ; l’authentification et l’audit du vérificateur restent à raccorder côté CPL. Il ne s’agit pas d’une signature cryptographique.
 
 ## Tri : essai nécessaire, désactivé par défaut
 

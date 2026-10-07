@@ -17,6 +17,17 @@ This package defines and exports the mapping; it does not execute an import. `no
 | review.content_sha256, reviewer_id/name, reviewed_at/status | Proposed document-assets review columns |
 | image_file, image_sha256, pdf_page, page_reference | Proposed manufacturer_knowledge_entry_assets |
 | entries list position | Proposed manual_order (zero-based) |
+| linked_warnings (optional per entry; absent = none) | Proposed manufacturer_knowledge_entry_warnings, one row per entry/warning link |
+| linked_warnings list position | warning_order (zero-based) |
+| linked_warnings[].number, text | warning_number, warning_text (exact text, stop instructions included) |
+| linked_warnings[].printed_page, pdf_page | printed_page, pdf_page |
+| linked_warnings[].inline_pictograms | Proposed manufacturer_knowledge_warning_pictograms |
+| inline_pictograms list position | pictogram_order (zero-based) |
+| inline_pictograms[].position, text_before, text_after | Same columns; position is a character offset in the warning text |
+| inline_pictograms[].image_file, image_sha256, pdf_page, printed_page | Same columns |
+| inline_pictograms[].identified_entry_ids, identification_basis | Same columns; ids JSONB, may be empty when the pictogram is not catalogued |
+
+`--export-cpl` emits every linked warning under `entry_warnings` (entry_id, warning_order, all warning fields, and every inline pictogram with all its fields plus pictogram_order). Warning and pictogram key sets are exact: an unknown key rejects the manifest rather than being silently dropped. The same numbered warning attached to several entries appears once per entry. Validation checks pages, pictogram files and hashes, that each position matches text_before/text_after in the warning text, and that identified entries exist in the document. The review fingerprint already covers these fields: any change to a warning or pictogram, or its removal, makes the review obsolete.
 
 One V1 catalogue item corresponds to one existing CPL entry and one image association. An image representing different fixed/flashing entries must have distinct entry IDs and retain the documented variants; do not collapse those entries. Identical images/texts may legitimately repeat.
 

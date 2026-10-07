@@ -28,6 +28,7 @@ entries:
   image_sha256: ''
   pdf_page: null
   page_reference: ''
+  linked_warnings: []
 review:
   status: pending
   reviewer_id: ''

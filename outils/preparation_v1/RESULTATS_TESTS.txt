@@ -1,8 +1,9 @@
-Correction 1.1 — 2026-10-06
-42 tests réussis, aucun ignoré.
+Export des avertissements liés — 2026-10-07
+89 tests réussis, aucun ignoré (42 précédents + 20 nouveaux sur les avertissements liés + 27 tests de validation rejoués sur une notice fictive portant des avertissements).
 Dépendances utilisées : PyYAML 6.0.3, pypdf 6.10.0, Pillow 12.3.0.
 Validation notice : fichiers, formats, empreintes, pages, chemins, IDs, champs CPL, références combinées, identité/date/revue obsolète.
+Avertissements liés : champs exacts, texte, pages, pictogrammes (fichier, empreinte, position cohérente avec le texte, entrées représentées, justification) ; export complet ; revue obsolète après modification ou retrait.
 Tri : JSON brut/bloc, contrat strict, simulation de 70 images en 18 requêtes de 5 images maximum.
-Les tests utilisent des PDF/images synthétiques ; pas de manuel réel admis, pas de fournisseur réel appelé.
+Les tests utilisent des PDF/images et une notice synthétiques ; pas de manuel réel admis, pas de fournisseur réel appelé.
 Vérification YAML réussie ; syntaxe installer.sh valide.
 Aucun import CPL, aucune migration PostgreSQL exécutée, aucun test navigateur, aucune suite complète de V1 web.

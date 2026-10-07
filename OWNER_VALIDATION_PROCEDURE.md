@@ -89,7 +89,7 @@ without touching the PGDR environment:
 
 ```bash
 cd outils/preparation_v1
-bash installer.sh                      # creates .venv/, installs its requirements, runs its 42 tests
+bash installer.sh                      # creates .venv/, installs its requirements, runs its 89 tests
 .venv/bin/python scripts/verifier_yaml.py
 ```
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Validate a curated manual package and export explicit CPL mappings, without DB writes."""
-import argparse, hashlib, json, re
+import argparse, copy, hashlib, json, re
 from datetime import datetime, timezone
 from pathlib import Path
 import yaml
@@ -9,6 +9,10 @@ from PIL import Image
 
 ENTRY_COLUMNS=('entry_id','manufacturer_designation','symbol_descriptor','colour','state','displayed_message','audible_signal','documented_meaning','documented_instruction','combined_with_entry_ids')
 ASSET_COLUMNS=('image_file','image_sha256','pdf_page','page_reference')
+# Optional per-entry linked_warnings (numbered manual warnings attached by printed cross-references).
+# Exact key sets: an unknown key is rejected rather than silently dropped at export/import.
+WARNING_COLUMNS=('number','text','printed_page','pdf_page','inline_pictograms')
+PICTOGRAM_COLUMNS=('position','text_before','text_after','image_file','image_sha256','pdf_page','printed_page','identified_entry_ids','identification_basis')
 
 def relative_file(root,name):
     if not isinstance(name,str) or not name or Path(name).is_absolute(): raise ValueError('Relative file path required')
@@ -27,6 +31,35 @@ def content_fingerprint(d):
 def check_hash(file,expected):
     if not isinstance(expected,str) or not re.fullmatch('[0-9a-f]{64}',expected): raise ValueError('SHA256 required')
     if hashlib.sha256(file.read_bytes()).hexdigest()!=expected: raise ValueError('File fingerprint mismatch')
+
+def check_image(root,name,sha):
+    image=relative_file(root,name); check_hash(image,sha)
+    with Image.open(image) as im:
+        if im.format not in ('PNG','JPEG'): raise ValueError('PNG/JPEG required')
+        im.verify()
+
+def check_page(n,pages):
+    if type(n) is not int or not 1<=n<=pages: raise ValueError('PDF page out of range')
+
+def check_warnings(root,e,pages,seen):
+    ws=e.get('linked_warnings',[])  # absent = no linked warning (schema v2 manifests without the field)
+    if not isinstance(ws,list): raise ValueError('Invalid linked warnings')
+    for w in ws:
+        if not isinstance(w,dict) or set(w)!=set(WARNING_COLUMNS): raise ValueError('Invalid linked warning fields')
+        for k in ('number','text','printed_page'): nonempty(w[k],k)
+        check_page(w['pdf_page'],pages)
+        if not isinstance(w['inline_pictograms'],list): raise ValueError('Invalid inline pictograms')
+        for p in w['inline_pictograms']:
+            if not isinstance(p,dict) or set(p)!=set(PICTOGRAM_COLUMNS): raise ValueError('Invalid inline pictogram fields')
+            for k in ('printed_page','identification_basis'): nonempty(p[k],k)
+            for k in ('text_before','text_after'):
+                if not isinstance(p[k],str): raise ValueError('Invalid pictogram context')
+            # position = character offset in the warning text where the pictogram is printed
+            pos=p['position']
+            if type(pos) is not int or not 0<=pos<=len(w['text']) or not w['text'][:pos].endswith(p['text_before']) or not w['text'][pos:].lstrip().startswith(p['text_after']): raise ValueError('Pictogram position does not match warning text')
+            check_page(p['pdf_page'],pages); check_image(root,p['image_file'],p['image_sha256'])
+            ids=p['identified_entry_ids']  # may be empty: pictogram not catalogued, explained by identification_basis
+            if not isinstance(ids,list) or any(not isinstance(x,str) or x not in seen for x in ids) or len(set(ids))!=len(ids): raise ValueError('Invalid pictogram entry references')
 
 def read_structure(path):
     d=yaml.safe_load(path.read_text(encoding='utf-8')); root=path.parent
@@ -52,15 +85,12 @@ def read_structure(path):
         for k in ('symbol_descriptor','colour','displayed_message','audible_signal','documented_instruction'):
             if e[k] is not None and not isinstance(e[k],str): raise ValueError('Invalid optional text')
         if e['state'] not in (None,'fixed','flashing','unknown'): raise ValueError('Invalid documented state')
-        if type(e['pdf_page']) is not int or not 1<=e['pdf_page']<=pages: raise ValueError('PDF page out of range')
-        image=relative_file(root,e['image_file']); check_hash(image,e['image_sha256'])
-        with Image.open(image) as im:
-            if im.format not in ('PNG','JPEG'): raise ValueError('PNG/JPEG required')
-            im.verify()
+        check_page(e['pdf_page'],pages); check_image(root,e['image_file'],e['image_sha256'])
         ids=e['combined_with_entry_ids']
         if not isinstance(ids,list) or any(not isinstance(x,str) for x in ids) or len(set(ids))!=len(ids): raise ValueError('Invalid combined IDs')
     for e in entries:
         if any(x not in seen or x==e['entry_id'] for x in e['combined_with_entry_ids']): raise ValueError('Invalid combined reference')
+        check_warnings(root,e,pages,seen)
     return d
 
 def load_catalog(path):
@@ -97,7 +127,11 @@ def cpl_rows(d):
     return {'status':'validated_export_NOT_imported','document':doc,
             'entries':[{k:e[k] for k in ENTRY_COLUMNS} for e in d['entries']],
             'document_asset':{k:d[k] for k in ('manual_file','manual_sha256','review')},
-            'entry_assets':[dict(entry_id=e['entry_id'],manual_order=i,**{k:e[k] for k in ASSET_COLUMNS}) for i,e in enumerate(d['entries'])]}
+            'entry_assets':[dict(entry_id=e['entry_id'],manual_order=i,**{k:e[k] for k in ASSET_COLUMNS}) for i,e in enumerate(d['entries'])],
+            # Every linked warning of every entry, complete: exact text, pages and inline pictograms in manifest order.
+            'entry_warnings':[dict(entry_id=e['entry_id'],warning_order=i,**{k:w[k] for k in WARNING_COLUMNS if k!='inline_pictograms'},
+                                   inline_pictograms=[dict(pictogram_order=j,**{k:copy.deepcopy(p[k]) for k in PICTOGRAM_COLUMNS}) for j,p in enumerate(w['inline_pictograms'])])
+                              for e in d['entries'] for i,w in enumerate(e.get('linked_warnings',[]))]}
 
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument('manifest',type=Path); ap.add_argument('--select',nargs='+'); ap.add_argument('--fingerprint',action='store_true'); ap.add_argument('--export-cpl',action='store_true'); a=ap.parse_args()

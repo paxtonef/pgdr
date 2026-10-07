@@ -62,6 +62,59 @@ class NoticeValidation(unittest.TestCase):
     def test_review_obsolete_after_reorder(self): self.d['entries'].reverse(); self.rejected()
     def test_null_colour_preserved(self): self.d['entries'][0]['colour']=None; self.approve(); self.assertIsNone(self.valid()['entries'][0]['colour'])
 
+class LinkedWarnings(NoticeValidation):
+    # Synthetic notice only: invented warnings and pictograms, no manufacturer content.
+    STOP='If the test symbol lights up while moving, stop the vehicle immediately and call a test workshop.'
+    def setUp(self):
+        super().setUp()
+        Image.new('RGB',(4,4),'black').save(self.root/'picto.png')
+        self.picto_sha=hashlib.sha256((self.root/'picto.png').read_bytes()).hexdigest()
+        self.d['entries'][0]['linked_warnings']=[
+            {'number':'1)','text':self.STOP,'printed_page':'A-1','pdf_page':1,'inline_pictograms':[
+                self.picto(self.STOP,12,['0']),self.picto(self.STOP,len(self.STOP),[],'Not catalogued: shape absent from synthetic catalogue.')]},
+            {'number':'2)','text':'A second synthetic warning for the same entry.','printed_page':'A-2','pdf_page':1,'inline_pictograms':[]}]
+        self.d['entries'][1]['linked_warnings']=[]
+        self.approve()
+    def picto(self,text,pos,ids,basis='Same synthetic drawing as entry 0.'):
+        return {'position':pos,'text_before':text[:pos][-8:],'text_after':text[pos:].lstrip()[:8],'image_file':'picto.png','image_sha256':self.picto_sha,'pdf_page':1,'printed_page':'A-1','identified_entry_ids':ids,'identification_basis':basis}
+    def exported(self): return cpl_rows(self.valid())['entry_warnings']
+    def test_stop_instruction_exported_identically_with_pages_and_pictograms(self):
+        w=self.exported()[0]; src=self.d['entries'][0]['linked_warnings'][0]
+        self.assertEqual((w['entry_id'],w['warning_order']),('0',0)); self.assertEqual(w['text'],self.STOP); self.assertIn('stop the vehicle immediately',w['text'])
+        self.assertEqual({k:w[k] for k in ('number','printed_page','pdf_page')},{'number':'1)','printed_page':'A-1','pdf_page':1})
+        self.assertEqual([{k:v for k,v in p.items() if k!='pictogram_order'} for p in w['inline_pictograms']],src['inline_pictograms'])
+        self.assertEqual([p['pictogram_order'] for p in w['inline_pictograms']],[0,1])
+    def test_several_warnings_for_one_entry(self):
+        out=self.exported(); self.assertEqual([(w['entry_id'],w['warning_order'],w['number']) for w in out],[('0',0,'1)'),('0',1,'2)')])
+        self.assertEqual(out[1]['inline_pictograms'],[])
+    def test_entry_without_warning(self):
+        self.assertNotIn('1',[w['entry_id'] for w in self.exported()])
+        del self.d['entries'][1]['linked_warnings']; self.approve(); self.assertNotIn('1',[w['entry_id'] for w in self.exported()])
+    def test_manifest_without_any_warning_field_still_valid(self):
+        for e in self.d['entries']: e.pop('linked_warnings')
+        self.approve(); self.assertEqual(self.exported(),[])
+    def test_obsolete_after_warning_text_change(self): self.d['entries'][0]['linked_warnings'][0]['text']=self.STOP.replace('immediately','soon'); self.rejected()
+    def test_obsolete_after_warning_printed_page_change(self): self.d['entries'][0]['linked_warnings'][0]['printed_page']='A-9'; self.rejected()
+    def test_obsolete_after_warning_pdf_page_change(self):
+        pdf=PdfWriter(); pdf.add_blank_page(width=100,height=100); pdf.add_blank_page(width=100,height=100); pdf.write(str(self.root/'manual.pdf'))
+        self.d['manual_sha256']=hashlib.sha256((self.root/'manual.pdf').read_bytes()).hexdigest(); self.approve(); self.valid()
+        self.d['entries'][0]['linked_warnings'][0]['pdf_page']=2; self.rejected()
+    def test_obsolete_after_pictogram_reference_change(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][1]['identified_entry_ids']=['1']; self.rejected()
+    def test_obsolete_after_pictogram_basis_change(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][0]['identification_basis']='Changed'; self.rejected()
+    def test_obsolete_after_pictogram_removed(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'].pop(); self.rejected()
+    def test_obsolete_after_pictogram_image_change(self):
+        Image.new('RGB',(4,4),'white').save(self.root/'picto2.png')
+        p=self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][0]; p['image_file']='picto2.png'; p['image_sha256']=hashlib.sha256((self.root/'picto2.png').read_bytes()).hexdigest(); self.rejected()
+    def test_obsolete_after_warning_removed(self): self.d['entries'][0]['linked_warnings'].pop(0); self.rejected()
+    def test_obsolete_after_warning_field_removed(self): del self.d['entries'][0]['linked_warnings']; self.rejected()
+    def test_pictogram_hash_mismatch(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][0]['image_sha256']='0'*64; self.rejected(True)
+    def test_pictogram_position_mismatch(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][0]['position']=3; self.rejected(True)
+    def test_pictogram_unknown_entry(self): self.d['entries'][0]['linked_warnings'][0]['inline_pictograms'][0]['identified_entry_ids']=['other']; self.rejected(True)
+    def test_warning_unknown_field_rejected_not_dropped(self): self.d['entries'][0]['linked_warnings'][0]['extra']='x'; self.rejected(True)
+    def test_warning_missing_page(self): del self.d['entries'][0]['linked_warnings'][0]['pdf_page']; self.rejected(True)
+    def test_warning_page_out_of_range(self): self.d['entries'][0]['linked_warnings'][0]['pdf_page']=2; self.rejected(True)
+    def test_warning_empty_text(self): self.d['entries'][0]['linked_warnings'][0]['text']=''; self.rejected(True)
+
 class SortContract(unittest.TestCase):
     def test_single_json_fence(self): self.assertEqual(permutation('```json\n{"ordered_entry_ids":["b","a"]}\n```',['a','b']),['b','a'])
     def test_comment_outside_fence_rejected(self):
