@@ -48,7 +48,7 @@ packages = ["src/pgdr"]
 "src/pgdr/config/symptom_taxonomy.yaml" = "pgdr/config/symptom_taxonomy.yaml"
 "src/pgdr/config/questions.yaml" = "pgdr/config/questions.yaml"
 "src/pgdr/config/business_rules.yaml" = "pgdr/config/business_rules.yaml"
-"src/pgdr/config/v1_fallback_screens.en.yaml" = "pgdr/config/v1_fallback_screens.en.yaml"
+"src/pgdr/config/v1_fallback_screens.fr.yaml" = "pgdr/config/v1_fallback_screens.fr.yaml"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

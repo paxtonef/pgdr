@@ -1,0 +1,34 @@
+# Traduction française VALIDÉE de fallback_screens.en.yaml (écrans de repli du parcours V1).
+# Validation humaine nommée : Fred Cobral (fredcbrl@gmail.com), 2026-10-07.
+# Seule version affichée par l'interface V1 (copie identique : src/pgdr/config/v1_fallback_screens.fr.yaml).
+# Toute modification de ce texte exige une nouvelle validation nommée.
+schema_version: 1
+status: VALIDE
+validation:
+  validated_by: Fred Cobral
+  validator_id: fredcbrl@gmail.com
+  validated_on: '2026-10-07'
+  scope: écrans red_or_uncertain et other_colour, bouton de retour compris
+translates: fallback_screens.en.yaml
+translates_sha256: a0cd129b336bac0e9b9e47e7512885df70666ed2e87d997c944bb8dcc75b2d9e
+screens:
+  red_or_uncertain:
+    heading: Arrêtez-vous en sécurité — vérification humaine nécessaire
+    paragraphs:
+    - Arrêtez le véhicule dès que vous pouvez le faire en sécurité. Si vous êtes déjà
+      à l'arrêt, restez à l'arrêt.
+    - Nous n'avons pas pu faire correspondre votre voyant à une image de la notice. Sa
+      signification et la consigne du constructeur applicable n'ont pas été établies.
+    - Faites vérifier la situation par une personne avant de reprendre la route.
+  other_colour:
+    heading: Voyant non identifié — vérification humaine nécessaire
+    paragraphs:
+    - Nous n'avons pas pu faire correspondre votre voyant à une image de la notice. La
+      couleur que vous avez choisie ne suffit pas à établir sa signification ni à savoir
+      s'il est sûr de rouler.
+    - Ce résultat ne vous autorise pas à continuer à rouler. Faites vérifier la situation
+      par une personne avant de décider de continuer.
+shared:
+  return_button: Revenir aux images de la notice
+  show_status_indicator: false
+  handoff_implied: false

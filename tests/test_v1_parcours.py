@@ -365,9 +365,12 @@ class TestParcoursFlow:
         assert red["audible_signal"] == "A fictive chime sounds."
         assert red["where_provided"] is True and red["startup_check"] == fx.RED_STARTUP
         assert (red["page_reference"], red["pdf_page"]) == ("F-1", 1)
-        assert red["field_sources"] == [{"field": "audible_signal", "text": "A fictive chime sounds.",
+        assert (red["colour"], red["state"], amber["colour"]) == ("rouge", "fixe", "ambre")
+        assert "curation_notes" not in red and "Fictive curation note." not in str(r)
+        assert r["document"]["language_note"] == (
+            "Texte du constructeur reproduit dans la langue de la notice disponible (anglais).")
+        assert red["field_sources"] == [{"field": "signal sonore", "text": "A fictive chime sounds.",
                                          "printed_page": "F-3", "pdf_page": 3}]
-        assert red["curation_notes"] == ["Fictive curation note."]
         # The same numbered warning linked to two images is shown complete in BOTH sections.
         for s in (red, amber):
             assert len(s["warnings"]) == 1
@@ -378,17 +381,17 @@ class TestParcoursFlow:
         assert amber["where_provided"] is False and amber["startup_check"] is None
         assert joined(amber["meaning"]) == src["fx_amber_sensor"]["documented_meaning"]
 
-    def test_fallback_red_and_other_with_validated_english(self, monkeypatch, notice, client, no_provider):
+    def test_fallback_red_and_other_with_validated_french(self, monkeypatch, notice, client, no_provider):
         wire(monkeypatch, notice, dev_trial=True)
         pid = opened(client)
-        en = yaml.safe_load((PREP / "fallback_screens.en.yaml").read_text(encoding="utf-8"))
+        en = yaml.safe_load((PREP / "fallback_screens.fr.yaml").read_text(encoding="utf-8"))
         assert client.post(f"/api/v1/parcours/{pid}/colour", json={"colour": "rouge"}).status_code == 409
         for reason, colour, key in (("none_match", "rouge", "red_or_uncertain"), ("dont_know", "incertain", "red_or_uncertain"),
                                     ("none_match", "vert", "other_colour"), ("dont_know", "orange", "other_colour"),
                                     ("none_match", "blanc", "other_colour")):
             assert client.post(f"/api/v1/parcours/{pid}/no-match", json={"reason": reason}).json()["phase"] == "colour"
             s = client.post(f"/api/v1/parcours/{pid}/colour", json={"colour": colour}).json()["screen"]
-            assert s["key"] == key and s["lang"] == "en"
+            assert s["key"] == key and s["lang"] == "fr"
             assert s["heading"] == en["screens"][key]["heading"]
             assert s["paragraphs"] == en["screens"][key]["paragraphs"]
         assert client.post(f"/api/v1/parcours/{pid}/colour", json={"colour": "violet"}).status_code == 422
@@ -429,19 +432,34 @@ def _flow_texts(monkeypatch, notice, client) -> str:
 
 class TestContentRules:
     def test_packaged_fallback_identical_to_validated_copy(self):
-        packaged = REPO / "src" / "pgdr" / "config" / "v1_fallback_screens.en.yaml"
-        assert packaged.read_bytes() == (PREP / "fallback_screens.en.yaml").read_bytes()
+        packaged = REPO / "src" / "pgdr" / "config" / "v1_fallback_screens.fr.yaml"
+        assert packaged.read_bytes() == (PREP / "fallback_screens.fr.yaml").read_bytes()
+        assert not (PREP / "fallback_screens.fr.BROUILLON_NON_VALIDE.yaml").exists()
 
-    def test_french_draft_never_served(self, monkeypatch, notice, client):
-        draft = yaml.safe_load((PREP / "fallback_screens.fr.BROUILLON_NON_VALIDE.yaml").read_text(encoding="utf-8"))
-        assert draft["status"] == "BROUILLON_NON_VALIDE"
+    def test_french_translation_carries_named_validation(self):
+        fr = yaml.safe_load((PREP / "fallback_screens.fr.yaml").read_text(encoding="utf-8"))
+        assert fr["status"] == "VALIDE"
+        assert fr["validation"]["validated_by"] == "Fred Cobral"
+        assert fr["validation"]["validated_on"] == "2026-10-07"
+        en = (PREP / "fallback_screens.en.yaml").read_bytes()
+        assert fr["translates_sha256"] == hashlib.sha256(en).hexdigest()
+
+    def test_unvalidated_translation_refused(self):
+        fr = yaml.safe_load((PREP / "fallback_screens.fr.yaml").read_text(encoding="utf-8"))
+        for broken in (dict(fr, status="BROUILLON_NON_VALIDE"), dict(fr, validation={})):
+            with pytest.raises(RuntimeError):
+                v1.validated_fallback(broken)
+
+    def test_validated_french_served_english_not(self, monkeypatch, notice, client):
         texts = _flow_texts(monkeypatch, notice, client)
-        phrases = [s["heading"] for s in draft["screens"].values()]
-        phrases += [p for s in draft["screens"].values() for p in s["paragraphs"]]
-        phrases.append(draft["shared"]["return_button"])
-        for p in phrases:
-            assert p not in texts
-        assert "BROUILLON" not in Path(v1.__file__).read_text(encoding="utf-8")
+        fr = yaml.safe_load((PREP / "fallback_screens.fr.yaml").read_text(encoding="utf-8"))
+        en = yaml.safe_load((PREP / "fallback_screens.en.yaml").read_text(encoding="utf-8"))
+        for s in fr["screens"].values():
+            assert s["heading"] in texts and all(p in texts for p in s["paragraphs"])
+        assert fr["shared"]["return_button"] in texts
+        for s in en["screens"].values():
+            assert s["heading"] not in texts and not any(p in texts for p in s["paragraphs"])
+        assert en["shared"]["return_button"] not in texts
 
     def test_consent_text_announces_no_external_provider(self):
         runtime = yaml.safe_load((PREP / "runtime.yaml").read_text(encoding="utf-8"))

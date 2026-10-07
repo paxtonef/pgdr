@@ -87,8 +87,12 @@ driver's own selection by `entry_id` → explicit confirmation → exact
 restitution (one section per image: image, designation, exact text and
 pictograms, complete linked warnings, « selon équipement », « s'allume au
 démarrage », pages). « Aucune ne correspond » / « Je ne sais pas » → colour →
-the validated ENGLISH fallback screens (`src/pgdr/config/v1_fallback_screens.en.yaml`,
-byte-identical to `outils/preparation_v1/config/fallback_screens.en.yaml`).
+the fallback screens in their VALIDATED French translation
+(`src/pgdr/config/v1_fallback_screens.fr.yaml`, byte-identical to
+`outils/preparation_v1/config/fallback_screens.fr.yaml`, named validation
+Fred Cobral, 2026-10-07; an unvalidated file is refused). Interface texts are
+French; manufacturer texts stay in the notice language, untranslated, with a
+language note above the restitution. Curation notes are not shown.
 No model provider is called. The notice is read by
 `pgdr.adapters.manifest_notice_repository.ManifestNoticeRepository` (read-only
 KnowledgeRepositoryPort): it recomputes the content fingerprint, checks every

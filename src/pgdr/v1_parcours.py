@@ -11,10 +11,12 @@ Boundaries, all deliberate:
     by stable entry_id.
   * Restitution is exact: one section per chosen image, texts as stored, no
     merging, deduplication or rewording.
-  * Fallback screens use the validated ENGLISH texts only
-    (config/v1_fallback_screens.en.yaml, identical to
-    outils/preparation_v1/config/fallback_screens.en.yaml). No French
-    translation is ever served as active safety guidance.
+  * Fallback screens use the VALIDATED French translation only
+    (config/v1_fallback_screens.fr.yaml, identical to
+    outils/preparation_v1/config/fallback_screens.fr.yaml; named validation
+    recorded in the file). An unvalidated file is refused.
+  * Interface texts are French; manufacturer texts are shown as stored, in
+    the notice language, never translated. Curation notes are not shown.
   * DEV TRIAL (PGDR_V1_DEV_TRIAL=1) is the only mode in which a notice whose
     applicability to the vehicle is not established may be shown, and then
     with a permanent banner on every screen.
@@ -60,17 +62,33 @@ COLOURS = (
     ("bleu", "Bleu"), ("blanc", "Blanc"), ("gris", "Gris"), ("incertain", "Je ne sais pas / incertain"),
 )
 _RED_OR_UNCERTAIN = {"rouge", "incertain"}
-RETURN_LABEL = "Revenir aux images"
 
 _MAX_PARCOURS = 1000
 
 
+LANGUAGE_NOTE = {"en": "Texte du constructeur reproduit dans la langue de la notice disponible (anglais)."}
+
+COLOUR_LABELS = {"red": "rouge", "amber": "ambre", "yellow": "jaune", "green": "vert", "blue": "bleu",
+                 "white": "blanc", "grey": "gris"}
+STATE_LABELS = {"fixed": "fixe", "flashing": "clignotant", "unknown": "non précisé"}
+FIELD_LABELS = {"manufacturer_designation": "désignation", "symbol_descriptor": "descripteur", "colour": "couleur",
+                "state": "état", "displayed_message": "message affiché", "audible_signal": "signal sonore",
+                "documented_meaning": "texte de la notice", "documented_instruction": "consigne"}
+
+
 def load_fallback_screens() -> dict:
-    """The validated English fallback copy, packaged with PGDR."""
-    text = resources.files("pgdr.config").joinpath("v1_fallback_screens.en.yaml").read_text(encoding="utf-8")
-    cfg = yaml.safe_load(text)
+    """The validated French fallback copy, packaged with PGDR. Refused unless
+    it carries a named validation."""
+    text = resources.files("pgdr.config").joinpath("v1_fallback_screens.fr.yaml").read_text(encoding="utf-8")
+    return validated_fallback(yaml.safe_load(text))
+
+
+def validated_fallback(cfg: dict) -> dict:
     if cfg.get("schema_version") != 1 or set(cfg["screens"]) != {"red_or_uncertain", "other_colour"}:
         raise RuntimeError("invalid fallback screens")
+    v = cfg.get("validation") or {}
+    if cfg.get("status") != "VALIDE" or not v.get("validated_by") or not v.get("validated_on"):
+        raise RuntimeError("fallback screens not validated")
     if cfg["shared"].get("handoff_implied") is not False or cfg["shared"].get("show_status_indicator") is not False:
         raise RuntimeError("fallback screens must not imply a handoff or a status")
     return cfg
@@ -164,8 +182,8 @@ def _section(pid: str, e: NoticeEntry) -> dict:
         "manual_order": e.manual_order,
         "image": _asset_url(pid, e.image_sha256),
         "designation": e.designation,
-        "colour": e.colour,
-        "state": e.state,
+        "colour": COLOUR_LABELS.get(e.colour, e.colour),
+        "state": STATE_LABELS.get(e.state, e.state),
         "symbol_descriptor": e.symbol_descriptor,
         "displayed_message": e.displayed_message,
         "audible_signal": e.audible_signal,
@@ -181,17 +199,17 @@ def _section(pid: str, e: NoticeEntry) -> dict:
             for w in e.linked_warnings
         ],
         "field_sources": [
-            {"field": s.field, "text": s.text, "printed_page": s.printed_page, "pdf_page": s.pdf_page}
+            {"field": FIELD_LABELS.get(s.field, s.field), "text": s.text, "printed_page": s.printed_page, "pdf_page": s.pdf_page}
             for s in e.field_sources
         ],
-        "curation_notes": list(e.notes),
     }
 
 
 def _document(c: NoticeCatalogue) -> dict:
     d = c.document
     return {"document_id": d.document_id, "title": d.document_title, "edition": d.edition,
-            "language": c.language, "content_sha256": c.content_sha256}
+            "language": c.language, "language_note": LANGUAGE_NOTE.get(c.language),
+            "content_sha256": c.content_sha256}
 
 
 def _state(pid: str, p: Parcours) -> dict:
@@ -203,7 +221,7 @@ def _state(pid: str, p: Parcours) -> dict:
         "consent_text": list(CONSENT_TEXT), "consent": p.consent,
         "selection": list(p.selection), "confirmed": p.confirmed, "colour": p.colour,
         "colours": [{"key": k, "label": v} for k, v in COLOURS],
-        "return_label": RETURN_LABEL,
+        "return_label": load_fallback_screens()["shared"]["return_button"],
     }
 
 
@@ -385,7 +403,7 @@ def colour(pid: str, req: ColourRequest):
     cfg = load_fallback_screens()
     key = "red_or_uncertain" if req.colour in _RED_OR_UNCERTAIN else "other_colour"
     screen = cfg["screens"][key]
-    return {**_state(pid, p), "screen": {"key": key, "lang": "en", "heading": screen["heading"],
+    return {**_state(pid, p), "screen": {"key": key, "lang": "fr", "heading": screen["heading"],
                                          "paragraphs": list(screen["paragraphs"])}}
 
 
@@ -441,7 +459,6 @@ V1_HTML = """<!DOCTYPE html>
  .label { font-weight: 600; }
  .tag { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 8px; margin-right: 6px; }
  .page { color: #444; font-size: .9em; }
- .notes { font-size: .85em; color: #555; }
  .fallback h1 { color: #b00020; }
  .muted { color: #555; font-size: .9em; }
  [hidden] { display: none !important; }
@@ -492,33 +509,34 @@ V1_HTML = """<!DOCTYPE html>
   <p>Vous avez choisi ces images :</p>
   <div class="grid" id="confirmation-grid"></div>
   <button class="primary" id="confirm">Je confirme : ces images correspondent à ce que je vois</button>
-  <button class="return">Revenir aux images</button>
+  <button class="return">Revenir aux images de la notice</button>
  </section>
 
  <section class="screen" id="screen-restitution" hidden>
   <h1>Ce que dit la notice</h1>
-  <p class="muted" id="restitution-document"></p>
-  <p class="muted">Textes de la notice reproduits tels quels, dans la langue de la notice, sans traduction ni reformulation. Ils ne constituent pas une autorisation de rouler.</p>
+  <p class="muted">Notice : <span id="restitution-document"></span></p>
+  <p id="language-note" hidden></p>
+  <p class="muted">Ces extraits de la notice ne constituent pas une autorisation de rouler.</p>
   <div id="restitution"></div>
-  <button class="return">Revenir aux images</button>
+  <button class="return">Revenir aux images de la notice</button>
  </section>
 
  <section class="screen" id="screen-colour" hidden>
   <h1>De quelle couleur est le voyant ?</h1>
   <div id="colour-choices"></div>
-  <button class="return">Revenir aux images</button>
+  <button class="return">Revenir aux images de la notice</button>
  </section>
 
  <section class="screen fallback" id="screen-fallback" hidden>
-  <div id="fallback-content" lang="en"></div>
-  <button class="return">Revenir aux images</button>
+  <div id="fallback-content" lang="fr"></div>
+  <button class="return">Revenir aux images de la notice</button>
  </section>
 </main>
 <script>
 "use strict";
 const pid = new URLSearchParams(location.search).get("p");
 const api = "/api/v1/parcours/" + encodeURIComponent(pid || "");
-let state = null, selected = new Set(), photoUrl = null;
+let state = null, selected = new Set(), photoUrl = null, noticeLang = "en";
 
 function el(id) { return document.getElementById(id); }
 function make(tag, text, cls) { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; }
@@ -578,13 +596,14 @@ function updateCount() {
 }
 async function openCatalogue() {
   const c = await call("/catalogue");
+  noticeLang = c.document.language || "en";
   selected = new Set(c.selection);
   const grid = el("catalogue-grid"); grid.replaceChildren();
   for (const e of c.entries) {
     const t = make("button", null, "tile");
     t.type = "button"; t.dataset.entryId = e.entry_id;
     t.setAttribute("aria-pressed", selected.has(e.entry_id) ? "true" : "false");
-    const img = make("img"); img.src = e.image; img.alt = e.alt; t.append(img, make("span", "n° " + (e.manual_order + 1), "n"));
+    const img = make("img"); img.src = e.image; img.alt = e.alt; img.lang = noticeLang; t.append(img, make("span", "n° " + (e.manual_order + 1), "n"));
     t.onclick = () => {
       if (selected.has(e.entry_id)) selected.delete(e.entry_id); else selected.add(e.entry_id);
       t.setAttribute("aria-pressed", selected.has(e.entry_id) ? "true" : "false"); updateCount();
@@ -597,7 +616,7 @@ el("selection-continue").onclick = async () => {
   try {
     const s = await call("/selection", {entry_ids: [...selected]}); applyState(s);
     const g = el("confirmation-grid"); g.replaceChildren();
-    for (const c of s.chosen) { const d = make("div", null, "tile"); d.dataset.entryId = c.entry_id; const i = make("img"); i.src = c.image; i.alt = c.alt; d.append(i); g.append(d); }
+    for (const c of s.chosen) { const d = make("div", null, "tile"); d.dataset.entryId = c.entry_id; const i = make("img"); i.src = c.image; i.alt = c.alt; i.lang = noticeLang; d.append(i); g.append(d); }
     show("screen-confirmation");
   } catch (e) { fail(e); }
 };
@@ -607,34 +626,44 @@ function exact(segments, tag) {
     if (s.text !== undefined) n.append(document.createTextNode(s.text));
     else { const i = make("img"); i.src = s.pictogram; i.alt = "[pictogramme imprimé, p. " + s.printed_page + "]"; n.append(i); }
   }
-  n.lang = "en"; return n;
+  n.lang = noticeLang; return n;
 }
 function field(article, label, value) {
   if (value == null) return;
   const p = make("div"); p.append(make("span", label + " : ", "label"));
-  const v = make("span", value, "exact"); v.lang = "en"; p.append(v); article.append(p);
+  const v = make("span", value, "exact"); p.append(v); article.append(p);
+}
+function manufacturer(article, label, value) {   // manufacturer text: notice language, untranslated
+  if (value == null) return;
+  const p = make("div"); p.append(make("span", label + " : ", "label"));
+  const v = make("span", value, "exact"); v.lang = noticeLang; p.append(v); article.append(p);
 }
 el("confirm").onclick = async () => {
   try {
     const s = await call("/confirm", {entry_ids: state.selection, confirmed: true}); applyState(s);
-    el("restitution-document").textContent = s.document.title + " — " + s.document.edition;
+    noticeLang = s.document.language || "en";
+    const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
+    const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
     const root = el("restitution"); root.replaceChildren();
     for (const x of s.sections) {
       const a = make("article", null, "restitution"); a.dataset.entryId = x.entry_id;
       const img = make("img"); img.src = x.image; img.alt = x.designation; a.append(img);
-      const h = make("h2", x.designation); h.lang = "en"; a.append(h);
+      const h = make("h2", x.designation); h.lang = noticeLang; a.append(h);
       const tags = make("p");
       if (x.where_provided) tags.append(make("span", "selon équipement", "tag where-provided"));
       if (x.startup_check) tags.append(make("span", "s'allume au démarrage", "tag startup-check"));
       a.append(tags);
       a.append(make("p", "Page de la notice : " + x.page_reference + " (page PDF " + x.pdf_page + ")", "page"));
-      field(a, "Couleur", x.colour); field(a, "État", x.state); field(a, "Descripteur", x.symbol_descriptor);
+      field(a, "Couleur", x.colour); field(a, "État", x.state); manufacturer(a, "Descripteur", x.symbol_descriptor);
       a.append(make("div", "Texte de la notice :", "label")); const m = exact(x.meaning); m.classList.add("meaning"); a.append(m);
-      field(a, "Consigne", x.instruction);
-      field(a, "Message affiché", x.displayed_message); field(a, "Signal sonore", x.audible_signal);
+      manufacturer(a, "Consigne", x.instruction);
+      manufacturer(a, "Message affiché", x.displayed_message); manufacturer(a, "Signal sonore", x.audible_signal);
       if (x.startup_check) { const sc = make("div"); sc.className = "startup-text"; sc.append(make("span", "Au démarrage : ", "label"));
-        const t = make("span", x.startup_check, "exact"); t.lang = "en"; sc.append(t); a.append(sc); }
-      for (const fs of x.field_sources) a.append(make("p", "Source de « " + fs.field + " » : page " + fs.printed_page + " (page PDF " + fs.pdf_page + ") — " + fs.text, "page"));
+        const t = make("span", x.startup_check, "exact"); t.lang = noticeLang; sc.append(t); a.append(sc); }
+      for (const fs of x.field_sources) {
+        const q = make("p", "Source du champ « " + fs.field + " » : page de la notice " + fs.printed_page + " (page PDF " + fs.pdf_page + ") — ", "page");
+        const t = make("span", fs.text); t.lang = noticeLang; q.append(t); a.append(q);
+      }
       if (x.warnings.length) {
         a.append(make("h3", "Avertissements liés"));
         for (const w of x.warnings) {
@@ -642,10 +671,6 @@ el("confirm").onclick = async () => {
           wd.append(exact(w.text)); wd.append(make("p", "Page de la notice : " + w.printed_page + " (page PDF " + w.pdf_page + ")", "page"));
           a.append(wd);
         }
-      }
-      if (x.curation_notes.length) {
-        const d = make("details", null, "notes"); d.append(make("summary", "Notes de préparation du catalogue (ne font pas partie de la notice)"));
-        for (const n of x.curation_notes) d.append(make("p", n)); a.append(d);
       }
       root.append(a);
     }

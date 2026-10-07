@@ -23,7 +23,7 @@ Le script refuse les modifications locales et bases divergentes, sans reset ni p
 
 ## Textes de repli : une seule référence
 
-`config/fallback_screens.en.yaml` reprend exactement les deux écrans anglais de la note. `colour_fallback()` lit ce fichier ; il ne maintient plus ses propres formulations françaises. Rouge ou incertain utilise l’écran d’arrêt ; les autres couleurs l’écran non résolu. Aucun statut de vérification ni handoff n’est impliqué. Une traduction française est proposée dans `config/fallback_screens.fr.BROUILLON_NON_VALIDE.yaml` : BROUILLON NON VALIDÉ, lu par aucun code, jamais affiché (test à l'appui).
+`config/fallback_screens.en.yaml` reprend exactement les deux écrans anglais de la note. `colour_fallback()` lit ce fichier ; il ne maintient plus ses propres formulations françaises. Rouge ou incertain utilise l’écran d’arrêt ; les autres couleurs l’écran non résolu. Aucun statut de vérification ni handoff n’est impliqué. La traduction française `config/fallback_screens.fr.yaml` est VALIDÉE (Fred Cobral, 2026-10-07, empreinte de la source anglaise consignée) ; c'est elle que l'interface V1 affiche. Toute modification exige une nouvelle validation nommée.
 
 Le YAML runtime consigne aussi la conservation des sélections par ID, le retour en ordre manuel, la reconfirmation explicite, la conservation de la couleur et les sections distinctes par image. **Ce sont les règles du futur parcours web, pas une interface déjà réalisée.**
 

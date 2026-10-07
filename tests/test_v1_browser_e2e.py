@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import socket
 import threading
+import re
 import time
 from pathlib import Path
 
@@ -28,9 +29,46 @@ BANNER = "Essai de développement — Applicabilité de cette notice au véhicul
 ORDER = ["fx_red_fluid", "fx_amber_sensor", "fx_green_lamps", "fx_white_cruise"]
 
 
-def _english_screens() -> dict:
-    p = Path(__file__).resolve().parents[1] / "outils" / "preparation_v1" / "config" / "fallback_screens.en.yaml"
+def _french_screens() -> dict:
+    p = Path(__file__).resolve().parents[1] / "outils" / "preparation_v1" / "config" / "fallback_screens.fr.yaml"
     return yaml.safe_load(p.read_text(encoding="utf-8"))["screens"]
+
+
+# Interface text = every text node and alt/title/placeholder/aria-label OUTSIDE an element
+# whose lang is not French (manufacturer texts carry the notice language).
+_UI_TEXT_JS = """() => {
+  const out = [];
+  const foreign = n => { const e = n.nodeType === 1 ? n : n.parentElement; const l = e && e.closest('[lang]'); return l && !l.lang.startsWith('fr'); };
+  const w = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    if (n.parentElement.closest('script,style')) continue;
+    if (!foreign(n) && n.textContent.trim()) out.push(n.textContent.trim());
+  }
+  for (const e of document.body.querySelectorAll('[alt],[title],[placeholder],[aria-label]'))
+    for (const a of ['alt','title','placeholder','aria-label']) if (e.getAttribute(a) && !foreign(e)) out.push(e.getAttribute(a));
+  out.push(document.title);
+  return out;
+}"""
+# English-only words (no French homograph: « image », « page », « message », « source » are excluded).
+_ENGLISH = re.compile(r"\b(the|and|of|is|warning|light|lights|return|manual|stop|safely|select|selection|"
+                      r"confirm|none|match|unknown|don't|know|red|amber|yellow|green|blue|white|grey|fixed|flashing|"
+                      r"continue|back|consent|take|your|vehicle|unresolved|human|verification|required|where|provided|"
+                      r"switches|start-up|startup|field|sound|colour|color|choose|pictogram|printed|see|loading|error)\b",
+                      re.I)
+
+
+def test_english_detector_is_effective():
+    for english in ("Return to manual images", "Stop safely — human verification required", "Fixed", "amber"):
+        assert _ENGLISH.search(english), english
+    for french in ("Revenir aux images de la notice", "Page de la notice : 84 (page PDF 86)", "Message affiché",
+                   "Source du champ « signal sonore »", "s'allume au démarrage", "selon équipement"):
+        assert not _ENGLISH.search(french), french
+
+
+def _no_english_ui(page: Page) -> None:
+    texts = page.evaluate(_UI_TEXT_JS)
+    bad = [x for x in texts if _ENGLISH.search(x)]
+    assert bad == [], bad
 
 
 @pytest.fixture(scope="module")
@@ -142,6 +180,7 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
     _open(page, live_server)
     _to_catalogue(page, photo)
     assert _tiles(page) == ORDER  # complete, manual order
+    _no_english_ui(page)
     expect(page.locator("#photo-compare")).to_be_visible()
     for img in page.locator("#catalogue-grid img").all():
         assert img.evaluate("i => i.complete && i.naturalWidth > 0")
@@ -180,6 +219,13 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
     expect(green.locator(".startup-check")).to_have_count(0)
     expect(green.locator(".warning")).to_have_count(0)
     expect(green).to_contain_text("Page de la notice : F-2 (page PDF 2)")
+    expect(page.locator("#language-note")).to_have_text(
+        "Texte du constructeur reproduit dans la langue de la notice disponible (anglais).")
+    expect(red).to_contain_text("Couleur : rouge")
+    expect(red).to_contain_text("État : fixe")
+    expect(page.locator("details, .notes")).to_have_count(0)
+    assert "Fictive curation note." not in page.locator("body").inner_text()
+    _no_english_ui(page)
 
     traffic.assert_clean(photo)
 
@@ -187,7 +233,7 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):
     photo = fx.png((90, 10, 10), 16)
     traffic = Traffic(page, live_server)
-    screens = _english_screens()
+    screens = _french_screens()
     _open(page, live_server)
     _to_catalogue(page, photo)
     page.click('.tile[data-entry-id="fx_white_cruise"]')
@@ -201,7 +247,9 @@ def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):
     _banner(page)
     expect(page.locator("#fallback-content h1")).to_have_text(screens["red_or_uncertain"]["heading"])
     assert page.locator("#fallback-content p").all_text_contents() == screens["red_or_uncertain"]["paragraphs"]
-    assert page.locator("#fallback-content").get_attribute("lang") == "en"
+    assert page.locator("#fallback-content").get_attribute("lang") == "fr"
+    expect(page.locator("#screen-fallback button.return")).to_have_text("Revenir aux images de la notice")
+    _no_english_ui(page)
 
     # « Revenir aux images »: manual order, selection kept.
     page.click("#screen-fallback button.return")
@@ -215,6 +263,7 @@ def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):
     page.click('#colour-choices button[data-colour="vert"]')
     expect(page.locator("#fallback-content h1")).to_have_text(screens["other_colour"]["heading"])
     assert page.locator("#fallback-content p").all_text_contents() == screens["other_colour"]["paragraphs"]
+    _no_english_ui(page)
 
     # Back again: selection still kept; a NEW confirmation is required before any restitution.
     page.click("#screen-fallback button.return")

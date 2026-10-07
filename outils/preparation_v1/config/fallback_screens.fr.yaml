@@ -1,11 +1,16 @@
-# BROUILLON NON VALIDÉ — traduction française proposée de fallback_screens.en.yaml.
-# NE PAS AFFICHER comme consigne de sécurité active. Aucun code ne lit ce fichier :
-# l'interface V1 sert uniquement les textes anglais validés (src/pgdr/config/v1_fallback_screens.en.yaml).
-# Un test vérifie qu'aucune de ces phrases n'apparaît dans l'interface ni dans l'API.
-# Pour l'activer un jour : validation humaine nommée, puis changement explicite du code et des tests.
+# Traduction française VALIDÉE de fallback_screens.en.yaml (écrans de repli du parcours V1).
+# Validation humaine nommée : Fred Cobral (fredcbrl@gmail.com), 2026-10-07.
+# Seule version affichée par l'interface V1 (copie identique : src/pgdr/config/v1_fallback_screens.fr.yaml).
+# Toute modification de ce texte exige une nouvelle validation nommée.
 schema_version: 1
-status: BROUILLON_NON_VALIDE
+status: VALIDE
+validation:
+  validated_by: Fred Cobral
+  validator_id: fredcbrl@gmail.com
+  validated_on: '2026-10-07'
+  scope: écrans red_or_uncertain et other_colour, bouton de retour compris
 translates: fallback_screens.en.yaml
+translates_sha256: a0cd129b336bac0e9b9e47e7512885df70666ed2e87d997c944bb8dcc75b2d9e
 screens:
   red_or_uncertain:
     heading: Arrêtez-vous en sécurité — vérification humaine nécessaire
@@ -25,3 +30,5 @@ screens:
       par une personne avant de décider de continuer.
 shared:
   return_button: Revenir aux images de la notice
+  show_status_indicator: false
+  handoff_implied: false
