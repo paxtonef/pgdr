@@ -69,7 +69,10 @@ from pgdr.application.part1_first_finding import (
 from pgdr.config_loader import load_safety_rules
 from pgdr.application.photo_first import warning_indicator_from_entry
 from pgdr.errors import ConfigurationError
-from pgdr.models import Consent, DiagnosticSession, InitialComplaint, PreGarageDiagnosticRequest
+from pgdr.models import (
+    FINDING_SOURCE_FIELDS, Consent, DiagnosticSession, FindingBasis, FindingItem, InitialComplaint,
+    ManufacturerFirstFinding, PreGarageDiagnosticRequest,
+)
 from pgdr.safety_engine import SafetyEngine
 from pgdr import v1_contenu as vc
 from pgdr.adapters.manifest_notice_repository import (
@@ -254,6 +257,7 @@ class Parcours:
     colour: Optional[str] = None
     resolved: dict = field(default_factory=dict)  # group index -> entry_id chosen by the driver
     messages: dict = field(default_factory=dict)  # group index -> message typed by the driver, verbatim
+    conditions: dict = field(default_factory=dict)  # consigne key -> confirmed / excluded / unknown (driver's answer)
     phase: str = "vir"  # vir -> consent -> catalogue -> confirmation -> restitution | colour -> fallback
 
 
@@ -519,6 +523,53 @@ def _level_origin(engine, triage, rows, finding) -> list[dict]:
     return out
 
 
+UNRESOLVED_VARIANT = "unresolved_variant"
+
+
+def transmit_conditions(finding: ManufacturerFirstFinding, internal: list[dict], c: NoticeCatalogue):
+    """Conversion of the driver's answers before R-5 (R-5 itself unchanged).
+
+    A conditional stop whose condition the DRIVER CONFIRMED is transmitted as
+    the documented stop it then is (exact citation, its own entry). Excluded:
+    not transmitted, still shown. Unknown: not transmitted either, because
+    R-5 has no row for a stop that applies only under an unknown condition;
+    it is listed in `limits` (never treated as excluded). A documented restart
+    procedure recorded as an immediate stop by a classification is reported,
+    never altered."""
+    by_id = {e.provenance.entry_id: e for e in finding.entries}
+    limits = []
+    for i in internal:
+        f = by_id.get(i["entry_id"])
+        if f is None:
+            continue
+        if i["kind"] == "conditional_stop" and i["condition_status"] == "confirmed":
+            if (f.stop_vehicle_engine_off.basis != FindingBasis.DOCUMENTED
+                    and i["citation"]["source_field"] in FINDING_SOURCE_FIELDS):
+                by_id[i["entry_id"]] = f.model_copy(update={"stop_vehicle_engine_off": FindingItem(
+                    value="required", basis=FindingBasis.DOCUMENTED, source_field=i["citation"]["source_field"],
+                    source_phrase=i["citation"]["source_phrase"])})
+            i["transmitted"] = "R-5 stop_vehicle_engine_off (condition confirmée par le conducteur)"
+        elif i["kind"] == "conditional_stop":
+            i["transmitted"] = None
+            if i["condition_status"] == "unknown":
+                limits.append({"key": i["key"], "entry_id": i["entry_id"], "limit": (
+                    "Consigne d'arrêt conditionnelle, condition inconnue : R-5 n'a pas de ligne pour un arrêt "
+                    "possible sous condition ; non transmise au niveau interne, conservée et affichée.")})
+        elif i["kind"] == "restart_procedure":
+            i["transmitted"] = None
+            if (f.stop_vehicle_engine_off.basis == FindingBasis.DOCUMENTED
+                    and vc.consigne_is_action(c.entry(i["entry_id"]), f.stop_vehicle_engine_off.source_phrase)):
+                i["transmitted"] = "R-5 stop_vehicle_engine_off (classement validé)"
+                limits.append({"key": i["key"], "entry_id": i["entry_id"], "limit": (
+                    "Le classement validé enregistre une procédure d'arrêt temporaire, d'attente puis de redémarrage "
+                    "comme arrêt immédiat (stop_vehicle_engine_off) : à corriger dans le classement (stop_conditions).")})
+        else:
+            i["transmitted"] = ("R-5 stop_vehicle_engine_off (classement validé)"
+                                if i["kind"] == "immediate_stop" and f.stop_vehicle_engine_off.basis == FindingBasis.DOCUMENTED
+                                else None)
+    return ManufacturerFirstFinding(entries=[by_id[e.provenance.entry_id] for e in finding.entries]), limits
+
+
 def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = (), pid: str = "",
                     messages: Optional[dict] = None) -> dict:
     """The existing Part 1 chain on the driver's confirmed selection.
@@ -532,8 +583,12 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     c = _catalogue()
     live = {e.entry_id: e for e in w.repository.entries_for_document(c.document.document_id)}
     groups = w.groups
-    variant_ids = {x for i in ambiguous for x in groups[i]}
+    variant_ids = {x for i in ambiguous for x in groups[i]} - set(entry_ids)
     eval_ids = [e.entry_id for e in c.entries if e.entry_id in set(entry_ids) | variant_ids]
+    # What the driver confirmed, excluded or left unknown, kept as such.
+    variant = {x: ("possible" if x in variant_ids else "selected") for x in eval_ids}
+    excluded = [x for i, chosen in p.resolved.items() if chosen != AMBIGUOUS and i < len(groups)
+                for x in groups[i] if x != chosen]
     chosen = [live[x] for x in eval_ids]
     session = DiagnosticSession(request=PreGarageDiagnosticRequest(
         request_id=f"PGDR-V1-{uuid.uuid4().hex[:12]}",
@@ -546,9 +601,13 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     session.warning_indicators = [warning_indicator_from_entry(e, photo_evidence_id=None) for e in chosen]
     engine = _safety_engine.evaluate(session)
     finding = build_manufacturer_first_finding(
-        [(e, "user_selection") for e in chosen], mapping=w.findings,
-        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in eval_ids},
+        # A variant left undetermined is never transmitted as the driver's confirmed selection.
+        [(e, "user_selection" if variant[e.entry_id] == "selected" else UNRESOLVED_VARIANT) for e in chosen],
+        mapping=w.findings, linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in eval_ids},
     )
+    answers = p.conditions
+    internal = [i for x in eval_ids for i in vc.internal_consignes(c.entry(x), w.situations.get(x), variant[x], answers)]
+    finding, limits = transmit_conditions(finding, internal, c)
     # R-5: may raise the SafetyEngine level, never lower it. Its wording is
     # not displayed in V1 (internal level only).
     triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
@@ -557,7 +616,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     def present(x):
         return vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
                                 explanation=w.explanations.get(x), t5_label=APPROVED_BANNERS["T5"][0],
-                                situation=w.situations.get(x))
+                                situation=w.situations.get(x), answers=answers)
 
     def title(v) -> str:
         st = w.situations.get(v.entry_id)
@@ -586,7 +645,8 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             # Conditional stop instructions: never urgent here, never the red button; condition then whole text.
             "conditional_title": vc.DRAFT_LABELS["conditional_title"],
             "conditionals": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
-                             for v in variants for u in [vc.conditional_passages(v, w.situations.get(v.entry_id))] if u],
+                             for v in variants for u in [vc.conditional_passages(v, w.situations.get(v.entry_id), answers)] if u],
+            "condition_question": {k: vc.DRAFT_LABELS[f"condition_{k}"] for k in ("question", "confirmed", "excluded", "unknown")},
             "actions": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
                         for v in variants for u in [vc.action_passages(v, w.situations.get(v.entry_id))] if u],
             "common_title": vc.DRAFT_LABELS["common"], "common": common,
@@ -607,12 +667,18 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     return {
         "presentation": {
             "title": vc.T2_V1, "entries": [present(x) for x in entry_ids], "ambiguous": blocks, "red_screen": red_screen,
+            "condition_question": {k: vc.DRAFT_LABELS[f"condition_{k}"] for k in ("question", "confirmed", "excluded", "unknown")},
             "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
             "end": APPROVED_BANNERS["T8"][0],
         },
         "triage": {"level": triage.level.value, "driving_assessment": triage.driving_assessment.value,
                    "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
                    "r5_rows": rows, "origin": _level_origin(engine, triage, rows, finding)},
+        # Internal data carried to the result: nature of each instruction, exact condition and the driver's
+        # answer, entry and variant, whole citation and page; what R-5 cannot represent is listed, never hidden.
+        "internal": {"variants": [{"entry_id": x, "status": variant[x]} for x in eval_ids]
+                     + [{"entry_id": x, "status": "excluded"} for x in excluded],
+                     "consignes": internal, "limits": limits},
         "classification_status": w.findings_status,
         "explanations_status": w.explanations_status,
         "situations_status": w.situations_status,
@@ -723,6 +789,26 @@ def clarify(pid: str, req: ClarifyRequest):
     return _after_confirmation(pid, p)
 
 
+class ConditionRequest(BaseModel):
+    key: str = Field(max_length=300)  # « entry_id#index » of a conditional stop instruction
+    answer: Literal["confirmed", "excluded", "unknown"]
+
+
+@router.post("/api/v1/parcours/{pid}/condition")
+def condition(pid: str, req: ConditionRequest):
+    """The driver's answer on the condition of a conditional stop instruction."""
+    p = _get(pid)
+    _require_consent(p)
+    w = get_wiring()
+    entry_id, _, index = req.key.partition("#")
+    st = w.situations.get(entry_id)
+    if p.phase != "restitution" or st is None or not index.isdigit() or int(index) >= len(st.consignes) \
+            or not st.consignes[int(index)].conditional:
+        raise HTTPException(status_code=409, detail="Aucune condition n'est attendue ici.")
+    p.conditions[req.key] = req.answer
+    return _after_confirmation(pid, p)
+
+
 @router.post("/api/v1/parcours/{pid}/no-match")
 def no_match(pid: str, req: NoMatchRequest):
     p = _get(pid)
@@ -757,6 +843,7 @@ def return_to_images(pid: str):
     p.confirmed = False
     p.resolved = {}
     p.messages = {}
+    p.conditions = {}
     p.phase = "catalogue"
     return _state(pid, p)
 
@@ -1071,8 +1158,19 @@ function renderSituation(st, block) {
                     c.action ? "label action-label" : c.conditional ? "label conditional-label" : "label"));
       if (c.condition) cite(s, c.condition, "consigne-condition");
       cite(s, c.consigne, "consigne");
+      if (c.conditional && c.key && condQ) conditionQuestion(s, c, condQ);
     }
     if (st.no_consigne) s.append(make("p", st.no_consigne, "no-consigne"));
+}
+function conditionQuestion(parent, pa, q) {
+    const box = make("div", null, "condition-question"); box.dataset.key = pa.key; box.dataset.answer = pa.answer;
+    box.append(make("p", q.question, "label"));
+    for (const k of ["confirmed", "excluded", "unknown"]) {
+      const b = make("button", q[k], "condition-" + k); if (pa.answer === k) b.classList.add("primary");
+      b.onclick = async () => { try { outcome(await call("/condition", {key: pa.key, answer: k})); } catch (e) { fail(e); } };
+      box.append(b);
+    }
+    box.append(make("p", pa.answer_label, "condition-answer")); parent.append(box);
 }
 function renderAmbiguous(b, root, redScreen) {
     const box = make("div", null, "ambiguous"); box.dataset.group = b.group; root.append(box);
@@ -1120,6 +1218,7 @@ function renderAmbiguous(b, root, redScreen) {
         for (const pa of u.passages) {
           d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "conditional-condition");
           cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "conditional-quote");
+          conditionQuestion(d, pa, b.condition_question);
         }
       }
     }
@@ -1143,8 +1242,10 @@ function renderAmbiguous(b, root, redScreen) {
       btn.onclick = () => showScreen(redScreen); box.append(btn);
     }
 }
+let condQ = null;
 function renderConstat(pc) {
   const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
+  condQ = p.condition_question;
   root.append(make("h1", p.title));
   for (const e of p.entries) {
     const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);

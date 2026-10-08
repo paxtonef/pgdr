@@ -81,6 +81,11 @@ TYRE_FAULT = "The fictive tyre symbol flashes to indicate that the fictive tyre 
 TYRE_CONDITION = "The fictive system cannot indicate a sudden fictive tyre burst."
 TYRE_STOP = "In this case, stop the fictive car, braking with caution and avoiding abrupt steering."
 TYRE_WARNING = TYRE_CONDITION + " " + TYRE_STOP + " Low pressure reduces the fictive tyre life."
+PB_TITLE = "FICTIVE PARKING BRAKE FAILURE / LOW BRAKE FLUID / PARKING BRAKE APPLIED"
+PB_FAILURE = "The fictive light flashes when the fictive parking brake fails. Contact a fictive workshop."
+PB_FLUID = "The fictive light comes on when the fictive brake fluid is below the minimum level."
+PB_FLUID_WARNING = "If the fictive light comes on while driving, stop the fictive vehicle immediately and contact a fictive workshop."
+PB_APPLIED = "The fictive light comes on when the fictive parking brake is applied."
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -103,7 +108,7 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/code.png": png((220, 160, 0), 8),
         "images/pressure.png": png((225, 155, 0), 8), "images/frost.png": png((0, 130, 200), 8),
         "images/steer.png": png((190, 0, 0), 8), "images/lamp.png": png((228, 150, 0), 8),
-        "images/tyre.png": png((232, 158, 0), 8),
+        "images/tyre.png": png((232, 158, 0), 8), "images/pbrake.png": png((205, 5, 5), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -177,6 +182,12 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
                   state=None, documented_instruction=TYRE_ACTION,
                   linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
                                     "inline_pictograms": []}]),
+            # Identical file, red: parking brake failure / low brake fluid (immediate stop, warning 8) / applied.
+            entry("fx_red_pb_failure", PB_TITLE, "red", "images/pbrake.png", PB_FAILURE, 18, state=None),
+            entry("fx_red_pb_fluid", PB_TITLE, "red", "images/pbrake.png", PB_FLUID, 18, state=None,
+                  linked_warnings=[{"number": "8)", "text": PB_FLUID_WARNING, "printed_page": "F-19", "pdf_page": 19,
+                                    "inline_pictograms": []}]),
+            entry("fx_red_pb_applied", PB_TITLE, "red", "images/pbrake.png", PB_APPLIED, 18, state=None),
             entry("fx_amber_tyre_fault", "FICTIVE TYRES", "amber", "images/tyre.png", TYRE_FAULT, 16, state=None,
                   linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
                                     "inline_pictograms": []}]),
@@ -342,6 +353,15 @@ SITUATIONS = {
     "fx_amber_tyre_fault": situation("anomalie_defaut", "temporarily deactivated or faulty",
                                      consignes=[(TYRE_STOP, "linked_warnings", TYRE_CONDITION, "linked_warnings")],
                                      intitule="Système fictif des pneus désactivé ou en défaut"),
+    "fx_red_pb_failure": situation("anomalie_defaut", "the fictive parking brake fails",
+                                   consignes=[("Contact a fictive workshop.", "documented_meaning", None, None)],
+                                   intitule="Défaut du frein de stationnement fictif"),
+    "fx_red_pb_fluid": situation("alerte_consigne_immediate", "the fictive brake fluid is below the minimum level",
+                                 consignes=[("stop the fictive vehicle immediately and contact a fictive workshop", "linked_warnings",
+                                             "If the fictive light comes on while driving", "linked_warnings")],
+                                 intitule="Liquide de frein fictif bas"),
+    "fx_red_pb_applied": situation("fonctionnement_normal", "the fictive parking brake is applied",
+                                   intitule="Frein de stationnement fictif serré"),
     "fx_red_steer_b": situation("action_conducteur", "a fictive steering setup to do", intitule="Réglage fictif à faire"),
     "fx_amber_code_b": situation("situation_non_determinee", "to report a fictive intrusion attempt",
                                  conditions=[("comes on with a dedicated message", "documented_meaning")],

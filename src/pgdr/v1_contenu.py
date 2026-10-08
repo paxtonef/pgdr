@@ -55,6 +55,13 @@ DRAFT_LABELS = {
     "urgent_title": "Consigne urgente possible — elle s'applique seulement si votre voyant correspond à cette situation",
     "action_title": "Action attendue de votre part",
     "conditional_title": "Consigne applicable si…",
+    "condition_question": "Cette condition correspond-elle à votre situation ?",
+    "condition_confirmed": "Oui",
+    "condition_excluded": "Non",
+    "condition_unknown": "Je ne sais pas",
+    "condition_answer.confirmed": "Vous avez indiqué que cette condition est remplie.",
+    "condition_answer.excluded": "Vous avez indiqué que cette condition n'est pas remplie. La consigne reste affichée.",
+    "condition_answer.unknown": "Condition non renseignée : la consigne s'applique si la condition est remplie.",
     "message_question": "Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.",
     "message_submit": "Valider ce message",
     "message_none": "Aucun message / Je ne sais pas",
@@ -284,6 +291,14 @@ def full_text(e: NoticeEntry, phrase: str) -> str:
     return phrase
 
 
+def immediate_stop_item(e: NoticeEntry, phrase: str) -> bool:
+    """For preparing a structured classification: may this cited phrase be
+    recorded as the immediate stop item (stop_vehicle_engine_off)? Only a
+    stop instruction that is not a restart procedure; a restart procedure or
+    a conditional stop belongs to stop_conditions (cited, never removed)."""
+    return is_stop_instruction(full_text(e, phrase)) and not consigne_is_action(e, phrase)
+
+
 def failure_term(text: str) -> bool:
     return bool(_FAILURE_TERM.search(text)) and not _NEGATED_FAILURE.search(text)
 
@@ -330,13 +345,72 @@ def action_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
     return out
 
 
-def conditional_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
+CONDITION_ANSWERS = ("confirmed", "excluded", "unknown")
+
+
+def consigne_key(entry_id: str, index: int) -> str:
+    return f"{entry_id}#{index}"
+
+
+def condition_answer(answers: Optional[Mapping[str, str]], key: str) -> str:
+    """What the driver said about one condition; never assumed: unknown by default."""
+    a = (answers or {}).get(key)
+    return a if a in CONDITION_ANSWERS else "unknown"
+
+
+def conditional_passages(e: NoticeEntry, situation: Optional["Situation"] = None,
+                         answers: Optional[Mapping[str, str]] = None) -> list[dict]:
     """Conditional stop instructions of ONE entry (not an immediate alert):
-    exact condition, then the whole instruction with its page."""
-    return [{"condition": {"text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
-                           "pdf_page": c.condition.pdf_page},
-             "text": c.full, "printed_page": c.anchor.printed_page, "pdf_page": c.anchor.pdf_page}
-            for c in (situation.consignes if situation else ()) if c.conditional]
+    exact condition, then the whole instruction with its page, the key of
+    the condition and what the driver said about it (unknown by default)."""
+    out = []
+    for i, c in enumerate(situation.consignes if situation else ()):
+        if not c.conditional:
+            continue
+        key = consigne_key(e.entry_id, i)
+        answer = condition_answer(answers, key)
+        out.append({"condition": {"text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
+                                  "pdf_page": c.condition.pdf_page},
+                    "text": c.full, "printed_page": c.anchor.printed_page, "pdf_page": c.anchor.pdf_page,
+                    "key": key, "answer": answer, "answer_label": DRAFT_LABELS[f"condition_answer.{answer}"]})
+    return out
+
+
+def consigne_kind(c: "Consigne") -> str:
+    """The nature of the action asked by the manufacturer — from the
+    classification's structure, never from the bare word « stop », the
+    colour or the type label."""
+    if c.restart:
+        return "restart_procedure"
+    if c.action:
+        return "expected_action"
+    if c.conditional:
+        return "conditional_stop"
+    if is_stop_instruction(c.full):
+        return "immediate_stop"
+    return "instruction"
+
+
+def internal_consignes(e: NoticeEntry, situation: Optional["Situation"], variant: str,
+                       answers: Optional[Mapping[str, str]] = None) -> list[dict]:
+    """Every instruction of ONE entry as transmitted internally: its nature,
+    exact condition, the variant status (selected / possible), the whole
+    citation with its page, and the driver's answer on the condition."""
+    out = []
+    for i, c in enumerate(situation.consignes if situation else ()):
+        kind = consigne_kind(c)
+        key = consigne_key(e.entry_id, i)
+        out.append({
+            "key": key, "entry_id": e.entry_id, "variant": variant, "kind": kind,
+            "citation": {"text": c.full, "source_field": c.anchor.source_field, "source_phrase": c.anchor.source_phrase,
+                         "printed_page": c.anchor.printed_page, "pdf_page": c.anchor.pdf_page},
+            "condition": None if c.condition is None else {
+                "text": c.condition.source_phrase, "source_field": c.condition.source_field,
+                "printed_page": c.condition.printed_page, "pdf_page": c.condition.pdf_page},
+            "condition_status": (condition_answer(answers, key) if kind == "conditional_stop"
+                                 else "stated" if c.condition is not None else "none"),
+        })
+    return out
 
 
 def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
@@ -414,6 +488,7 @@ class Consigne:
     anchor: Anchor
     condition: Optional[Anchor]
     action: bool = False  # restart procedure, or presented as an expected action
+    restart: bool = False  # documented temporary stop + wait + restart procedure
     conditional: bool = False  # conditional stop instruction, not an immediate alert
     full: str = ""  # the whole sentence(s) of the instruction, verbatim
 
@@ -476,9 +551,10 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
                     raise ContentRejected("unknown presentation")
                 if c.get("presentation") == "action_attendue" and is_stop_instruction(full) and not restart:
                     raise ContentRejected("a stop instruction is never presented as a plain action")
-                consignes.append(Consigne(anchor, cond, restart or c.get("presentation") == "action_attendue",
-                                          (cond is not None and is_stop_instruction(full) and not restart
-                                           and nature != "alerte_consigne_immediate"), full))
+                consignes.append(Consigne(anchor, cond, action=restart or c.get("presentation") == "action_attendue",
+                                          conditional=(cond is not None and is_stop_instruction(full) and not restart
+                                                       and nature != "alerte_consigne_immediate"),
+                                          full=full, restart=restart))
             consignes = tuple(consignes)
             if nature == "alerte_consigne_immediate" and not consignes:
                 raise ContentRejected("an immediate alert needs its exact instruction")
@@ -506,9 +582,17 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
     return out, rejected, status
 
 
-def present_situation(st: Optional[Situation]) -> Optional[dict]:
+def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
+                      answers: Optional[Mapping[str, str]] = None) -> Optional[dict]:
     if st is None:
         return None
+
+    def answer(i, c) -> dict:
+        if not (c.conditional and entry_id):
+            return {}
+        key = consigne_key(entry_id, i)
+        a = condition_answer(answers, key)
+        return {"key": key, "answer": a, "answer_label": DRAFT_LABELS[f"condition_answer.{a}"]}
 
     def a(x: Anchor) -> dict:
         return {"text": x.source_phrase, "printed_page": x.printed_page, "pdf_page": x.pdf_page}
@@ -522,7 +606,8 @@ def present_situation(st: Optional[Situation]) -> Optional[dict]:
                        "condition": a(c.condition) if c.condition else None,
                        "label": (SITUATION_LABELS["action"] if c.action else SITUATION_LABELS["conditional"]
                                  if c.conditional else SITUATION_LABELS["consigne"]),
-                       "action": c.action, "conditional": c.conditional} for c in st.consignes],
+                       "action": c.action, "conditional": c.conditional, **answer(i, c)}
+                      for i, c in enumerate(st.consignes)],
         "conditions": [a(c) for c in st.conditions],
         "no_consigne": None if st.consignes else SITUATION_LABELS["no_consigne"],
     }
@@ -625,7 +710,8 @@ def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
 
 
 def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation: Optional[Explanation],
-                  t5_label: str, situation: Optional[Situation] = None) -> dict:
+                  t5_label: str, situation: Optional[Situation] = None,
+                  answers: Optional[Mapping[str, str]] = None) -> dict:
     def cited(item) -> Optional[str]:
         # Only DOCUMENTED values are shown, as the cited phrase itself.
         # Derived values (R-1/R-2) are never displayed (internal level only).
@@ -657,7 +743,7 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
                                      for s in explanation.parts[k]]}
                       for k, title in EXPLANATION_PARTS],
         },
-        "situation": present_situation(situation),
+        "situation": present_situation(situation, e.entry_id, answers),
         "points": points,
         "stop_conditions": [p.source_phrase for p in f.stop_conditions],
     }

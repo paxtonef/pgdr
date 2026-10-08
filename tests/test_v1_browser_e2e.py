@@ -431,6 +431,14 @@ def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, 
     expect(cond.locator(".conditional-condition")).to_contain_text("If the fictive steering light flashes")
     expect(cond.locator(".conditional-quote")).to_contain_text("If the fictive steering light flashes, stop the fictive vehicle at once.")
     expect(block.locator("button.red-offer")).to_have_count(0)
+    q = cond.locator(".condition-question")
+    expect(q.locator("p.label")).to_have_text("Cette condition correspond-elle à votre situation ?")
+    expect(q.locator(".condition-answer")).to_have_text("Condition non renseignée : la consigne s'applique si la condition est remplie.")
+    q.locator("button.condition-confirmed").click()
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".conditional .condition-answer")).to_have_text("Vous avez indiqué que cette condition est remplie.")
+    expect(block.locator(".conditional .conditional-quote")).to_contain_text("If the fictive steering light flashes, stop the fictive vehicle at once.")
+    expect(block.locator("button.red-offer")).to_have_count(1)  # confirmed stop: red screen offered, never automatic
     expect(block.locator('.variant[data-entry-id="fx_red_steer_a"] .action-label')).to_have_text("Action attendue de votre part :")
     _no_english_ui(page)
 
