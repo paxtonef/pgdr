@@ -194,7 +194,7 @@ class TestVariantGroups:
         c = ManifestNoticeRepository(grouped).catalogue
         assert vc.auto_groups(c) == [("fx_red_belt_fixed", "fx_red_belt_flashing"), ("fx_amber_twin_a", "fx_amber_twin_b"),
                                      ("fx_blue_mode_x", "fx_blue_mode_y"), ("fx_red_alarm_a", "fx_red_alarm_b"),
-                                     ("fx_amber_code_a", "fx_amber_code_b")]
+                                     ("fx_amber_code_a", "fx_amber_code_b"), ("fx_red_steer_a", "fx_red_steer_b")]
 
     def test_question_with_documented_elements_and_sources(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)

@@ -62,6 +62,18 @@ ALARM_STOP_PHRASE = "stop the fictive vehicle immediately"
 CODE_A = "The fictive code symbol shows a fictive code fault. Contact a fictive workshop soon."
 CODE_A_INSTRUCTION = "Contact a fictive workshop soon."
 CODE_B = "The fictive code symbol comes on with a dedicated message to report a fictive intrusion attempt."
+PRESSURE = ("The fictive pressure symbol shows that the fictive pressure is lower than the recommended value. "
+            "In this case restore the fictive pressure value.")
+PRESSURE_CONSIGNE = "restore the fictive pressure value"
+FROST = "The fictive frost symbol comes on when the fictive outside air is cold."
+STEER_A = "The fictive steering light stays on: fictive assistance may be reduced."
+STEER_PROCEDURE = ("In this case, stop the fictive vehicle, stop the fictive motor for about 20 seconds "
+                   "and then restart the fictive motor.")
+STEER_CONDITION = "In some fictive circumstances, an independent factor could switch the light on."
+STEER_INSTRUCTION = STEER_CONDITION + " " + STEER_PROCEDURE
+STEER_MIXED = ("If the fictive steering light flashes, stop the fictive vehicle at once. "
+               "Otherwise stop the fictive motor for about 20 seconds and then restart it.")
+STEER_B = "The fictive steering light shows a fictive steering setup to do."
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -82,6 +94,8 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/look_a.png": png((0, 120, 0), 8), "images/look_b.png": png((0, 121, 0), 8),
         "images/mode.png": png((0, 0, 200), 8), "images/alarm.png": png((210, 10, 10), 8),
         "images/code.png": png((220, 160, 0), 8),
+        "images/pressure.png": png((225, 155, 0), 8), "images/frost.png": png((0, 130, 200), 8),
+        "images/steer.png": png((190, 0, 0), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -136,6 +150,17 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
             entry("fx_amber_code_a", "FICTIVE CODE FAULT", "amber", "images/code.png", CODE_A, 11, state=None,
                   documented_instruction=CODE_A_INSTRUCTION),
             entry("fx_amber_code_b", "FICTIVE INTRUSION", "amber", "images/code.png", CODE_B, 11, state=None),
+            # A state without failure term (one instruction), an event without any instruction.
+            entry("fx_amber_pressure", "FICTIVE PRESSURE", "amber", "images/pressure.png", PRESSURE, 12,
+                  documented_instruction="In this case restore the fictive pressure value."),
+            entry("fx_blue_frost", "FICTIVE FROST", "blue", "images/frost.png", FROST, 12),
+            # Identical file; variant A documents a temporary stop + wait + restart procedure, and
+            # (warning 3) a mixed passage whose immediate stop must stay urgent.
+            entry("fx_red_steer_a", "FICTIVE STEERING FAILURE", "red", "images/steer.png", STEER_A, 13, state=None,
+                  documented_instruction=STEER_INSTRUCTION,
+                  linked_warnings=[{"number": "3)", "text": STEER_MIXED, "printed_page": "F-14", "pdf_page": 14,
+                                    "inline_pictograms": []}]),
+            entry("fx_red_steer_b", "FICTIVE STEERING FAILURE", "red", "images/steer.png", STEER_B, 13, state=None),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
@@ -278,7 +303,18 @@ SITUATIONS = {
     "fx_red_alarm_b": situation("action_conducteur", "a fictive service reminder", intitule="Rappel d'entretien fictif"),
     "fx_amber_code_a": situation("anomalie_defaut", "a fictive code fault",
                                  consignes=[(CODE_A_INSTRUCTION, "documented_instruction", None, None)],
-                                 intitule="Défaut possible du code fictif"),
+                                 intitule="Défaut du code fictif"),
+    "fx_amber_pressure": situation("information_a_prendre_en_compte", "the fictive pressure is lower than the recommended value",
+                                   consignes=[(PRESSURE_CONSIGNE, "documented_instruction", "In this case", "documented_instruction")],
+                                   intitule="Pression fictive basse"),
+    "fx_blue_frost": situation("information_a_prendre_en_compte", "when the fictive outside air is cold",
+                               intitule="Air extérieur fictif froid"),
+    "fx_red_steer_a": situation("situation_non_determinee", "fictive assistance may be reduced",
+                                consignes=[(STEER_PROCEDURE, "documented_instruction", STEER_CONDITION, "documented_instruction"),
+                                           ("stop the fictive vehicle at once", "linked_warnings",
+                                            "If the fictive steering light flashes", "linked_warnings")],
+                                intitule="Assistance fictive peut-être réduite"),
+    "fx_red_steer_b": situation("action_conducteur", "a fictive steering setup to do", intitule="Réglage fictif à faire"),
     "fx_amber_code_b": situation("situation_non_determinee", "to report a fictive intrusion attempt",
                                  conditions=[("comes on with a dedicated message", "documented_meaning")],
                                  intitule="Possible tentative d'intrusion fictive"),

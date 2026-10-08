@@ -573,6 +573,10 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             "urgent_title": vc.DRAFT_LABELS["urgent_title"],
             "urgent": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
                        for v in variants for u in [vc.urgent_passages(v, w.situations.get(v.entry_id))] if u],
+            # A documented temporary stop + wait + restart: an expected action, with its condition and page.
+            "action_title": vc.DRAFT_LABELS["action_title"], "condition_label": vc.SITUATION_LABELS["condition"],
+            "actions": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
+                        for v in variants for u in [vc.action_passages(v, w.situations.get(v.entry_id))] if u],
             "common_title": vc.DRAFT_LABELS["common"], "common": common,
             "no_common": None if common else vc.DRAFT_LABELS["no_common"],
             "variants": [{
@@ -808,8 +812,9 @@ V1_HTML = """<!DOCTYPE html>
  .condition { font-weight: 600; }
  .urgent { border: 2px solid #b00020; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
  .urgent h3 { color: #b00020; }
+ .expected-action { border: 2px solid #8a5a00; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
  .situation { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
- .situation blockquote .page, .urgent blockquote .page { display: block; font-size: .85em; color: #444; }
+ .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page { display: block; font-size: .85em; color: #444; }
  .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
@@ -1048,7 +1053,7 @@ function renderSituation(st, block) {
     s.append(make("p", "Passage qui le justifie :", "label")); cite(s, st.justification, "justification");
     for (const c of st.conditions) { s.append(make("p", "Conditions d'application :", "label")); cite(s, c, "condition-quote"); }
     for (const c of st.consignes) {
-      s.append(make("p", "Consigne du constructeur :", "label"));
+      s.append(make("p", (c.label || "Consigne du constructeur") + " :", c.action ? "label action-label" : "label"));
       if (c.condition) cite(s, c.condition, "consigne-condition");
       cite(s, c.consigne, "consigne");
     }
@@ -1070,6 +1075,17 @@ function renderAmbiguous(b, root, redScreen) {
         const d = make("div", null, "urgent-variant"); d.dataset.entryId = u.entry_id; us.append(d);
         const h = make("p", u.only_for, "label"); d.append(h);
         for (const pa of u.passages) cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page});
+      }
+    }
+    if (b.actions.length) {
+      const as = sec(box, b.action_title, "expected-action");
+      for (const u of b.actions) {
+        const d = make("div", null, "action-variant"); d.dataset.entryId = u.entry_id; as.append(d);
+        d.append(make("p", u.only_for, "label"));
+        for (const pa of u.passages) {
+          if (pa.condition) { d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "action-condition"); }
+          cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "action-quote");
+        }
       }
     }
     const cs = sec(box, b.common_title, "common");

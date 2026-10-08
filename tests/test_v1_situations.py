@@ -103,7 +103,8 @@ class TestMixedGroup:
         a_, b_ = b["variants"]
         assert a_["entry"]["situation"]["consignes"] == [{
             "consigne": {"text": fx.ALARM_STOP_PHRASE, "printed_page": "F-10", "pdf_page": 10},
-            "condition": {"text": "If the fictive alarm light comes on while driving", "printed_page": "F-10", "pdf_page": 10}}]
+            "condition": {"text": "If the fictive alarm light comes on while driving", "printed_page": "F-10", "pdf_page": 10},
+            "label": "Consigne du constructeur", "action": False}]
         # Never transferred to variant B.
         assert b_["entry"]["situation"]["consignes"] == [] and b_["entry"]["manufacturer_text"]["linked_warnings"] == []
         assert fx.ALARM_STOP not in json.dumps(b_, ensure_ascii=False)
@@ -183,3 +184,84 @@ class TestDraftNeverValidated:
         path.write_text(yaml.safe_dump(doc), encoding="utf-8")
         with pytest.raises(vc.ContentRejected):
             vc.load_situations(path, c, dev_trial=True)
+
+
+class TestInformationToTakeIntoAccount:
+    def test_state_without_failure_term_is_to_take_into_account(self, monkeypatch, grouped, client):
+        w = with_situations(monkeypatch, grouped)
+        assert not w.situations_rejected
+        r = confirm(client, ["fx_amber_pressure"])
+        st = entry(r, "fx_amber_pressure")["situation"]
+        assert st["nature"] == "information_a_prendre_en_compte" and st["label"] == "À prendre en compte"
+        # The instruction stays shown, with its exact citation and its condition.
+        assert st["consignes"] == [{"consigne": {"text": fx.PRESSURE_CONSIGNE, "printed_page": "F-12", "pdf_page": 12},
+                                    "condition": {"text": "In this case", "printed_page": "F-12", "pdf_page": 12},
+                                    "label": "Consigne du constructeur", "action": False}]
+        assert st["no_consigne"] is None
+        # Never a permission to drive.
+        text = json.dumps(r["premier_constat"]["presentation"], ensure_ascii=False).lower()
+        assert not [f for f in vc.FORBIDDEN if f in text]
+
+    def test_no_instruction_keeps_the_caution_sentence(self, monkeypatch, grouped, client):
+        with_situations(monkeypatch, grouped)
+        st = entry(confirm(client, ["fx_blue_frost"]), "fx_blue_frost")["situation"]
+        assert st["nature"] == "information_a_prendre_en_compte" and st["consignes"] == []
+        assert st["no_consigne"] == "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque."
+
+    def test_failure_term_is_a_reported_defect(self, monkeypatch, grouped, client):
+        with_situations(monkeypatch, grouped)
+        r = confirm(client, ["fx_amber_code_a"])
+        (b,) = ambiguous(clarify(client, r, "message", "FICTIVE"))
+        st = b["variants"][0]["entry"]["situation"]
+        assert st["nature"] == "anomalie_defaut" and st["label"] == "Défaut signalé par la notice"
+        assert "possible" not in vc.NATURE_LABELS["anomalie_defaut"]
+
+    def test_defect_needs_its_own_failure_term(self, grouped):
+        c = ManifestNoticeRepository(grouped).catalogue
+        sit, rejected, _ = vc.load_situations(fx.build_situations(grouped, entries={
+            # no failure term in the passage
+            "fx_amber_pressure": fx.situation("anomalie_defaut", "the fictive pressure is lower than the recommended value"),
+            # the term only in the shared designation
+            "fx_amber_sensor": fx.situation("anomalie_defaut", "FICTIVE SENSOR FAULT", "manufacturer_designation"),
+            # a failure term is never « à prendre en compte »
+            "fx_amber_code_a": fx.situation("information_a_prendre_en_compte", "a fictive code fault"),
+        }), c, dev_trial=True)
+        assert sit == {} and set(rejected) == {"fx_amber_pressure", "fx_amber_sensor", "fx_amber_code_a"}
+        assert vc.failure_term("a fictive sensor fault") and not vc.failure_term("no fictive fault is reported")
+
+
+class TestStopNeverLowered:
+    def test_stop_instruction_never_reclassified_lower(self, grouped):
+        c = ManifestNoticeRepository(grouped).catalogue
+        sit, rejected, _ = vc.load_situations(fx.build_situations(grouped, entries={
+            "fx_red_fluid": fx.situation("information_a_prendre_en_compte", fx.RED_MEANING),
+            "fx_red_steer_a": fx.situation("information_a_prendre_en_compte", "fictive assistance may be reduced"),
+            "fx_red_alarm_a": fx.situation("anomalie_defaut", "a fictive pressure loss",
+                                           consignes=[(fx.ALARM_STOP_PHRASE, "linked_warnings", None, None)]),
+            "fx_amber_code_a": fx.situation("anomalie_defaut", "a fictive code fault",
+                                            consignes=[(fx.STOP_PHRASE, "linked_warnings", None, None)]),
+        }), c, dev_trial=True)
+        assert sit == {} and set(rejected) == {"fx_red_fluid", "fx_red_steer_a", "fx_red_alarm_a", "fx_amber_code_a"}
+
+    def test_restart_procedure_is_an_expected_action_level_unchanged(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped)
+        before = confirm(client, ["fx_red_steer_a"])["premier_constat"]["triage"]
+        with_situations(monkeypatch, grouped)
+        r = confirm(client, ["fx_red_steer_a"])
+        (b,) = ambiguous(r)
+        assert b["action_title"] == "Action attendue de votre part"
+        assert b["actions"] == [{"only_for": "Indiqué seulement pour : FICTIVE STEERING FAILURE — Assistance fictive peut-être réduite",
+                                 "entry_id": "fx_red_steer_a", "passages": [{
+                                     "field": "Consigne", "text": fx.STEER_PROCEDURE, "printed_page": "F-13", "pdf_page": 13,
+                                     "condition": {"text": fx.STEER_CONDITION, "printed_page": "F-13", "pdf_page": 13}}]}]
+        # The procedure is no longer an urgent instruction; the other stop (same variant) stays urgent, whole.
+        assert [(u["entry_id"], [p["text"] for p in u["passages"]]) for u in b["urgent"]] == [("fx_red_steer_a", [fx.STEER_MIXED])]
+        assert fx.STEER_PROCEDURE not in json.dumps(b["urgent"], ensure_ascii=False)
+        st = b["variants"][0]["entry"]["situation"]
+        assert [(c["label"], c["action"]) for c in st["consignes"]] == [
+            ("Action attendue de votre part", True), ("Consigne du constructeur", False)]
+        # Internal level computed exactly as before; red screen still on offer, never automatic.
+        triage = r["premier_constat"]["triage"]
+        assert (triage["level"], triage["engine_level"]) == (before["level"], before["engine_level"])
+        assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]
+        assert not vc.is_restart_procedure(fx.STEER_MIXED) and vc.is_restart_procedure(fx.STEER_PROCEDURE)
