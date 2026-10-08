@@ -311,17 +311,22 @@ def failure_term(text: str) -> bool:
     return bool(_FAILURE_TERM.search(text)) and not _NEGATED_FAILURE.search(text)
 
 
+def presented_as_action_stop(sentence: str, situation: Optional["Situation"]) -> bool:
+    """A stop sentence that a VALIDATED « action attendue » (action_conducteur) classification presents as the
+    expected action: its own justification or one of its stop instructions (presented_as_action). Shown under
+    « Action attendue de votre part », with its cited condition; never asked about as a stop condition."""
+    return situation is not None and situation.action_validated and any(
+        a in sentence or sentence in a for a in [situation.justification.source_phrase] + [
+            c.anchor.source_phrase for c in situation.consignes if c.presented_as_action])
+
+
 def _covered(sentence: str, situation: Optional["Situation"]) -> bool:
     """A stop sentence presented elsewhere than as urgent: a documented
     restart procedure, or a CONDITIONAL stop instruction of a situation that
     is not an immediate alert (shown under « Consigne applicable si… »)."""
     if _RESTART_PROCEDURE.search(sentence):
         return True
-    # A VALIDATED « action attendue » classification presents its own justification and its stop
-    # instructions as the expected action (presentation only: flags and internal level unchanged).
-    if situation is not None and situation.action_validated and any(
-            a in sentence or sentence in a for a in [situation.justification.source_phrase] + [
-                c.anchor.source_phrase for c in situation.consignes if c.presented_as_action]):
+    if presented_as_action_stop(sentence, situation):
         return True
     return situation is not None and any(
         c.conditional and (c.anchor.source_phrase in sentence or sentence in c.anchor.source_phrase)
@@ -436,8 +441,15 @@ def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
     the instruction of a situation classified alerte_consigne_immediate (a
     classification can add urgency, never remove it). A unit leaves this
     list only when each of its stop sentences is a restart procedure or a
-    conditional instruction shown, whole, under « Consigne applicable si… »."""
-    out = [{**u} for u in text_units(e) if u["field"] != "Désignation" and is_stop_instruction(u["text"])
+    conditional instruction shown, whole, under « Consigne applicable si… ».
+    Each passage carries the condition the notice cites for its instruction
+    (exact, with page), shown just above it; None when none is cited."""
+    def condition(text):
+        c = next((c.condition for c in (situation.consignes if situation else ())
+                  if c.condition is not None and (c.anchor.source_phrase in text or text in c.anchor.source_phrase)), None)
+        return None if c is None else {"text": c.source_phrase, "printed_page": c.printed_page, "pdf_page": c.pdf_page}
+
+    out = [{**u, "condition": condition(u["text"])} for u in text_units(e) if u["field"] != "Désignation" and is_stop_instruction(u["text"])
            and not all(_covered(s, situation) for s in _SENTENCE.split(u["text"]) if is_stop_instruction(s))]
     if situation is not None and situation.nature == "alerte_consigne_immediate":
         for c in situation.consignes:
@@ -445,7 +457,7 @@ def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
                 continue
             if not any(c.anchor.source_phrase in u["text"] for u in out):
                 out.append({"field": "Consigne", "text": c.anchor.source_phrase, "printed_page": c.anchor.printed_page,
-                            "pdf_page": c.anchor.pdf_page})
+                            "pdf_page": c.anchor.pdf_page, "condition": condition(c.anchor.source_phrase)})
     return out
 
 

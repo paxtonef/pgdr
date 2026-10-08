@@ -597,8 +597,11 @@ def attach_conditional_stops(finding: ManufacturerFirstFinding, c: NoticeCatalog
     page, with the condition a preparation pairs with it (validated or not)
     and the driver's answer (unknown by default). Already covered by a
     VALIDATED structured item (stop_vehicle_engine_off): not repeated. A
-    restart procedure is never one. Also reports a validated item that
-    records a restart procedure as an immediate stop (never altered)."""
+    restart procedure is never one, nor a stop sentence that a VALIDATED
+    « action attendue » classification presents as the expected action (no
+    condition question for it; a « Oui » can never raise the level on it).
+    Also reports a validated item that records a restart procedure as an
+    immediate stop (never altered)."""
     entries, limits = [], []
     for f in finding.entries:
         x = f.provenance.entry_id
@@ -611,6 +614,8 @@ def attach_conditional_stops(finding: ManufacturerFirstFinding, c: NoticeCatalog
         stops = []
         for s_ in vc.catalogue_stops(e):
             if item.basis == FindingBasis.DOCUMENTED and item.source_phrase in s_["text"]:
+                continue
+            if vc.presented_as_action_stop(s_["text"], st):
                 continue
             paired = vc.stop_condition(s_, st)
             cond = paired[0].condition if paired else None
@@ -674,6 +679,12 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     by_id = {f.provenance.entry_id: f for f in finding.entries}
     # Every uncertainty of the presentation, what it touches and where it is shown (internal, never displayed).
     uncertainties: list[dict] = []
+    for x in eval_ids:
+        for s_ in vc.catalogue_stops(c.entry(x)):
+            if vc.presented_as_action_stop(s_["text"], w.situations.get(x)):
+                # Shown as the expected action; no condition question, not passed to R-5 by the driver's answer.
+                uncertainties.append(vc.uncertainty("stop.presented_as_action", "action", entry_id=x, key=s_["key"],
+                                                    cause="validated_action_situation"))
 
     def present(x, members=None, **where):
         out = vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
@@ -939,7 +950,8 @@ def condition(pid: str, req: ConditionRequest):
     _require_consent(p)
     entry_id = req.key.partition("#")[0]
     e = _catalogue().entry(entry_id)
-    if p.phase != "restitution" or e is None or req.key not in {s_["key"] for s_ in vc.catalogue_stops(e)}:
+    if p.phase != "restitution" or e is None or req.key not in {
+            s_["key"] for s_ in vc.catalogue_stops(e) if not vc.presented_as_action_stop(s_["text"], get_wiring().situations.get(entry_id))}:
         raise HTTPException(status_code=409, detail="Aucune condition n'est attendue ici.")
     p.conditions[req.key] = req.answer
     return _after_confirmation(pid, p)
@@ -1382,7 +1394,10 @@ function renderAmbiguous(b, root, redScreen) {
       for (const u of b.urgent) {
         const d = make("div", null, "urgent-variant"); d.dataset.entryId = u.entry_id; us.append(d);
         d.append(onlyFor(u));
-        for (const pa of u.passages) cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page});
+        for (const pa of u.passages) {
+          if (pa.condition) cite(d, pa.condition, "urgent-condition");  // the cited condition, just above its instruction
+          cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page});
+        }
       }
     }
     if (b.actions.length) {

@@ -117,12 +117,59 @@ class TestValidatedAction:
                     dataclasses.replace(c, presented_as_action=False) for c in st.consignes))
             out.append(confirm(client, ["fx_red_fluid"]))
         a, b = out
-        assert a["premier_constat"]["triage"] == b["premier_constat"]["triage"]
-        assert a["premier_constat"]["triage"]["level"] == "emergency_stop"
-        strip = lambda r: json.loads(json.dumps(r["premier_constat"].get("internal")).replace(r["parcours_id"], "PID"))
-        assert strip(a) == strip(b)
+        ta, tb = a["premier_constat"]["triage"], b["premier_constat"]["triage"]
+        assert ta["level"] == tb["level"] == "emergency_stop" and ta["r5_rows"] == tb["r5_rows"]
+        assert ta["engine_level"] == tb["engine_level"] and ta["triggered_rules"] == tb["triggered_rules"]
+        # Only the stop presented as the expected action leaves the R-5 list (no question, no answer on it).
+        key = vc.stop_key("fx_red_fluid", INSTRUCTION)
+        assert [u for u in tb["safety_uncertainties"] if u["key"] != key] == ta["safety_uncertainties"]
+        assert key not in [s["key"] for s in a["premier_constat"]["internal"]["stops"]]
+        assert key in [s["key"] for s in b["premier_constat"]["internal"]["stops"]]
+        assert a["premier_constat"]["internal"]["consignes"] == b["premier_constat"]["internal"]["consignes"]
         assert situation_of(a)["consignes"][0]["label"] != situation_of(b)["consignes"][0]["label"]
 
     def test_draft_refused_outside_the_trial(self, monkeypatch, notice):
         w = wire(monkeypatch, notice, dev_trial=False, situations_path=situations(notice, "action_conducteur"))
         assert w.situations == {} and w.situations_status == "refused: situations not validated"
+
+
+def stop_keys(r) -> list[str]:
+    return [s["key"] for s in r["premier_constat"]["presentation"]["stops"]]
+
+
+class TestNoConditionQuestionForValidatedAction:
+    def test_no_question_and_no_rise_whatever_the_answer(self, monkeypatch, notice, client):
+        wire(monkeypatch, notice, situations_path=situations(notice, "action_conducteur", validated_by="Fictive Owner"))
+        r = confirm(client, ["fx_red_fluid"])
+        key = vc.stop_key("fx_red_fluid", INSTRUCTION)
+        assert key not in stop_keys(r)  # no « Consignes d'arrêt … et leur condition » entry, no question
+        assert situation_of(r)["consignes"][0]["consigne"]["text"] == INSTRUCTION  # still shown, exact
+        level = r["premier_constat"]["triage"]["level"]
+        out = client.post(f"/api/v1/parcours/{r['parcours_id']}/condition", json={"key": key, "answer": "confirmed"})
+        assert out.status_code == 409  # no answer can raise the level on this instruction
+        assert any(u["kind"] == "stop.presented_as_action" and u["key"] == key and u["cause"] == "validated_action_situation"
+                   for u in r["premier_constat"]["internal"]["uncertainties"])
+        # The other (conditional) stop keeps its question; confirming it is unchanged behaviour.
+        other = [k for k in stop_keys(r) if k != key]
+        assert other
+        r2 = client.post(f"/api/v1/parcours/{r['parcours_id']}/condition", json={"key": other[0], "answer": "excluded"}).json()
+        assert r2["premier_constat"]["triage"]["level"] == level
+
+    def test_draft_keeps_the_question_and_the_rise(self, monkeypatch, notice, client):
+        wire(monkeypatch, notice, situations_path=situations(notice, "action_conducteur"))
+        r = confirm(client, ["fx_red_fluid"])
+        key = vc.stop_key("fx_red_fluid", INSTRUCTION)
+        assert key in stop_keys(r)
+        out = client.post(f"/api/v1/parcours/{r['parcours_id']}/condition", json={"key": key, "answer": "confirmed"}).json()
+        assert out["premier_constat"]["triage"]["level"] == "emergency_stop"
+        assert f"R-5:conditional_stop_confirmed:fx_red_fluid" in out["premier_constat"]["triage"]["r5_rows"]
+
+
+def test_immediate_alert_condition_travels_with_the_instruction(monkeypatch, tmp_path, client):
+    grouped = fx.build(tmp_path / "grouped", with_groups=True)
+    wire(monkeypatch, grouped, situations_path=fx.build_situations(grouped))
+    r = confirm(client, ["fx_red_alarm_a"])  # no documented distinctive element: shown as ambiguous, no question
+    (b,) = r["premier_constat"]["presentation"]["ambiguous"]
+    (pa,) = b["urgent"][0]["passages"]
+    assert pa["text"] == fx.ALARM_STOP
+    assert pa["condition"] == {"text": "If the fictive alarm light comes on while driving", "printed_page": "F-10", "pdf_page": 10}

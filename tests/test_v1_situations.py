@@ -97,8 +97,11 @@ class TestMixedGroup:
         # Conditional urgent instruction kept, under variant A only.
         assert [(u["entry_id"], u["only_for"]) for u in b["urgent"]] == [
             ("fx_red_alarm_a", "Indiqué seulement pour : FICTIVE ALARM — Perte de pression fictive")]
+        # The condition the notice cites for this instruction travels with it (shown just above it).
         assert b["urgent"][0]["passages"] == [{"field": "Avertissement 9)", "text": fx.ALARM_STOP,
-                                               "printed_page": "F-10", "pdf_page": 10}]
+                                               "printed_page": "F-10", "pdf_page": 10, "condition": {
+                                                   "text": "If the fictive alarm light comes on while driving",
+                                                   "printed_page": "F-10", "pdf_page": 10}}]
         assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]
         a_, b_ = b["variants"]
         assert a_["entry"]["situation"]["consignes"] == [{
