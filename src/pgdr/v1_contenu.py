@@ -539,19 +539,18 @@ DETAILS_REASONS = {
                                  "affichée avec sa condition dans « Consignes d'arrêt de la notice »",
     "point_not_established": "point sans objet : aucune donnée établie et aucune consigne citée n'en dépend",
     "condition_without_consigne": "interprétation non validée d'une condition dont aucune consigne ne dépend",
-    "operating_indication_no_consigne": "indication de fonctionnement sans consigne citée, sans variante critique, "
-                                        "consigne conditionnelle, condition inconnue ni situation non déterminée : la "
-                                        "phrase de prudence ne change ni l'explication, ni l'action, ni l'applicabilité "
-                                        "d'une consigne",
+    "generic_caution": "précaution générique : aucune consigne citée, sans variante critique, consigne d'arrêt dans le "
+                       "passage, consigne conditionnelle, condition inconnue ni situation non déterminée ; la phrase ne "
+                       "change ni l'explication, ni l'action, ni l'applicabilité d'une consigne",
 }
 # Why an uncertainty that could have been folded stays in the body (internal, never displayed).
 BODY_REASONS = {
-    "not_operating_indication": "la situation n'est pas une indication de fonctionnement établie",
     "stop_in_passage": "le passage cite une consigne d'arrêt",
     "critical_variant": "le groupe contient une variante critique (consigne d'arrêt ou alerte immédiate)",
     "conditional_consigne": "le groupe contient une consigne conditionnelle",
     "condition_unknown": "une condition reste non renseignée",
     "undetermined_situation": "une situation du groupe est non déterminée ou non classée",
+    "defect_without_instruction": "défaut signalé par la notice sans aucune consigne citée : l'action reste inconnue",
 }
 
 
@@ -686,16 +685,17 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
 def no_consigne_uncertainty(e: NoticeEntry, st: Optional[Situation],
                             group: Optional[list[tuple[NoticeEntry, Optional[Situation]]]] = None,
                             answers: Optional[Mapping[str, str]] = None) -> Optional[dict]:
-    """The caution sentence « Aucune consigne n'est citée… ». Folded in « Détails » only for an
-    operating indication with no stop in its passage, in a selection or group without a critical
-    variant, conditional instruction, unknown condition or undetermined situation. In case of doubt:
-    body. Placement and reason are traced."""
+    """The caution sentence « Aucune consigne n'est citée… ». The criterion is the usefulness of the
+    uncertainty, never the situation type alone: folded in « Détails » when it is only a generic caution
+    (no critical variant, no stop in the passage, no conditional instruction, no unknown condition, no
+    undetermined situation); kept in the body as soon as it says something useful about the action or
+    safety. In case of doubt: body. Placement and reason are traced."""
     if st is None or st.consignes:
         return None
     others = group or [(e, st)]
     body = []
-    if st.nature != "fonctionnement_normal":
-        body.append("not_operating_indication")
+    if st.nature == "anomalie_defaut":
+        body.append("defect_without_instruction")  # a reported defect with no instruction: the action is unknown
     if catalogue_stops(e):
         body.append("stop_in_passage")
     for v, s in others:
@@ -709,7 +709,7 @@ def no_consigne_uncertainty(e: NoticeEntry, st: Optional[Situation],
                    for c in s.consignes if c.conditional):
                 body.append("condition_unknown")
     if not body:
-        return uncertainty("situation.no_consigne", "technique", reason="operating_indication_no_consigne")
+        return uncertainty("situation.no_consigne", "technique", reason="generic_caution")
     reasons = list(dict.fromkeys(body))
     point = "applicabilite_consigne" if {"critical_variant", "conditional_consigne", "condition_unknown"} & set(reasons) else "action"
     return uncertainty("situation.no_consigne", point, body_reasons=reasons,

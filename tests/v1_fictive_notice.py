@@ -195,7 +195,7 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
                   linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
                                     "inline_pictograms": []}]),
             # Identical file, two lighting functions, nothing distinctive, no instruction.
-            entry("fx_green_side_lights", "FICTIVE SIDE LAMPS", "green", "images/lights.png", LIGHTS_SIDE, 20, state=None),
+            entry("fx_green_side_lights", "FICTIVE SIDE LIGHTS", "green", "images/lights.png", LIGHTS_SIDE, 20, state=None),
             entry("fx_green_follow_me", "FICTIVE FOLLOW ME", "green", "images/lights.png", LIGHTS_FOLLOW, 20, state=None),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",

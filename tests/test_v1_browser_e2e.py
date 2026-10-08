@@ -461,9 +461,12 @@ def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, 
     page.click('.tile[data-entry-id="fx_blue_frost"]')
     page.click("#selection-continue")
     page.click("#confirm")
-    sit = page.locator('#premier-constat .finding-entry[data-entry-id="fx_blue_frost"] .situation')
+    frost = page.locator('#premier-constat .finding-entry[data-entry-id="fx_blue_frost"]')
+    sit = frost.locator(".situation")
     expect(sit.locator("h3")).to_have_text("Type de situation : Signalement du véhicule")
-    expect(sit.locator(".no-consigne")).to_have_text(
+    # Generic caution (nothing critical, no condition, no stop in the passage): kept, folded in « Détails ».
+    expect(sit.locator(".no-consigne")).to_have_count(0)
+    expect(frost.locator(":scope > details.details .no-consigne")).to_have_text(
         "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.")
     expect(page.locator("#screen-restitution")).not_to_contain_text("Vous pouvez rouler")
 
@@ -603,7 +606,7 @@ def test_v1_group_block_variant_explanations_first_and_caution_placement(page: P
     block = page.locator("#premier-constat .ambiguous")
     heads = block.locator(":scope > .variant-explanations > .variant-explanation")
     expect(heads).to_have_count(2)
-    expect(heads.nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE SIDE LAMPS — Feux de position fictifs allumés")
+    expect(heads.nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE SIDE LIGHTS — Feux de position fictifs allumés")
     expect(heads.nth(0)).to_contain_text("Type de situation : Indication de fonctionnement")
     first_text = block.evaluate("""b => [...b.children].filter(n => n.tagName !== 'IMG' && n.checkVisibility())[0].className""")
     assert first_text == "variant-explanations"

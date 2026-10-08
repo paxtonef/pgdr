@@ -638,6 +638,12 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
         st = w.situations.get(v.entry_id)
         return v.designation + (" — " + st.title if st is not None and st.title else "")
 
+    def only_for(v) -> dict:
+        # The same label, split so that the page marks the designation as notice text (its language).
+        st = w.situations.get(v.entry_id)
+        return {"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "only_for_label": vc.DRAFT_LABELS["only_for"],
+                "designation": v.designation, "title": st.title if st is not None and st.title else None}
+
     entries = [present(x, variant="selected") for x in entry_ids]
     blocks = []
     for i in ambiguous:
@@ -667,8 +673,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             # First: what each variant concerns, side by side, never merged: its prepared explanation (part
             # « Ce que la notice indique », exact sentences and citations), else its designation and situation type.
             "explanations": [{
-                "entry_id": v.entry_id, "only_for": vc.DRAFT_LABELS["only_for"] + title(v), "designation": v.designation,
-                "only_for_label": vc.DRAFT_LABELS["only_for"], "title": st.title if st is not None else None,
+                "entry_id": v.entry_id, **only_for(v),
                 "explanation": None if h is None else {
                     "title": vc.EXPLANATION_PARTS[0][1],
                     "sentences": [{"text": s_.text, "citation": s_.source_phrase, "source_field": s_.source_field}
@@ -681,26 +686,25 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 "label": vc.DRAFT_LABELS["message_given"], "text": messages[i]},
             # Urgent instructions stay visible, each under the variant it belongs to (never transferred).
             "urgent_title": vc.DRAFT_LABELS["urgent_title"],
-            "urgent": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
+            "urgent": [{**only_for(v), "entry_id": v.entry_id, "passages": u}
                        for v in variants for u in [vc.urgent_passages(v, w.situations.get(v.entry_id))] if u],
             # What each variant's passage describes comes first (type, title, exact passage).
-            "situations": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id,
+            "situations": [{**only_for(v), "entry_id": v.entry_id,
                             "situation": vc.present_situation(w.situations[v.entry_id])}
                            for v in variants if v.entry_id in w.situations],
             # Expected actions (restart procedure, documented action), with their condition and page.
             "action_title": vc.DRAFT_LABELS["action_title"], "condition_label": vc.SITUATION_LABELS["condition"],
             # Conditional stop instructions: never urgent here, never the red button; condition then whole text.
             "conditional_title": vc.DRAFT_LABELS["conditional_title"],
-            "conditionals": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
+            "conditionals": [{**only_for(v), "entry_id": v.entry_id, "passages": u}
                              for v in variants for u in [vc.conditional_passages(v, w.situations.get(v.entry_id), answers)] if u],
             "condition_question": {k: vc.DRAFT_LABELS[f"condition_{k}"] for k in ("question", "confirmed", "excluded", "unknown")},
-            "actions": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
+            "actions": [{**only_for(v), "entry_id": v.entry_id, "passages": u}
                         for v in variants for u in [vc.action_passages(v, w.situations.get(v.entry_id))] if u],
             "common_title": vc.DRAFT_LABELS["common"], "common": common,
             "no_common": None if common else vc.DRAFT_LABELS["no_common"],
             "variants": [{
-                "only_for": vc.DRAFT_LABELS["only_for"] + title(v),
-                "only_for_label": vc.DRAFT_LABELS["only_for"],
+                **only_for(v),
                 "condition": {"label": vc.DRAFT_LABELS["condition"],
                               "state": STATE_LABELS.get(v.state, v.state) if v.state else vc.DRAFT_LABELS["not_documented"],
                               "displayed_message": v.displayed_message or vc.DRAFT_LABELS["not_documented"]},
@@ -711,7 +715,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     def stop_view(f, cs) -> dict:
         label = (vc.DRAFT_LABELS["stop_condition_none"] if cs.condition is None else
                  vc.DRAFT_LABELS["stop_condition_validated"] if cs.condition_established else vc.DRAFT_LABELS["stop_condition_draft"])
-        return {"key": cs.key, "entry_id": f.provenance.entry_id, "only_for": vc.DRAFT_LABELS["only_for"] + title(c.entry(f.provenance.entry_id)),
+        return {"key": cs.key, "entry_id": f.provenance.entry_id, **only_for(c.entry(f.provenance.entry_id)),
                 "citation": {"text": cs.citation, "printed_page": cs.printed_page, "pdf_page": cs.pdf_page},
                 "condition_label": label, "condition": None if cs.condition is None else {
                     "text": cs.condition, "printed_page": cs.condition_printed_page, "pdf_page": cs.condition_pdf_page},
@@ -1196,6 +1200,12 @@ function sec(parent, title, cls) { const s = make("div", null, cls); s.append(ma
 // Folded « Détails »: purely technical uncertainties only (the server decides the placement).
 function detailsBox(label) { const d = make("details", null, "details"); d.append(make("summary", label)); return d; }
 function flush(parent, d) { if (d.children.length > 1) parent.append(d); }
+// « Indiqué seulement pour : » + the notice designation (notice language) + the French title.
+function onlyFor(x) {
+  const p = make("p", x.only_for_label, "label"); const dn = make("span", x.designation); dn.lang = noticeLang; p.append(dn);
+  if (x.title) p.append(document.createTextNode(" — " + x.title));
+  return p;
+}
 function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
 function renderEntry(e, block, headingLabel) {
     const h = make("p", null, "selected"); h.append(make("strong", headingLabel));
@@ -1271,9 +1281,7 @@ function renderAmbiguous(b, root, redScreen) {
     const hd = make("div", null, "variant-explanations"); box.append(hd);
     for (const x of b.explanations) {
       const col = make("div", null, "variant-explanation"); col.dataset.entryId = x.entry_id; hd.append(col);
-      const lb = make("p", x.only_for_label, "label"); const dn = make("span", x.designation); dn.lang = noticeLang; lb.append(dn);
-      if (x.title) lb.append(document.createTextNode(" — " + x.title));
-      col.append(lb);
+      col.append(onlyFor(x));
       if (x.explanation) {
         col.append(make("p", x.explanation.title, "label"));
         for (const sen of x.explanation.sentences) {
@@ -1291,7 +1299,7 @@ function renderAmbiguous(b, root, redScreen) {
       const ss = sec(box, "Ce que décrit la notice pour chaque possibilité", "described");
       for (const x of b.situations) {
         const d = make("div", null, "described-variant"); d.dataset.entryId = x.entry_id; ss.append(d);
-        d.append(make("p", x.only_for, "label"));
+        d.append(onlyFor(x));
         d.append(make("p", "Type de situation : " + x.situation.label, "described-type nature-" + x.situation.nature));
         cite(d, x.situation.justification, "described-quote");
       }
@@ -1301,7 +1309,7 @@ function renderAmbiguous(b, root, redScreen) {
       const us = sec(box, b.urgent_title, "urgent");
       for (const u of b.urgent) {
         const d = make("div", null, "urgent-variant"); d.dataset.entryId = u.entry_id; us.append(d);
-        const h = make("p", u.only_for, "label"); d.append(h);
+        d.append(onlyFor(u));
         for (const pa of u.passages) cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page});
       }
     }
@@ -1309,7 +1317,7 @@ function renderAmbiguous(b, root, redScreen) {
       const as = sec(box, b.action_title, "expected-action");
       for (const u of b.actions) {
         const d = make("div", null, "action-variant"); d.dataset.entryId = u.entry_id; as.append(d);
-        d.append(make("p", u.only_for, "label"));
+        d.append(onlyFor(u));
         for (const pa of u.passages) {
           if (pa.condition) { d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "action-condition"); }
           cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "action-quote");
@@ -1320,7 +1328,7 @@ function renderAmbiguous(b, root, redScreen) {
       const cs2 = sec(box, b.conditional_title, "conditional");
       for (const u of b.conditionals) {
         const d = make("div", null, "conditional-variant"); d.dataset.entryId = u.entry_id; cs2.append(d);
-        d.append(make("p", u.only_for, "label"));
+        d.append(onlyFor(u));
         for (const pa of u.passages) {
           d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "conditional-condition");
           cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "conditional-quote");
@@ -1360,7 +1368,7 @@ function renderConstat(pc) {
     (p.draft_texts_placement === "details" ? cdet : cb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops_confirmed) {
       const d = make("div", null, "confirmed-stop"); d.dataset.key = x.key; cb.append(d);
-      d.append(make("p", x.only_for, "label"));
+      d.append(onlyFor(x));
       d.append(make("p", x.condition_label, "label")); if (x.condition) cite(d, x.condition, "confirmed-condition");
       cite(d, x.citation, "confirmed-citation"); d.append(make("p", x.answer_label, "condition-answer"));
     }
@@ -1377,7 +1385,7 @@ function renderConstat(pc) {
     (p.draft_texts_placement === "details" ? sdet : sb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops) {
       const d = make("div", null, "stop-item"); d.dataset.key = x.key; d.dataset.answer = x.answer; sb.append(d);
-      d.append(make("p", x.only_for, "label"));
+      d.append(onlyFor(x));
       d.append(make("p", x.condition_label, "label")); if (x.condition) cite(d, x.condition, "stop-condition");
       cite(d, x.citation, "stop-citation");
       conditionQuestion(d, x, {...condQ, question: p.stop_question});
@@ -1435,7 +1443,7 @@ el("confirm").onclick = async () => {
 };
 function buildArticle(x) {
       const a = make("article", null, "restitution"); a.dataset.entryId = x.entry_id;
-      const img = make("img"); img.src = x.image; img.alt = x.designation; a.append(img);
+      const img = make("img"); img.src = x.image; img.alt = x.designation; img.lang = noticeLang; a.append(img);
       const h = make("h2", x.designation); h.lang = noticeLang; a.append(h);
       const tags = make("p");
       if (x.where_provided) tags.append(make("span", "selon équipement", "tag where-provided"));

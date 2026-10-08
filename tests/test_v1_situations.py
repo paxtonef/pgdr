@@ -260,7 +260,8 @@ class TestStopNeverLowered:
         assert b["urgent"] == []
         assert [p["text"] for p in b["actions"][0]["passages"][1:]] == [
             "Otherwise stop the fictive motor for about 20 seconds and then restart it."]
-        assert b["conditionals"] == [{"only_for": b["actions"][0]["only_for"], "entry_id": "fx_red_steer_a", "passages": [{
+        label = {k: b["actions"][0][k] for k in ("only_for", "only_for_label", "designation", "title")}
+        assert b["conditionals"] == [{**label, "entry_id": "fx_red_steer_a", "passages": [{
             "condition": {"text": "If the fictive steering light flashes", "printed_page": "F-14", "pdf_page": 14},
             "text": "If the fictive steering light flashes, stop the fictive vehicle at once.",
             "printed_page": "F-14", "pdf_page": 14, "key": vc.stop_key("fx_red_steer_a", "If the fictive steering light flashes, stop the fictive vehicle at once."), "answer": "unknown",

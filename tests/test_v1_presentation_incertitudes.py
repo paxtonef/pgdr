@@ -235,7 +235,7 @@ def test_lighting_group_head_and_caution_folded(monkeypatch, grouped, client):
     for v in b["variants"]:
         assert v["entry"]["situation"]["no_consigne_placement"] == "details"
         u = caution(r, v["entry"]["entry_id"])
-        assert u["placement"] == "details" and u["reason"] == "operating_indication_no_consigne"
+        assert u["placement"] == "details" and u["reason"] == "generic_caution"
     assert b["common"] == [] and b["no_common"] == vc.DRAFT_LABELS["no_common"]  # no invented common meaning
 
 
@@ -259,10 +259,15 @@ def test_belt_group_explanations_side_by_side_never_merged(monkeypatch, grouped,
     assert [[s_["text"] for s_ in h["explanation"]["sentences"]] for h in b["explanations"]] == [
         [BELT_EXPLANATIONS[x]["indique"][0]["texte"]] for x in ("fx_red_belt_fixed", "fx_red_belt_flashing")]
     assert b["limit"] == vc.LIMIT_V1 and b["urgent"] == [] and b["red_offer"] is None
-    # Belts: an expected driver action, not an operating indication: the caution sentence stays in the body.
+    # Belts: an expected driver action, but no stop, no condition, nothing critical: generic caution, folded.
+    # The fixed/flashing uncertainty stays in the body (it changes the explanation).
     for x in ("fx_red_belt_fixed", "fx_red_belt_flashing"):
         u = caution(r, x)
-        assert u["placement"] == "corps" and u["body_reasons"] == ["not_operating_indication"]
+        assert u["placement"] == "details" and u["reason"] == "generic_caution"
+        v = next(v for v in b["variants"] if v["entry"]["entry_id"] == x)
+        assert v["entry"]["situation"]["no_consigne_placement"] == "details"
+    (g,) = uncertainties(r, kind="group.variant_undetermined")
+    assert g["placement"] == "corps" and "explication" in g["points"]
 
 
 def test_brake_group_caution_in_body_stop_visible(monkeypatch, grouped, client):
@@ -278,13 +283,15 @@ def test_brake_group_caution_in_body_stop_visible(monkeypatch, grouped, client):
     assert [h["entry_id"] for h in b["explanations"]] == ["fx_red_pb_failure", "fx_red_pb_fluid", "fx_red_pb_applied"]
 
 
-@pytest.mark.parametrize("nature", ["situation_non_determinee", "information_a_prendre_en_compte"])
-def test_caution_doubt_stays_in_body(grouped, nature):
+@pytest.mark.parametrize("nature,placement", [("situation_non_determinee", "corps"), ("anomalie_defaut", "corps"),
+                                               ("information_a_prendre_en_compte", "details"),
+                                               ("action_conducteur", "details"), ("fonctionnement_normal", "details")])
+def test_caution_criterion_is_usefulness_not_type(grouped, nature, placement):
     from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
     e = ManifestNoticeRepository(grouped).catalogue.entry("fx_green_side_lights")
     a = vc.Anchor("documented_meaning", "the fictive side lights are on", "F-20", 20)
     lone = vc.Situation(nature, a, (), (), None, True)
-    assert vc.no_consigne_uncertainty(e, lone)["placement"] == "corps"
+    assert vc.no_consigne_uncertainty(e, lone)["placement"] == placement
     ok = vc.Situation("fonctionnement_normal", a, (), (), None, True)
     assert vc.no_consigne_uncertainty(e, ok, [(e, ok), (e, None)])["body_reasons"] == ["undetermined_situation"]
     assert vc.no_consigne_uncertainty(e, ok)["placement"] == "details"
@@ -299,3 +306,35 @@ def test_conditional_or_unknown_condition_keeps_caution_in_body(grouped):
     tyre = cat.entry("fx_amber_tyre_low")
     u = vc.no_consigne_uncertainty(e, ok, [(e, ok), (tyre, sits["fx_amber_tyre_low"])])
     assert u["placement"] == "corps" and {"conditional_consigne", "condition_unknown"} <= set(u["body_reasons"])
+
+
+def test_variant_with_cited_instruction_has_no_caution_sentence(monkeypatch, grouped, client):
+    """Brake group: a variant whose passage cites an instruction gets no « Aucune consigne… » sentence;
+    a variant without one, beside a critical variant, keeps it in the body; the stop stays visible."""
+    full(monkeypatch, grouped)
+    r = restitution(client, ["fx_red_pb_failure"])
+    (b,) = r["premier_constat"]["presentation"]["ambiguous"]
+    sit = {v["entry"]["entry_id"]: v["entry"]["situation"] for v in b["variants"]}
+    assert sit["fx_red_pb_failure"]["consignes"] and sit["fx_red_pb_failure"]["no_consigne"] is None
+    assert sit["fx_red_pb_failure"]["no_consigne_placement"] is None
+    assert uncertainties(r, kind="situation.no_consigne", entry_id="fx_red_pb_failure") == []
+    assert sit["fx_red_pb_applied"]["no_consigne_placement"] == "corps"
+    assert [x["entry_id"] for x in b["urgent"]] == ["fx_red_pb_fluid"]
+
+
+def test_unknown_condition_keeps_caution_in_body(monkeypatch, grouped, client):
+    full(monkeypatch, grouped)
+    r = restitution(client, ["fx_red_steer_a"])
+    u = caution(r, "fx_red_steer_b")  # no instruction of its own, beside a variant with an unanswered condition
+    assert u["placement"] == "corps" and "condition_unknown" in u["body_reasons"]
+
+
+def test_designation_marked_as_notice_text_in_every_only_for_label(monkeypatch, grouped, client):
+    full(monkeypatch, grouped)
+    r = restitution(client, ["fx_red_steer_a"])
+    (b,) = r["premier_constat"]["presentation"]["ambiguous"]
+    items = (b["explanations"] + b["urgent"] + b["situations"] + b["conditionals"] + b["actions"] + b["variants"]
+             + r["premier_constat"]["presentation"]["stops"])
+    assert items
+    for x in items:  # same text as before, split: French label + notice designation + French title
+        assert x["only_for"] == x["only_for_label"] + x["designation"] + (" — " + x["title"] if x["title"] else "")
