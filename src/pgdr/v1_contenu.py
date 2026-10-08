@@ -73,6 +73,7 @@ DRAFT_LABELS = {
     "message_submit": "Valider ce message",
     "message_none": "Aucun message / Je ne sais pas",
     "message_given": "Message renseigné par vous : ",
+    "details": "Détails",
 }
 # Situation classification: the situation DESCRIBED by the passage, never the
 # pictogram or its colour alone. Labels are DRAFT texts.
@@ -523,6 +524,34 @@ def message_match(variants: list[NoticeEntry], message: str) -> Optional[str]:
     return hits[0] if len(hits) == 1 else None
 
 
+# --- uncertainties of the presentation -------------------------------------------
+# What each uncertainty of the result touches. In the body of the screen when its
+# resolution can change the explanation of the situation, the action to take or the
+# applicability of a safety instruction; only a purely TECHNICAL one goes to the
+# folded « Détails », always with its reason. Internal data (API), never displayed.
+UNCERTAINTY_POINTS = ("explication", "action", "applicabilite_consigne", "technique")
+DETAILS_REASONS = {
+    "draft_status": "statut de brouillon d'un texte ou d'un classement : ne change ni l'explication, ni l'action, "
+                    "ni l'applicabilité d'une consigne",
+    "unverified_point": "point structuré pas encore vérifié par PGDR : les consignes citées restent affichées "
+                        "(classement de la situation, texte du constructeur)",
+    "stop_shown_with_condition": "point structuré pas encore vérifié par PGDR : chaque consigne d'arrêt du passage est "
+                                 "affichée avec sa condition dans « Consignes d'arrêt de la notice »",
+    "point_not_established": "point sans objet : aucune donnée établie et aucune consigne citée n'en dépend",
+    "condition_without_consigne": "interprétation non validée d'une condition dont aucune consigne ne dépend",
+}
+
+
+def uncertainty(kind: str, point: str, *, reason: Optional[str] = None, **where) -> dict:
+    """One uncertainty of the result and what it touches. In case of doubt it is
+    shown: « Détails » only for a technical point with a known reason."""
+    if point not in UNCERTAINTY_POINTS:
+        raise ValueError(f"unknown point {point!r}")
+    details = point == "technique" and reason in DETAILS_REASONS
+    return {"kind": kind, "point": point, "placement": "details" if details else "corps",
+            **({"reason": reason, "reason_text": DETAILS_REASONS[reason]} if details else {}), **where}
+
+
 # --- situation classification ---------------------------------------------------
 
 @dataclass(frozen=True)
@@ -659,6 +688,7 @@ def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
     return {
         "nature": st.nature, "label": NATURE_LABELS[st.nature], "title": st.title,
         "mention": SITUATION_LABELS["draft"] if st.draft else None,
+        "mention_placement": "details" if st.draft else None,
         "validation": "brouillon" if st.draft else "validé",
         "justification": a(st.justification),
         "consignes": [{"consigne": {**a(c.anchor), "text": c.full} if c.conditional else a(c.anchor),
@@ -667,9 +697,36 @@ def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
                                  if c.conditional else SITUATION_LABELS["consigne"]),
                        "action": c.action, "conditional": c.conditional, **answer(i, c)}
                       for i, c in enumerate(st.consignes)],
-        "conditions": [a(c) for c in st.conditions],
+        "conditions": [{**a(c), "placement": (u or {}).get("placement", "corps")}
+                       for c in st.conditions for u in [_condition_uncertainty(st, c)]],
         "no_consigne": None if st.consignes else SITUATION_LABELS["no_consigne"],
     }
+
+
+def _condition_uncertainty(st: Situation, c: Anchor) -> Optional[dict]:
+    """A condition of the situation whose interpretation is not validated. When an
+    instruction depends on it, it touches that instruction's applicability (body);
+    otherwise it is technical (« Détails »)."""
+    if not st.draft and st.conditions_validated:
+        return None
+    if any(k.condition is not None and k.condition.source_phrase == c.source_phrase for k in st.consignes):
+        return uncertainty("situation.condition", "applicabilite_consigne", condition=c.source_phrase)
+    return uncertainty("situation.condition", "technique", reason="condition_without_consigne", condition=c.source_phrase)
+
+
+def situation_uncertainties(st: Optional[Situation], entry_id: str,
+                            answers: Optional[Mapping[str, str]] = None) -> list[dict]:
+    if st is None:
+        return []
+    out = [uncertainty("situation.draft", "technique", reason="draft_status")] if st.draft else []
+    out += [u for c in st.conditions for u in [_condition_uncertainty(st, c)] if u]
+    for c in st.consignes:
+        if c.conditional:
+            key = stop_key(entry_id, _first_stop_sentence(c.full))
+            if condition_answer(answers, key) == "unknown":
+                out.append(uncertainty("consigne.condition_unknown", "applicabilite_consigne", key=key,
+                                       condition=c.condition.source_phrase))
+    return out
 
 
 # --- explanations ---------------------------------------------------------------
@@ -776,7 +833,7 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
         # Derived values (R-1/R-2) are never displayed (internal level only).
         return item.source_phrase if item.basis.value == "documented" else None
 
-    points = []
+    points, point_uncertainties = [], []
     for key, title, item in (("stop", "Sécurité immédiate", f.stop_vehicle_engine_off),
                              ("operability", "Utilisation du véhicule", f.operability),
                              ("professional", "Intervention d'un professionnel", f.professional_attention),
@@ -784,8 +841,21 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
         quotes = [q for q in [cited(item)] if q]
         if key == "professional" and quotes:
             quotes += [q for q in (cited(f.urgency_phrase), cited(f.documented_suitability)) if q and q not in quotes[0]]
-        points.append({"key": key, "title": title, "quotes": quotes,
-                       "label": None if quotes else _ne_label(e, key, covered)})
+        label = None if quotes else _ne_label(e, key, covered)
+        placement = "corps"
+        if label is not None:
+            # A point without a cited phrase holds no established action: its status is technical,
+            # the instructions of the passage stay displayed where they are.
+            reason = ("point_not_established" if label == LABELS["absent"] else
+                      "stop_shown_with_condition" if key == "stop" and catalogue_stops(e) else "unverified_point")
+            u = uncertainty(f"point.{key}", "technique", reason=reason)
+            point_uncertainties.append(u)
+            placement = u["placement"]
+        points.append({"key": key, "title": title, "quotes": quotes, "label": label, "placement": placement})
+    uncertainties = ([] if explanation is None else
+                     [uncertainty("explanation.draft", "technique", reason="draft_status")] * explanation.draft
+                     + [uncertainty("explanation.inconnu", "explication")])
+    uncertainties += situation_uncertainties(situation, e.entry_id, answers) + point_uncertainties
     return {
         "entry_id": e.entry_id,
         "selected_label": LABELS["selected"],
@@ -797,6 +867,7 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
         },
         "explanation": None if explanation is None else {
             "mention": LABELS["draft_explanation"] if explanation.draft else None,
+            "mention_placement": "details" if explanation.draft else None,
             "parts": [{"key": k, "title": title,
                        "sentences": [{"text": s.text, "citation": s.source_phrase, "source_field": s.source_field}
                                      for s in explanation.parts[k]]}
@@ -805,4 +876,7 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
         "situation": present_situation(situation, e.entry_id, answers),
         "points": points,
         "stop_conditions": [p.source_phrase for p in f.stop_conditions],
+        "details_label": DRAFT_LABELS["details"],
+        # Internal: moved to the result's internal data by the parcours, never displayed.
+        "uncertainties": uncertainties,
     }

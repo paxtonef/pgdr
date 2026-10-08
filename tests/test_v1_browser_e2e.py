@@ -228,7 +228,8 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
         "Texte du constructeur reproduit dans la langue de la notice disponible (anglais).")
     expect(red).to_contain_text("Couleur : rouge")
     expect(red).to_contain_text("État : fixe")
-    expect(page.locator("details, .notes")).to_have_count(0)
+    expect(page.locator(".notes")).to_have_count(0)
+    expect(page.locator("#restitution details")).to_have_count(0)  # exact passages: never folded
     assert "Fictive curation note." not in page.locator("body").inner_text()
     _no_english_ui(page)
 
@@ -319,7 +320,9 @@ def test_v1_variant_group_question_then_ambiguity_belts_without_stop(page: Page,
     expect(block.locator(".variant").nth(1).locator(".meaning")).to_have_text(fx.BELT_MEANING_FLASHING)
     expect(block.locator(".variant .situation-title")).to_have_text(["Ceinture fictive ouverte",
                                                                     "Ceinture fictive ouverte en roulant"])
-    expect(block.locator(".draft-mention").first).to_be_visible()
+    # Draft status: technical, kept in the block's folded « Détails » (one click), never removed.
+    expect(block.locator(":scope > details.details > .draft-mention").first).to_be_attached()
+    expect(block.locator(":scope > details.details > summary")).to_have_text("Détails")
     # Red belts, no stop documented: no stop screen, no urgent block, no red offer.
     expect(page.locator("#premier-constat .urgent")).to_have_count(0)
     expect(block.locator("button.red-offer")).to_have_count(0)
@@ -516,3 +519,76 @@ def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):
                    "has been contacted", "we have contacted"):
         assert phrase not in body
     traffic.assert_clean(photo)
+
+
+def _visible_texts(loc) -> list[str]:
+    return loc.evaluate_all("ns => ns.filter(n => n.checkVisibility()).map(n => n.textContent)")
+
+
+def test_v1_presentation_rule_body_and_folded_details(page: Page, live_server):
+    """Explain first, give the established action, then only the useful uncertainty; technical ones folded
+    in « Détails » (citations and pages still there). Block order unchanged."""
+    # Informative light: no instruction block, no technical uncertainty in the body.
+    _restitution_for(page, live_server, ["fx_green_lamps"])
+    e = page.locator('#premier-constat .finding-entry[data-entry-id="fx_green_lamps"]')
+    expect(e.locator(".situation .no-consigne")).to_be_visible()
+    assert _visible_texts(e.locator(".point")) == [] and _visible_texts(e.locator(".draft-mention")) == []
+    det = e.locator(":scope > details.details")
+    expect(det.locator("summary")).to_have_text("Détails")
+    expect(det.locator(".point")).to_have_count(4)
+    det.locator("summary").click()
+    expect(det.locator(".draft-mention").first).to_be_visible()
+    expect(page.locator("#premier-constat .stops, #premier-constat .urgent")).to_have_count(0)
+    _no_english_ui(page)
+
+    # Two lighting functions: the variant uncertainty is shown (it changes the explanation), no safety screen.
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_green_lamps"]')
+    page.click('.tile[data-entry-id="fx_green_side_lights"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".limit")).to_be_visible()
+    expect(block.locator(".variant")).to_have_count(2)
+    expect(page.locator("#premier-constat .urgent, #premier-constat .stops, button.red-offer")).to_have_count(0)
+
+    # Brake group with a conditional stop: the stop stays visible above the variants, the uncertainty is shown.
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_green_side_lights"]')
+    page.click('.tile[data-entry-id="fx_red_pb_failure"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".limit")).to_be_visible()
+    expect(block.locator(".urgent")).to_be_visible()
+    expect(block.locator(".urgent")).to_contain_text(fx.PB_FLUID_WARNING)
+    assert block.evaluate("b => !!(b.querySelector('.urgent').compareDocumentPosition(b.querySelector('.variant')) "
+                          "& Node.DOCUMENT_POSITION_FOLLOWING)")
+    stops = page.locator("#premier-constat .stops")
+    expect(stops.locator(".stop-item").first).to_be_visible()
+    expect(stops.locator(".condition-answer").first).to_be_visible()
+    expect(stops.locator(":scope > .draft-mention")).to_have_count(0)  # status folded in the block's « Détails »
+
+    # Unknown condition: visible. Unvalidated condition with no dependent instruction: in « Détails ».
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_red_pb_failure"]')
+    page.click('.tile[data-entry-id="fx_red_steer_a"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    expect(page.locator("#premier-constat .conditional .condition-answer")).to_have_text(
+        "Condition non renseignée : la consigne s'applique si la condition est remplie.")
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_red_steer_a"]')
+    page.click('.tile[data-entry-id="fx_amber_code_b"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    page.locator('#clarification-questions .question[data-kind="message"] button.message-none').click()
+    v = page.locator('#premier-constat .variant[data-entry-id="fx_amber_code_b"]')
+    q = v.locator(":scope > details.details .condition-quote")
+    expect(q).to_have_count(1)
+    expect(q).to_be_hidden()
+    expect(q).to_contain_text("comes on with a dedicated message — page de la notice F-11 (page PDF 11)")
+    order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
+        id => document.getElementById(id).getBoundingClientRect().top)""")
+    assert order == sorted(order)
+    _no_english_ui(page)

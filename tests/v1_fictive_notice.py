@@ -86,6 +86,8 @@ PB_FAILURE = "The fictive light flashes when the fictive parking brake fails. Co
 PB_FLUID = "The fictive light comes on when the fictive brake fluid is below the minimum level."
 PB_FLUID_WARNING = "If the fictive light comes on while driving, stop the fictive vehicle immediately and contact a fictive workshop."
 PB_APPLIED = "The fictive light comes on when the fictive parking brake is applied."
+LIGHTS_SIDE = "The fictive green light shows that the fictive side lights are on."
+LIGHTS_FOLLOW = "The fictive green light shows that the fictive follow-me lights stay on for a set time."
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -109,6 +111,7 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/pressure.png": png((225, 155, 0), 8), "images/frost.png": png((0, 130, 200), 8),
         "images/steer.png": png((190, 0, 0), 8), "images/lamp.png": png((228, 150, 0), 8),
         "images/tyre.png": png((232, 158, 0), 8), "images/pbrake.png": png((205, 5, 5), 8),
+        "images/lights.png": png((10, 150, 10), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -191,6 +194,9 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
             entry("fx_amber_tyre_fault", "FICTIVE TYRES", "amber", "images/tyre.png", TYRE_FAULT, 16, state=None,
                   linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
                                     "inline_pictograms": []}]),
+            # Identical file, two lighting functions, nothing distinctive, no instruction.
+            entry("fx_green_side_lights", "FICTIVE SIDE LIGHTS", "green", "images/lights.png", LIGHTS_SIDE, 20, state=None),
+            entry("fx_green_follow_me", "FICTIVE FOLLOW ME", "green", "images/lights.png", LIGHTS_FOLLOW, 20, state=None),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
@@ -363,6 +369,10 @@ SITUATIONS = {
     "fx_red_pb_applied": situation("fonctionnement_normal", "the fictive parking brake is applied",
                                    intitule="Frein de stationnement fictif serré"),
     "fx_red_steer_b": situation("action_conducteur", "a fictive steering setup to do", intitule="Réglage fictif à faire"),
+    "fx_green_side_lights": situation("fonctionnement_normal", "the fictive side lights are on",
+                                      intitule="Feux de position fictifs allumés"),
+    "fx_green_follow_me": situation("fonctionnement_normal", "the fictive follow-me lights stay on for a set time",
+                                    intitule="Éclairage d'accompagnement fictif actif"),
     "fx_amber_code_b": situation("situation_non_determinee", "to report a fictive intrusion attempt",
                                  conditions=[("comes on with a dedicated message", "documented_meaning")],
                                  intitule="Possible tentative d'intrusion fictive"),

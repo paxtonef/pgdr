@@ -623,24 +623,43 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     # not displayed in V1 (internal level only).
     triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
     by_id = {f.provenance.entry_id: f for f in finding.entries}
+    # Every uncertainty of the presentation, what it touches and where it is shown (internal, never displayed).
+    uncertainties: list[dict] = []
 
-    def present(x):
-        return vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
-                                explanation=w.explanations.get(x), t5_label=APPROVED_BANNERS["T5"][0],
-                                situation=w.situations.get(x), answers=answers)
+    def present(x, **where):
+        out = vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
+                               explanation=w.explanations.get(x), t5_label=APPROVED_BANNERS["T5"][0],
+                               situation=w.situations.get(x), answers=answers)
+        uncertainties.extend({**u, "entry_id": x, **where} for u in out.pop("uncertainties"))
+        return out
 
     def title(v) -> str:
         st = w.situations.get(v.entry_id)
         return v.designation + (" — " + st.title if st is not None and st.title else "")
 
+    entries = [present(x, variant="selected") for x in entry_ids]
     blocks = []
     for i in ambiguous:
         variants = [c.entry(x) for x in groups[i]]
         common = vc.common_texts(variants)
+        if w.group_draft[i]:
+            uncertainties.append(vc.uncertainty("group.draft", "technique", reason="draft_status", group=i))
+        uncertainties.append(vc.uncertainty("texts.draft", "technique", reason="draft_status", group=i))
+        # The undetermined variant always changes the explanation; it also touches the action and the
+        # applicability of a safety instruction when a variant documents one. Always in the body.
+        sits = [w.situations.get(v.entry_id) for v in variants]
+        touched = ((["applicabilite_consigne"] if any(vc.urgent_passages(v, st) or vc.conditional_passages(v, st)
+                                                      for v, st in zip(variants, sits)) else [])
+                   + (["action"] if any(st is not None and st.consignes for st in sits) else []) + ["explication"])
+        uncertainties.append(vc.uncertainty("group.variant_undetermined", touched[0], group=i,
+                                            variants=list(groups[i]), points=touched))
         blocks.append({
             "group": i, "image": _asset_url(pid, variants[0].image_sha256),
             "group_draft": vc.DRAFT_LABELS["group_draft"] if w.group_draft[i] else None,
             "draft_texts": vc.DRAFT_LABELS["draft_texts"], "limit": vc.LIMIT_V1,
+            # Draft status: technical, in the block's folded « Détails ».
+            "group_draft_placement": "details" if w.group_draft[i] else None, "draft_texts_placement": "details",
+            "details_label": vc.DRAFT_LABELS["details"],
             "message_given": None if not (messages or {}).get(i) else {
                 "label": vc.DRAFT_LABELS["message_given"], "text": messages[i]},
             # Urgent instructions stay visible, each under the variant it belongs to (never transferred).
@@ -668,7 +687,8 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 "condition": {"label": vc.DRAFT_LABELS["condition"],
                               "state": STATE_LABELS.get(v.state, v.state) if v.state else vc.DRAFT_LABELS["not_documented"],
                               "displayed_message": v.displayed_message or vc.DRAFT_LABELS["not_documented"]},
-                "entry": present(v.entry_id), "section": _section(pid, v)} for v in variants],
+                "entry": present(v.entry_id, group=i, variant=variant[v.entry_id]), "section": _section(pid, v)}
+                for v in variants],
             "red_offer": vc.DRAFT_LABELS["red_offer"] if vc.red_offer(variants, by_id, w.situations) else None,
         })
     def stop_view(f, cs) -> dict:
@@ -681,18 +701,31 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 "answer": cs.condition_status.value, "answer_label": vc.DRAFT_LABELS[f"condition_answer.{cs.condition_status.value}"]}
 
     stops = [stop_view(f, cs) for f in finding.entries for cs in f.conditional_stops]
+    for f in finding.entries:
+        for cs in f.conditional_stops:
+            # The condition of a stop instruction touches its applicability: always in the body.
+            where = {"entry_id": f.provenance.entry_id, "key": cs.key}
+            if cs.condition is None:
+                uncertainties.append(vc.uncertainty("stop.condition_not_established", "applicabilite_consigne", **where))
+            elif not cs.condition_established:
+                uncertainties.append(vc.uncertainty("stop.condition_interpretation_draft", "applicabilite_consigne", **where))
+            if cs.condition_status == ConditionStatus.UNKNOWN:
+                uncertainties.append(vc.uncertainty("stop.condition_unknown", "applicabilite_consigne", **where))
+    if stops:
+        uncertainties.append(vc.uncertainty("texts.draft", "technique", reason="draft_status", block="stops"))
     red_screen = None
     if any(b["red_offer"] for b in blocks):
         s = load_fallback_screens()["screens"]["red_or_uncertain"]
         red_screen = {"key": "red_or_uncertain", "lang": "fr", "heading": s["heading"], "paragraphs": list(s["paragraphs"])}
     return {
         "presentation": {
-            "title": vc.T2_V1, "entries": [present(x) for x in entry_ids], "ambiguous": blocks, "red_screen": red_screen,
+            "title": vc.T2_V1, "entries": entries, "ambiguous": blocks, "red_screen": red_screen,
             "condition_question": {k: vc.DRAFT_LABELS[f"condition_{k}"] for k in ("question", "confirmed", "excluded", "unknown")},
             # Stop instructions of the manufacturer text with their condition and the driver's answer; a confirmed
             # one is shown at the top of the result, without any click.
             "stops_title": vc.DRAFT_LABELS["stops_title"], "stop_question": vc.DRAFT_LABELS["stop_question"],
             "stops_confirmed_title": vc.DRAFT_LABELS["stop_confirmed_title"], "draft_texts": vc.DRAFT_LABELS["draft_texts"],
+            "draft_texts_placement": "details", "details_label": vc.DRAFT_LABELS["details"],
             "stops_confirmed": [x for x in stops if x["answer"] == "confirmed"], "stops": stops,
             "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
             "end": APPROVED_BANNERS["T8"][0],
@@ -708,7 +741,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                                for f in finding.entries for cs in f.conditional_stops],
                      "variants": [{"entry_id": x, "status": variant[x]} for x in eval_ids]
                      + [{"entry_id": x, "status": "excluded"} for x in excluded],
-                     "consignes": internal, "limits": limits},
+                     "consignes": internal, "limits": limits, "uncertainties": uncertainties},
         "classification_status": w.findings_status,
         "explanations_status": w.explanations_status,
         "situations_status": w.situations_status,
@@ -948,6 +981,8 @@ V1_HTML = """<!DOCTYPE html>
  .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page, .stops blockquote .page, .confirmed-stops blockquote .page { display: block; font-size: .85em; color: #444; }
  .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
+ details.details { margin: 8px 0; padding: 4px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; }
+ details.details > summary { cursor: pointer; color: #1f4e79; font-weight: 600; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
  [hidden] { display: none !important; }
 </style>
@@ -1139,13 +1174,17 @@ function manufacturer(article, label, value) {   // manufacturer text: notice la
 // Premier Constat: every string comes from the server (approved banners and
 // labels, or verbatim manufacturer text); nothing is composed here.
 function sec(parent, title, cls) { const s = make("div", null, cls); s.append(make("h3", title)); parent.append(s); return s; }
+// Folded « Détails »: purely technical uncertainties only (the server decides the placement).
+function detailsBox(label) { const d = make("details", null, "details"); d.append(make("summary", label)); return d; }
+function flush(parent, d) { if (d.children.length > 1) parent.append(d); }
 function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
 function renderEntry(e, block, headingLabel) {
     const h = make("p", null, "selected"); h.append(make("strong", headingLabel));
     const d = make("span", e.designation); d.lang = noticeLang; h.append(d); block.append(h);
+    const det = detailsBox(e.details_label);
     if (e.explanation) {
       const ex = make("div", null, "explanation");
-      if (e.explanation.mention) ex.append(make("p", e.explanation.mention, "draft-mention"));
+      if (e.explanation.mention) (e.explanation.mention_placement === "details" ? det : ex).append(make("p", e.explanation.mention, "draft-mention"));
       for (const part of e.explanation.parts) {
         const s = sec(ex, part.title, "part-" + part.key);
         for (const sen of part.sentences) {
@@ -1155,9 +1194,9 @@ function renderEntry(e, block, headingLabel) {
       }
       block.append(ex);
     }
-    if (e.situation) renderSituation(e.situation, block);
+    if (e.situation) renderSituation(e.situation, block, det);
     for (const pt of e.points) {
-      const s = sec(block, pt.title, "point point-" + pt.key);
+      const s = sec(pt.placement === "details" ? det : block, pt.title, "point point-" + pt.key);
       if (pt.label) s.append(make("p", pt.label, "point-label"));
       for (const q of pt.quotes) quote(s, q);
     }
@@ -1170,19 +1209,20 @@ function renderEntry(e, block, headingLabel) {
       const q = make("blockquote", null, "linked-warning"); q.append(make("strong", "Avertissement " + w.number + " "));
       const s = make("span", w.text); s.lang = noticeLang; q.append(s); mt.append(q);
     }
+    flush(block, det);
 }
 function cite(parent, a, cls) {
     const q = make("blockquote", null, cls); const t = make("span", a.text); t.lang = noticeLang; q.append(t);
     q.append(make("span", " — page de la notice " + a.printed_page + " (page PDF " + a.pdf_page + ")", "page"));
     parent.append(q);
 }
-function renderSituation(st, block) {
+function renderSituation(st, block, det) {
     const s = sec(block, "Type de situation : " + st.label, "situation situation-" + st.nature);
-    if (st.mention) s.insertBefore(make("p", st.mention, "draft-mention"), s.firstChild);
+    if (st.mention) { const m = make("p", st.mention, "draft-mention"); if (st.mention_placement === "details") det.append(m); else s.insertBefore(m, s.firstChild); }
     s.dataset.nature = st.nature;
     if (st.title) s.append(make("p", st.title, "situation-title"));
     s.append(make("p", "Passage qui le justifie :", "label")); cite(s, st.justification, "justification");
-    for (const c of st.conditions) { s.append(make("p", "Conditions d'application :", "label")); cite(s, c, "condition-quote"); }
+    for (const c of st.conditions) { const t = c.placement === "details" ? det : s; t.append(make("p", "Conditions d'application :", "label")); cite(t, c, "condition-quote"); }
     for (const c of st.consignes) {
       s.append(make("p", (c.label || "Consigne du constructeur") + (c.conditional ? "" : " :"),
                     c.action ? "label action-label" : c.conditional ? "label conditional-label" : "label"));
@@ -1205,8 +1245,9 @@ function conditionQuestion(parent, pa, q) {
 function renderAmbiguous(b, root, redScreen) {
     const box = make("div", null, "ambiguous"); box.dataset.group = b.group; root.append(box);
     const img = make("img"); img.src = b.image; img.alt = ""; box.append(img);
-    if (b.group_draft) box.append(make("p", b.group_draft, "draft-mention group-draft"));
-    box.append(make("p", b.draft_texts, "draft-mention"));
+    const det = detailsBox(b.details_label);
+    if (b.group_draft) (b.group_draft_placement === "details" ? det : box).append(make("p", b.group_draft, "draft-mention group-draft"));
+    (b.draft_texts_placement === "details" ? det : box).append(make("p", b.draft_texts, "draft-mention"));
     box.append(make("p", b.limit, "limit"));
     if (b.message_given) {
       const m = make("p", b.message_given.label, "message-given"); m.append(make("strong", "« " + b.message_given.text + " »")); box.append(m);
@@ -1271,6 +1312,7 @@ function renderAmbiguous(b, root, redScreen) {
       const btn = make("button", b.red_offer, "red-offer");
       btn.onclick = () => showScreen(redScreen); box.append(btn);
     }
+    flush(box, det);
 }
 let condQ = null;
 function renderConstat(pc) {
@@ -1279,13 +1321,15 @@ function renderConstat(pc) {
   root.append(make("h1", p.title));
   if (p.stops_confirmed.length) {
     const cb = sec(root, p.stops_confirmed_title, "confirmed-stops");
-    cb.append(make("p", p.draft_texts, "draft-mention"));
+    const cdet = detailsBox(p.details_label);
+    (p.draft_texts_placement === "details" ? cdet : cb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops_confirmed) {
       const d = make("div", null, "confirmed-stop"); d.dataset.key = x.key; cb.append(d);
       d.append(make("p", x.only_for, "label"));
       d.append(make("p", x.condition_label, "label")); if (x.condition) cite(d, x.condition, "confirmed-condition");
       cite(d, x.citation, "confirmed-citation"); d.append(make("p", x.answer_label, "condition-answer"));
     }
+    flush(cb, cdet);
   }
   for (const e of p.entries) {
     const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
@@ -1294,7 +1338,8 @@ function renderConstat(pc) {
   for (const b of p.ambiguous) renderAmbiguous(b, root, p.red_screen);
   if (p.stops.length) {
     const sb = sec(root, p.stops_title, "stops");
-    sb.append(make("p", p.draft_texts, "draft-mention"));
+    const sdet = detailsBox(p.details_label);
+    (p.draft_texts_placement === "details" ? sdet : sb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops) {
       const d = make("div", null, "stop-item"); d.dataset.key = x.key; d.dataset.answer = x.answer; sb.append(d);
       d.append(make("p", x.only_for, "label"));
@@ -1302,6 +1347,7 @@ function renderConstat(pc) {
       cite(d, x.citation, "stop-citation");
       conditionQuestion(d, x, {...condQ, question: p.stop_question});
     }
+    flush(sb, sdet);
   }
   const src = el("part1-sources"); src.replaceChildren();
   if (p.sources.length) { const s = sec(src, "Source", "source"); for (const line of p.sources) s.append(make("p", line)); }

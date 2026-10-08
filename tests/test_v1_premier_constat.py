@@ -98,7 +98,8 @@ class TestStopWithoutAddedAction:
         wire(monkeypatch, notice, findings_path=fx.build_findings(notice))
         r = confirm(client, ["fx_red_fluid"])
         e = entry(r, "fx_red_fluid")
-        assert point(e, "stop") == {"key": "stop", "title": "Sécurité immédiate", "quotes": [fx.STOP_PHRASE], "label": None}
+        assert point(e, "stop") == {"key": "stop", "title": "Sécurité immédiate", "quotes": [fx.STOP_PHRASE], "label": None,
+                                    "placement": "corps"}
         assert point(e, "professional")["quotes"] == [fx.CONTACT_PHRASE]
         # No derived instruction: vehicle use stays unverified (linked warnings present).
         assert point(e, "operability")["label"] == vc.LABELS["unverified"]
@@ -196,7 +197,8 @@ class TestVariantGroups:
                                      ("fx_blue_mode_x", "fx_blue_mode_y"), ("fx_red_alarm_a", "fx_red_alarm_b"),
                                      ("fx_amber_code_a", "fx_amber_code_b"), ("fx_red_steer_a", "fx_red_steer_b"),
                                      ("fx_amber_tyre_low", "fx_amber_tyre_fault"),
-                                     ("fx_red_pb_failure", "fx_red_pb_fluid", "fx_red_pb_applied")]
+                                     ("fx_red_pb_failure", "fx_red_pb_fluid", "fx_red_pb_applied"),
+                                     ("fx_green_side_lights", "fx_green_follow_me")]
 
     def test_question_with_documented_elements_and_sources(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
