@@ -539,6 +539,19 @@ DETAILS_REASONS = {
                                  "affichée avec sa condition dans « Consignes d'arrêt de la notice »",
     "point_not_established": "point sans objet : aucune donnée établie et aucune consigne citée n'en dépend",
     "condition_without_consigne": "interprétation non validée d'une condition dont aucune consigne ne dépend",
+    "operating_indication_no_consigne": "indication de fonctionnement sans consigne citée, sans variante critique, "
+                                        "consigne conditionnelle, condition inconnue ni situation non déterminée : la "
+                                        "phrase de prudence ne change ni l'explication, ni l'action, ni l'applicabilité "
+                                        "d'une consigne",
+}
+# Why an uncertainty that could have been folded stays in the body (internal, never displayed).
+BODY_REASONS = {
+    "not_operating_indication": "la situation n'est pas une indication de fonctionnement établie",
+    "stop_in_passage": "le passage cite une consigne d'arrêt",
+    "critical_variant": "le groupe contient une variante critique (consigne d'arrêt ou alerte immédiate)",
+    "conditional_consigne": "le groupe contient une consigne conditionnelle",
+    "condition_unknown": "une condition reste non renseignée",
+    "undetermined_situation": "une situation du groupe est non déterminée ou non classée",
 }
 
 
@@ -670,8 +683,41 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
     return out, rejected, status
 
 
+def no_consigne_uncertainty(e: NoticeEntry, st: Optional[Situation],
+                            group: Optional[list[tuple[NoticeEntry, Optional[Situation]]]] = None,
+                            answers: Optional[Mapping[str, str]] = None) -> Optional[dict]:
+    """The caution sentence « Aucune consigne n'est citée… ». Folded in « Détails » only for an
+    operating indication with no stop in its passage, in a selection or group without a critical
+    variant, conditional instruction, unknown condition or undetermined situation. In case of doubt:
+    body. Placement and reason are traced."""
+    if st is None or st.consignes:
+        return None
+    others = group or [(e, st)]
+    body = []
+    if st.nature != "fonctionnement_normal":
+        body.append("not_operating_indication")
+    if catalogue_stops(e):
+        body.append("stop_in_passage")
+    for v, s in others:
+        if s is None or s.nature == "situation_non_determinee":
+            body.append("undetermined_situation")
+        if s is not None and (s.nature == "alerte_consigne_immediate" or urgent_passages(v, s)) or catalogue_stops(v):
+            body.append("critical_variant")
+        if s is not None and any(c.conditional for c in s.consignes):
+            body.append("conditional_consigne")
+            if any(condition_answer(answers, stop_key(v.entry_id, _first_stop_sentence(c.full))) == "unknown"
+                   for c in s.consignes if c.conditional):
+                body.append("condition_unknown")
+    if not body:
+        return uncertainty("situation.no_consigne", "technique", reason="operating_indication_no_consigne")
+    reasons = list(dict.fromkeys(body))
+    point = "applicabilite_consigne" if {"critical_variant", "conditional_consigne", "condition_unknown"} & set(reasons) else "action"
+    return uncertainty("situation.no_consigne", point, body_reasons=reasons,
+                       body_reason_texts=[BODY_REASONS[r] for r in reasons])
+
+
 def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
-                      answers: Optional[Mapping[str, str]] = None) -> Optional[dict]:
+                      answers: Optional[Mapping[str, str]] = None, no_consigne_placement: str = "corps") -> Optional[dict]:
     if st is None:
         return None
 
@@ -700,6 +746,7 @@ def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
         "conditions": [{**a(c), "placement": (u or {}).get("placement", "corps")}
                        for c in st.conditions for u in [_condition_uncertainty(st, c)]],
         "no_consigne": None if st.consignes else SITUATION_LABELS["no_consigne"],
+        "no_consigne_placement": None if st.consignes else no_consigne_placement,
     }
 
 
@@ -827,7 +874,8 @@ def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
 
 def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation: Optional[Explanation],
                   t5_label: str, situation: Optional[Situation] = None,
-                  answers: Optional[Mapping[str, str]] = None) -> dict:
+                  answers: Optional[Mapping[str, str]] = None,
+                  group: Optional[list[tuple[NoticeEntry, Optional[Situation]]]] = None) -> dict:
     def cited(item) -> Optional[str]:
         # Only DOCUMENTED values are shown, as the cited phrase itself.
         # Derived values (R-1/R-2) are never displayed (internal level only).
@@ -855,7 +903,8 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
     uncertainties = ([] if explanation is None else
                      [uncertainty("explanation.draft", "technique", reason="draft_status")] * explanation.draft
                      + [uncertainty("explanation.inconnu", "explication")])
-    uncertainties += situation_uncertainties(situation, e.entry_id, answers) + point_uncertainties
+    caution = no_consigne_uncertainty(e, situation, group, answers)
+    uncertainties += situation_uncertainties(situation, e.entry_id, answers) + [caution] * bool(caution) + point_uncertainties
     return {
         "entry_id": e.entry_id,
         "selected_label": LABELS["selected"],
@@ -873,7 +922,8 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
                                      for s in explanation.parts[k]]}
                       for k, title in EXPLANATION_PARTS],
         },
-        "situation": present_situation(situation, e.entry_id, answers),
+        "situation": present_situation(situation, e.entry_id, answers,
+                                       no_consigne_placement=caution["placement"] if caution else "corps"),
         "points": points,
         "stop_conditions": [p.source_phrase for p in f.stop_conditions],
         "details_label": DRAFT_LABELS["details"],

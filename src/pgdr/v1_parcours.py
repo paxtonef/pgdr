@@ -626,10 +626,11 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     # Every uncertainty of the presentation, what it touches and where it is shown (internal, never displayed).
     uncertainties: list[dict] = []
 
-    def present(x, **where):
+    def present(x, members=None, **where):
         out = vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
                                explanation=w.explanations.get(x), t5_label=APPROVED_BANNERS["T5"][0],
-                               situation=w.situations.get(x), answers=answers)
+                               situation=w.situations.get(x), answers=answers,
+                               group=None if members is None else [(v, w.situations.get(v.entry_id)) for v in members])
         uncertainties.extend({**u, "entry_id": x, **where} for u in out.pop("uncertainties"))
         return out
 
@@ -653,6 +654,9 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                    + (["action"] if any(st is not None and st.consignes for st in sits) else []) + ["explication"])
         uncertainties.append(vc.uncertainty("group.variant_undetermined", touched[0], group=i,
                                             variants=list(groups[i]), points=touched))
+        heads = [w.explanations.get(v.entry_id) for v in variants]
+        if any(h is not None and h.draft for h in heads):
+            uncertainties.append(vc.uncertainty("explanation.draft", "technique", reason="draft_status", group=i))
         blocks.append({
             "group": i, "image": _asset_url(pid, variants[0].image_sha256),
             "group_draft": vc.DRAFT_LABELS["group_draft"] if w.group_draft[i] else None,
@@ -660,6 +664,19 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             # Draft status: technical, in the block's folded « Détails ».
             "group_draft_placement": "details" if w.group_draft[i] else None, "draft_texts_placement": "details",
             "details_label": vc.DRAFT_LABELS["details"],
+            # First: what each variant concerns, side by side, never merged: its prepared explanation (part
+            # « Ce que la notice indique », exact sentences and citations), else its designation and situation type.
+            "explanations": [{
+                "entry_id": v.entry_id, "only_for": vc.DRAFT_LABELS["only_for"] + title(v), "designation": v.designation,
+                "only_for_label": vc.DRAFT_LABELS["only_for"], "title": st.title if st is not None else None,
+                "explanation": None if h is None else {
+                    "title": vc.EXPLANATION_PARTS[0][1],
+                    "sentences": [{"text": s_.text, "citation": s_.source_phrase, "source_field": s_.source_field}
+                                  for s_ in h.parts[vc.EXPLANATION_PARTS[0][0]]]},
+                "situation_label": None if h is not None or st is None else vc.NATURE_LABELS[st.nature],
+                "nature": None if st is None else st.nature} for v, h, st in zip(variants, heads, sits)],
+            "explanation_mention": vc.LABELS["draft_explanation"] if any(h is not None and h.draft for h in heads) else None,
+            "explanation_mention_placement": "details",
             "message_given": None if not (messages or {}).get(i) else {
                 "label": vc.DRAFT_LABELS["message_given"], "text": messages[i]},
             # Urgent instructions stay visible, each under the variant it belongs to (never transferred).
@@ -687,7 +704,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 "condition": {"label": vc.DRAFT_LABELS["condition"],
                               "state": STATE_LABELS.get(v.state, v.state) if v.state else vc.DRAFT_LABELS["not_documented"],
                               "displayed_message": v.displayed_message or vc.DRAFT_LABELS["not_documented"]},
-                "entry": present(v.entry_id, group=i, variant=variant[v.entry_id]), "section": _section(pid, v)}
+                "entry": present(v.entry_id, variants, group=i, variant=variant[v.entry_id]), "section": _section(pid, v)}
                 for v in variants],
             "red_offer": vc.DRAFT_LABELS["red_offer"] if vc.red_offer(variants, by_id, w.situations) else None,
         })
@@ -981,6 +998,8 @@ V1_HTML = """<!DOCTYPE html>
  .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page, .stops blockquote .page, .confirmed-stops blockquote .page { display: block; font-size: .85em; color: #444; }
  .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
+ .variant-explanations { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 8px 0; }
+ .variant-explanation { background: #f4f8fc; border-radius: 6px; padding: 6px 12px; }
  details.details { margin: 8px 0; padding: 4px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; }
  details.details > summary { cursor: pointer; color: #1f4e79; font-weight: 600; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
@@ -1230,7 +1249,7 @@ function renderSituation(st, block, det) {
       cite(s, c.consigne, "consigne");
       if (c.conditional && c.key && condQ) conditionQuestion(s, c, condQ);
     }
-    if (st.no_consigne) s.append(make("p", st.no_consigne, "no-consigne"));
+    if (st.no_consigne) (st.no_consigne_placement === "details" ? det : s).append(make("p", st.no_consigne, "no-consigne"));
 }
 function conditionQuestion(parent, pa, q) {
     const box = make("div", null, "condition-question"); box.dataset.key = pa.key; box.dataset.answer = pa.answer;
@@ -1248,6 +1267,22 @@ function renderAmbiguous(b, root, redScreen) {
     const det = detailsBox(b.details_label);
     if (b.group_draft) (b.group_draft_placement === "details" ? det : box).append(make("p", b.group_draft, "draft-mention group-draft"));
     (b.draft_texts_placement === "details" ? det : box).append(make("p", b.draft_texts, "draft-mention"));
+    // What each variant concerns first (prepared explanations side by side, never merged), then the limit.
+    const hd = make("div", null, "variant-explanations"); box.append(hd);
+    for (const x of b.explanations) {
+      const col = make("div", null, "variant-explanation"); col.dataset.entryId = x.entry_id; hd.append(col);
+      const lb = make("p", x.only_for_label, "label"); const dn = make("span", x.designation); dn.lang = noticeLang; lb.append(dn);
+      if (x.title) lb.append(document.createTextNode(" — " + x.title));
+      col.append(lb);
+      if (x.explanation) {
+        col.append(make("p", x.explanation.title, "label"));
+        for (const sen of x.explanation.sentences) {
+          const pp = make("p", sen.text); const ci = make("span", " « " + sen.citation + " »", "citation"); ci.lang = noticeLang;
+          pp.append(ci); col.append(pp);
+        }
+      } else if (x.situation_label) col.append(make("p", "Type de situation : " + x.situation_label, "head-type"));
+    }
+    if (b.explanation_mention) (b.explanation_mention_placement === "details" ? det : box).append(make("p", b.explanation_mention, "draft-mention"));
     box.append(make("p", b.limit, "limit"));
     if (b.message_given) {
       const m = make("p", b.message_given.label, "message-given"); m.append(make("strong", "« " + b.message_given.text + " »")); box.append(m);

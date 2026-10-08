@@ -531,7 +531,9 @@ def test_v1_presentation_rule_body_and_folded_details(page: Page, live_server):
     # Informative light: no instruction block, no technical uncertainty in the body.
     _restitution_for(page, live_server, ["fx_green_lamps"])
     e = page.locator('#premier-constat .finding-entry[data-entry-id="fx_green_lamps"]')
-    expect(e.locator(".situation .no-consigne")).to_be_visible()
+    expect(e.locator(".situation .no-consigne")).to_have_count(0)  # operating indication: caution sentence folded
+    expect(e.locator(":scope > details.details .no-consigne")).to_have_text(
+        "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.")
     assert _visible_texts(e.locator(".point")) == [] and _visible_texts(e.locator(".draft-mention")) == []
     det = e.locator(":scope > details.details")
     expect(det.locator("summary")).to_have_text("Détails")
@@ -588,6 +590,43 @@ def test_v1_presentation_rule_body_and_folded_details(page: Page, live_server):
     expect(q).to_have_count(1)
     expect(q).to_be_hidden()
     expect(q).to_contain_text("comes on with a dedicated message — page de la notice F-11 (page PDF 11)")
+    order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
+        id => document.getElementById(id).getBoundingClientRect().top)""")
+    assert order == sorted(order)
+    _no_english_ui(page)
+
+
+def test_v1_group_block_variant_explanations_first_and_caution_placement(page: Page, live_server):
+    """Group block: what each variant concerns first (side by side, never merged), then the limit sentence.
+    Caution sentence folded for an informative lighting group, kept in the body in a brake group."""
+    _restitution_for(page, live_server, ["fx_green_side_lights"])
+    block = page.locator("#premier-constat .ambiguous")
+    heads = block.locator(":scope > .variant-explanations > .variant-explanation")
+    expect(heads).to_have_count(2)
+    expect(heads.nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE SIDE LAMPS — Feux de position fictifs allumés")
+    expect(heads.nth(0)).to_contain_text("Type de situation : Indication de fonctionnement")
+    first_text = block.evaluate("""b => [...b.children].filter(n => n.tagName !== 'IMG' && n.checkVisibility())[0].className""")
+    assert first_text == "variant-explanations"
+    assert block.evaluate("b => !!(b.querySelector('.variant-explanations').compareDocumentPosition(b.querySelector('.limit')) "
+                          "& Node.DOCUMENT_POSITION_FOLLOWING)")
+    expect(block.locator(".limit")).to_be_visible()
+    assert _visible_texts(block.locator(".no-consigne")) == []
+    expect(block.locator(".variant > details.details .no-consigne")).to_have_count(2)
+    expect(page.locator("#premier-constat .urgent, button.red-offer")).to_have_count(0)
+    _no_english_ui(page)
+
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_green_side_lights"]')
+    page.click('.tile[data-entry-id="fx_red_pb_failure"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(":scope > .variant-explanations > .variant-explanation")).to_have_count(3)
+    expect(block.locator(".urgent")).to_be_visible()
+    expect(block.locator(".urgent")).to_contain_text(fx.PB_FLUID_WARNING)
+    applied = block.locator('.variant[data-entry-id="fx_red_pb_applied"] .situation .no-consigne')
+    expect(applied).to_be_visible()
+    expect(applied).to_have_text("Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.")
     order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
         id => document.getElementById(id).getBoundingClientRect().top)""")
     assert order == sorted(order)
