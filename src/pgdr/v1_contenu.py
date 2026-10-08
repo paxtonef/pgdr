@@ -317,6 +317,12 @@ def _covered(sentence: str, situation: Optional["Situation"]) -> bool:
     is not an immediate alert (shown under « Consigne applicable si… »)."""
     if _RESTART_PROCEDURE.search(sentence):
         return True
+    # A VALIDATED « action attendue » classification presents its own justification and its stop
+    # instructions as the expected action (presentation only: flags and internal level unchanged).
+    if situation is not None and situation.action_validated and any(
+            a in sentence or sentence in a for a in [situation.justification.source_phrase] + [
+                c.anchor.source_phrase for c in situation.consignes if c.presented_as_action]):
+        return True
     return situation is not None and any(
         c.conditional and (c.anchor.source_phrase in sentence or sentence in c.anchor.source_phrase)
         for c in situation.consignes)
@@ -330,7 +336,8 @@ def uncovered_stops(e: NoticeEntry, situation: Optional["Situation"]) -> list[st
 def action_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
     """The expected actions of ONE entry, verbatim with page and condition:
     each restart procedure, and each instruction the classification presents
-    as an expected action (never a stop instruction)."""
+    as an expected action (a stop instruction only under a VALIDATED
+    action_conducteur classification, its exact text unchanged)."""
     out = []
     for u in text_units(e):
         if u["field"] == "Désignation":
@@ -345,7 +352,8 @@ def action_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
             out.append({**u, "text": t, "condition": None if cond is None else {
                 "text": cond.source_phrase, "printed_page": cond.printed_page, "pdf_page": cond.pdf_page}})
     for c in (situation.consignes if situation else ()):
-        if c.action and not consigne_is_action(e, c.anchor.source_phrase) and not any(c.anchor.source_phrase in o["text"] for o in out):
+        if ((c.action or c.presented_as_action) and not consigne_is_action(e, c.anchor.source_phrase)
+                and not any(c.anchor.source_phrase in o["text"] for o in out)):
             out.append({"field": "Consigne", "text": c.anchor.source_phrase, "printed_page": c.anchor.printed_page,
                         "pdf_page": c.anchor.pdf_page, "condition": None if c.condition is None else {
                             "text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
@@ -582,6 +590,9 @@ class Consigne:
     restart: bool = False  # documented temporary stop + wait + restart procedure
     conditional: bool = False  # conditional stop instruction, not an immediate alert
     full: str = ""  # the whole sentence(s) of the instruction, verbatim
+    # Presentation only: a stop instruction of a VALIDATED action_conducteur situation, shown under
+    # « Action attendue de votre part ». action / conditional (internal) are left as computed.
+    presented_as_action: bool = False
 
 
 @dataclass(frozen=True)
@@ -595,6 +606,8 @@ class Situation:
     # The structured preparation of instructions and conditions is approved SEPARATELY
     # from the presentation classification (header « structured_consignes »).
     conditions_validated: bool = False
+    # VALIDATED classification of nature action_conducteur (never a draft).
+    action_validated: bool = False
 
 
 def _anchor(e: NoticeEntry, raw) -> Anchor:
@@ -640,6 +653,8 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
             nature = d.get("nature")
             if nature not in NATURES:
                 raise ContentRejected("unknown nature")
+            # Only a VALIDATED classification may present a stop instruction as the expected action.
+            action_validated = not draft and nature == "action_conducteur"
             consignes = []
             for c in d.get("consignes") or []:
                 anchor = _anchor(e, c)
@@ -653,12 +668,14 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
                 consignes.append(Consigne(anchor, cond, action=restart or c.get("presentation") == "action_attendue",
                                           conditional=(cond is not None and is_stop_instruction(full) and not restart
                                                        and nature != "alerte_consigne_immediate"),
-                                          full=full, restart=restart))
+                                          full=full, restart=restart,
+                                          presented_as_action=(action_validated and cond is None and not restart
+                                                               and is_stop_instruction(full))))
             consignes = tuple(consignes)
             if nature == "alerte_consigne_immediate" and not consignes:
                 raise ContentRejected("an immediate alert needs its exact instruction")
             just = _anchor(e, d.get("justification"))
-            probe = Situation(nature, just, consignes, (), None, draft)
+            probe = Situation(nature, just, consignes, (), None, draft, action_validated=action_validated)
             if nature in ("fonctionnement_normal", "information_a_prendre_en_compte", "action_conducteur",
                           "anomalie_defaut") and uncovered_stops(e, probe):
                 # A stop instruction is never left out: only a conditional one, shown apart under its exact
@@ -676,7 +693,7 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
                 raise ContentRejected("invalid title")
             out[entry_id] = Situation(nature, just, consignes,
                                       tuple(_anchor(e, c) for c in d.get("conditions") or []), title, draft,
-                                      conditions_validated)
+                                      conditions_validated, action_validated)
         except ContentRejected as exc:
             rejected[entry_id] = str(exc)
     return out, rejected, status
@@ -739,9 +756,9 @@ def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
         "justification": a(st.justification),
         "consignes": [{"consigne": {**a(c.anchor), "text": c.full} if c.conditional else a(c.anchor),
                        "condition": a(c.condition) if c.condition else None,
-                       "label": (SITUATION_LABELS["action"] if c.action else SITUATION_LABELS["conditional"]
+                       "label": (SITUATION_LABELS["action"] if c.action or c.presented_as_action else SITUATION_LABELS["conditional"]
                                  if c.conditional else SITUATION_LABELS["consigne"]),
-                       "action": c.action, "conditional": c.conditional, **answer(i, c)}
+                       "action": c.action or c.presented_as_action, "conditional": c.conditional, **answer(i, c)}
                       for i, c in enumerate(st.consignes)],
         "conditions": [{**a(c), "placement": (u or {}).get("placement", "corps")}
                        for c in st.conditions for u in [_condition_uncertainty(st, c)]],
