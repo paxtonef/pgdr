@@ -48,14 +48,28 @@ def _picto(text: str, pos: int, image: str, digest: str, ids: list[str]) -> dict
             "identified_entry_ids": ids, "identification_basis": "Same fictive drawing as the red entry."}
 
 
-def build(root: Path, *, applicability_established: bool = False, approve: bool = True) -> Path:
-    """Writes the fictive package under `root` and returns the manifest path."""
+BELT_MEANING_FIXED = "The fictive belt light stays on while the fictive belt is open."
+BELT_MEANING_FLASHING = "The fictive belt light flashes while the fictive vehicle moves with the belt open."
+TWIN_A = "The fictive twin symbol shows a fictive fault A."
+TWIN_B = "The fictive twin symbol shows a fictive fault B."
+LOOK_A = "The fictive look-alike symbol shows fictive message A."
+LOOK_B = "The fictive look-alike symbol shows fictive message B."
+
+
+def build(root: Path, *, applicability_established: bool = False, approve: bool = True,
+          with_groups: bool = False) -> Path:
+    """Writes the fictive package under `root` and returns the manifest path.
+    with_groups adds: one identical-file group the notice tells apart by
+    fixed/flashing, one identical-file group it does NOT tell apart, and two
+    different files that look alike (displayed messages differ)."""
     (root / "images").mkdir(parents=True, exist_ok=True)
     files = {
         "manual.pdf": b"%PDF-1.4\n% FICTIVE manual for tests only\n%%EOF\n",
         "images/red.png": png((200, 0, 0)), "images/amber.png": png((230, 150, 0)),
         "images/green.png": png((0, 160, 0)), "images/white.png": png((240, 240, 240)),
         "images/picto.png": png((0, 0, 0), 4),
+        "images/belt.png": png((180, 0, 0), 8), "images/twin.png": png((200, 140, 0), 8),
+        "images/look_a.png": png((0, 120, 0), 8), "images/look_b.png": png((0, 121, 0), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -86,6 +100,19 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         entry("fx_green_lamps", "FICTIVE LAMPS ON", "green", "images/green.png", GREEN_MEANING, 2),
         entry("fx_white_cruise", "FICTIVE CRUISE", "white", "images/white.png", WHITE_MEANING, 3, where_provided=True),
     ]
+    if with_groups:
+        entries += [
+            entry("fx_red_belt_fixed", "FICTIVE BELT", "red", "images/belt.png", BELT_MEANING_FIXED, 4, state="fixed"),
+            entry("fx_red_belt_flashing", "FICTIVE BELT", "red", "images/belt.png", BELT_MEANING_FLASHING, 4,
+                  state="flashing",
+                  field_sources={"state": {"text": "The fictive belt light flashes.", "printed_page": "F-4", "pdf_page": 4}}),
+            entry("fx_amber_twin_a", "FICTIVE TWIN", "amber", "images/twin.png", TWIN_A, 5, state=None),
+            entry("fx_amber_twin_b", "FICTIVE TWIN", "amber", "images/twin.png", TWIN_B, 5, state=None),
+            entry("fx_green_look_a", "FICTIVE LOOK", "green", "images/look_a.png", LOOK_A, 6, state=None,
+                  displayed_message="LOOK A"),
+            entry("fx_green_look_b", "FICTIVE LOOK", "green", "images/look_b.png", LOOK_B, 6, state=None,
+                  displayed_message="LOOK B"),
+        ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
          "source_locator": "fictive fixture only", "vehicle": dict(VEHICLE),
@@ -128,7 +155,8 @@ def build_findings(manifest: Path, *, status: str = "VALIDE", approved_by: str =
     live = {e.entry_id: e for e in repo.entries_for_document("FICTIVE-NOTICE-001")}
     doc = {
         "header": {"status": status, "approved_by": approved_by, "approval_date": "2026-10-07",
-                   "nature": "FICTIVE derivation layer for tests", "catalogue_content_sha256": repo.catalogue.content_sha256},
+                   "nature": "FICTIVE derivation layer for tests", "catalogue_content_sha256": repo.catalogue.content_sha256,
+                   "covered_entry_ids": [e.entry_id for e in repo.catalogue.entries]},
         "rules": {r: "fictive" for r in ("R-1", "R-2", "R-3", "R-4", "R-5")},
         "entries": [{
             "document_id": "FICTIVE-NOTICE-001", "entry_id": "fx_red_fluid",
@@ -136,10 +164,6 @@ def build_findings(manifest: Path, *, status: str = "VALIDE", approved_by: str =
             "items": {
                 "stop_vehicle_engine_off": {"value": "required", "basis": "documented",
                                             "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
-                "operability": {"value": "do_not_drive", "basis": "derived", "rule_id": "R-1",
-                                "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
-                "vehicle_immobilization": {"value": "required", "basis": "derived", "rule_id": "R-1",
-                                           "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
                 "professional_attention": {"value": "required", "basis": "documented",
                                            "source_field": "linked_warnings", "source_phrase": CONTACT_PHRASE},
                 "documented_suitability": {"value": "a fictive workshop", "basis": "documented",
@@ -148,5 +172,49 @@ def build_findings(manifest: Path, *, status: str = "VALIDE", approved_by: str =
         }],
     }
     path = manifest.parent / "classement.yaml"
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def build_groups(manifest: Path, *, status: str = "VALIDE", validated_by: str = "Fictive Owner") -> Path:
+    """FICTIVE groups file: the two look-alike images with different files."""
+    repo = ManifestNoticeRepository(manifest)
+    doc = {"header": {"status": status, "validated_by": validated_by, "validated_on": "2026-10-08",
+                      "catalogue_content_sha256": repo.catalogue.content_sha256},
+           "groups": [{"entry_ids": ["fx_green_look_a", "fx_green_look_b"], "note": "fictive look-alikes"}]}
+    path = manifest.parent / "groupes.yaml"
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
+EXPLANATION_RED = {
+    "indique": [{"texte": "La notice fictive associe ce voyant à un niveau de liquide fictif bas.",
+                 "source_field": "documented_meaning", "source_phrase": "when the fictive brake fluid is low"}],
+    "maintenant": [{"texte": "La note 7) demande d'arrêter le véhicule fictif dans un endroit sûr.",
+                    "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
+                   {"texte": "Elle demande aussi de contacter un atelier fictif.",
+                    "source_field": "linked_warnings", "source_phrase": CONTACT_PHRASE}],
+    "inconnu": [{"texte": "La notice fictive n'indique pas la cause du niveau bas.",
+                 "source_field": "documented_meaning", "source_phrase": "the fictive brake fluid is low"}],
+}
+EXPLANATION_GREEN = {
+    "indique": [{"texte": "Ce voyant fictif indique que les feux fictifs sont allumés.",
+                 "source_field": "documented_meaning", "source_phrase": "the fictive lamps are on"}],
+    "maintenant": [{"texte": "Le passage fictif ne donne pas de consigne pour ce voyant.",
+                    "source_field": "documented_meaning", "source_phrase": GREEN_MEANING}],
+    "inconnu": [{"texte": "Rien d'autre n'est précisé par ce passage fictif.",
+                 "source_field": "documented_meaning", "source_phrase": GREEN_MEANING}],
+}
+
+
+def build_explanations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", validated_by: str = "",
+                       entries: dict | None = None) -> Path:
+    repo = ManifestNoticeRepository(manifest)
+    header = {"status": status, "catalogue_content_sha256": repo.catalogue.content_sha256}
+    if validated_by:
+        header.update(validated_by=validated_by, validated_on="2026-10-08")
+    doc = {"header": header,
+           "entries": entries if entries is not None else {"fx_red_fluid": EXPLANATION_RED, "fx_green_lamps": EXPLANATION_GREEN}}
+    path = manifest.parent / "explications.yaml"
     path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return path

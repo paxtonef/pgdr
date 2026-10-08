@@ -27,7 +27,7 @@ from pgdr.application.part1_first_finding import APPROVED_BANNERS, APPROVED_LABE
 _PORT = 8771
 TOKEN = "v1-e2e-handoff-token"
 BANNER = "Essai de développement — Applicabilité de cette notice au véhicule non confirmée"
-ORDER = ["fx_red_fluid", "fx_amber_sensor", "fx_green_lamps", "fx_white_cruise"]
+ORDER: list[str] = []  # manual order, set from the fictive manifest
 
 
 def _french_screens() -> dict:
@@ -74,10 +74,12 @@ def _no_english_ui(page: Page) -> None:
 
 @pytest.fixture(scope="module")
 def live_server(tmp_path_factory):
-    notice = fx.build(tmp_path_factory.mktemp("fictive") / "notice")
+    notice = fx.build(tmp_path_factory.mktemp("fictive") / "notice", with_groups=True)
     globals()["NOTICE"] = notice
+    ORDER[:] = [e["entry_id"] for e in fx.load(notice)["entries"]]
     saved = (v1._wiring, os.environ.get(web.IDENTITY_HANDOFF_TOKEN_ENV), web._photo_wiring)
-    v1._wiring = v1.V1Wiring(repository=ManifestNoticeRepository(notice), dev_trial=True)
+    v1._wiring = v1.build_wiring(ManifestNoticeRepository(notice), dev_trial=True,
+                                 explanations_path=fx.build_explanations(notice))
     v1._parcours.clear()
     os.environ[web.IDENTITY_HANDOFF_TOKEN_ENV] = TOKEN
     web._photo_wiring = web.PhotoWiring()  # no interpretation provider at all
@@ -229,15 +231,18 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
     assert "Fictive curation note." not in page.locator("body").inner_text()
     _no_english_ui(page)
 
-    # Premier Constat (approved French only), separated from and above the exact passage, then T3/T8.
+    # Premier Constat, separated from and above the exact passage, then T3/T8.
     pc = page.locator("#premier-constat")
-    expect(pc.locator("#part1-t2 strong")).to_have_text(APPROVED_BANNERS["T2"][0])
+    expect(pc.locator("h1")).to_have_text(APPROVED_BANNERS["T2"][0])
     expect(pc.locator(".finding-entry")).to_have_count(2)
-    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .vehicle-use p')).to_have_text(
-        APPROVED_LABELS["operability = NOT_ESTABLISHED"])
-    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .not-established')).to_contain_text(
-        APPROVED_LABELS["stop_vehicle_engine_off = NOT_ESTABLISHED"])
-    expect(pc.locator('.finding-entry[data-entry-id="fx_red_fluid"] .linked-warning span')).to_have_text(fx.SHARED_WARNING)
+    red_pc = pc.locator('.finding-entry[data-entry-id="fx_red_fluid"]')
+    expect(red_pc.locator(".selected")).to_contain_text("Voyant sélectionné par vous")
+    expect(red_pc.locator(".draft-mention")).to_have_text("Explication en brouillon, non validée")
+    expect(red_pc.locator(".part-maintenant")).to_contain_text("La note 7) demande d'arrêter le véhicule fictif")
+    expect(red_pc.locator(".part-maintenant .citation").first).to_contain_text(fx.STOP_PHRASE)
+    expect(red_pc.locator(".point-stop .point-label")).to_have_text(
+        "Point pas encore vérifié par PGDR. Lisez la consigne du constructeur ci-dessous.")
+    expect(red_pc.locator(".linked-warning span")).to_have_text(fx.SHARED_WARNING)
     expect(page.locator("#part1-t8")).to_have_text(APPROVED_BANNERS["T8"][0])
     order = page.evaluate("""() => ['premier-constat', 'restitution', 'part1-t8'].map(
         id => document.getElementById(id).getBoundingClientRect().top)""")
@@ -249,11 +254,12 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
 
 def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_server):
     """FICTIVE validated classification: the stop instruction of linked warning 7) is shown
-    with its approved French label, the exact warning stays complete below."""
+    as its exact cited phrase, with no added action; green (covered, no warning) = absent."""
     w = v1._wiring
-    saved = (w.findings, w.findings_status)
+    saved = (w.findings, w.findings_status, w.findings_covered)
     w.findings = v1.load_v1_findings(fx.build_findings(NOTICE), w.repository)
     w.findings_status = "validated"
+    w.findings_covered = frozenset(ORDER)
     try:
         _open(page, live_server)
         _to_catalogue(page, None)
@@ -262,17 +268,60 @@ def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_
         page.click("#selection-continue")
         page.click("#confirm")
         red = page.locator('#premier-constat .finding-entry[data-entry-id="fx_red_fluid"]')
-        expect(red.locator(".immediate-safety")).to_contain_text(APPROVED_LABELS["stop_vehicle_engine_off = REQUIRED"])
-        expect(red.locator(".vehicle-use p")).to_have_text(APPROVED_LABELS["operability = DO_NOT_DRIVE"])
-        expect(red.locator(".professional blockquote")).to_have_text("a fictive workshop")
+        expect(red.locator(".point-stop blockquote")).to_have_text(fx.STOP_PHRASE)
+        expect(red.locator(".point-professional blockquote")).to_have_text(fx.CONTACT_PHRASE)
+        expect(red.locator(".point-operability .point-label")).to_have_text(
+            "Point pas encore vérifié par PGDR. Lisez la consigne du constructeur ci-dessous.")
         green = page.locator('#premier-constat .finding-entry[data-entry-id="fx_green_lamps"]')
-        expect(green.locator(".immediate-safety")).to_have_count(0)
-        expect(green.locator(".vehicle-use p")).to_have_text(APPROVED_LABELS["operability = NOT_ESTABLISHED"])
+        expect(green.locator(".point-stop .point-label")).to_have_text("La notice n'indique pas ce point.")
+        body = page.locator("#premier-constat").inner_text().lower()
+        for added in ("coupez le contact", "dépann", "reprenez pas la route", "ne roulez pas"):
+            assert added not in body
         assert page.locator('article.restitution[data-entry-id="fx_red_fluid"] .warning .exact').text_content() == fx.SHARED_WARNING
         expect(page.locator("#part1-t8")).to_have_text(APPROVED_BANNERS["T8"][0])
         _no_english_ui(page)
     finally:
-        w.findings, w.findings_status = saved
+        w.findings, w.findings_status, w.findings_covered = saved
+
+
+def test_v1_variant_group_question_then_dont_know_fallback(page: Page, live_server):
+    """Same image, two passages told apart by fixed/flashing: the driver answers; « Je ne sais
+    pas » -> existing colour fallback. A group with nothing distinctive -> fallback, no question."""
+    _open(page, live_server)
+    _to_catalogue(page, None)
+    page.click('.tile[data-entry-id="fx_red_belt_fixed"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    expect(page.locator("#screen-clarification")).to_be_visible()
+    _banner(page)
+    choices = page.locator("#clarification-questions button.choice")
+    expect(choices).to_have_count(2)
+    expect(choices.nth(0)).to_contain_text("État du voyant : fixe")
+    expect(choices.nth(1)).to_contain_text("État du voyant : clignotant")
+    expect(choices.nth(1)).to_contain_text("page de la notice F-4 (page PDF 4)")
+    _no_english_ui(page)
+    page.click("#clarification-questions button.dont-know-variant")
+    expect(page.locator("#screen-colour")).to_be_visible()
+    page.click('#colour-choices button[data-colour="rouge"]')
+    expect(page.locator("#fallback-content h1")).to_have_text(_french_screens()["red_or_uncertain"]["heading"])
+
+    # Back to images, answer this time: the driver's own choice is restituted.
+    page.click("#screen-fallback button.return")
+    expect(page.locator("#screen-catalogue")).to_be_visible()
+    page.click("#selection-continue")
+    page.click("#confirm")
+    page.click('#clarification-questions button.choice[data-entry-id="fx_red_belt_flashing"]')
+    expect(page.locator("article.restitution")).to_have_count(1)
+    assert page.locator("article.restitution").get_attribute("data-entry-id") == "fx_red_belt_flashing"
+
+    # Nothing distinctive documented: straight to the colour fallback.
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_red_belt_fixed"]')
+    page.click('.tile[data-entry-id="fx_amber_twin_a"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    expect(page.locator("#screen-colour")).to_be_visible()
+    expect(page.locator("#screen-clarification")).to_be_hidden()
 
 
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):

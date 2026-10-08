@@ -5,6 +5,8 @@
 # est affiché en permanence. L'identité VIR est SIMULÉE (PGDR_V1_DEV_VEHICLE) : pas de VIR réel ici.
 # Usage : PGDR_V1_DEV_VEHICLE='{"manufacturer": "…", "model": "…", "generation": "…"}' \
 #           outils/essai_dev_v1/lancer.sh /chemin/hors/depot/manifest.yaml [port]
+# Facultatif (hors dépôt) : PGDR_V1_EXPLANATIONS (brouillon affiché en essai, marqué),
+# PGDR_V1_GROUPS et PGDR_V1_FINDINGS (utilisés seulement s'ils sont VALIDÉS).
 set -euo pipefail
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 manifest="${1:?chemin du manifest.yaml de la notice requis}"

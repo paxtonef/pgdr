@@ -26,6 +26,11 @@ Configuration (environment):
   PGDR_V1_DEV_TRIAL     "1" enables the development trial mode
   PGDR_V1_DEV_VEHICLE   dev trial only: JSON VIR vehicle identity used by
                         GET /v1/essai-dev (stands in for the VIR handoff)
+  PGDR_V1_GROUPS        optional: VALIDATED groups of visually identical
+                        images (different files). Identical files are grouped
+                        automatically.
+  PGDR_V1_EXPLANATIONS  optional: prepared French explanations (3 parts,
+                        anchored). Draft = development trial only, marked.
   PGDR_V1_FINDINGS      optional: VALIDATED structured classification of the
                         notice entries (Part 1 mapping format, header status
                         VALIDE, bound to the catalogue content fingerprint).
@@ -55,12 +60,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from pgdr.application.part1_first_finding import (
-    Part1Mapping, build_manufacturer_first_finding, compose_triage, load_part1_mapping, raised_instructions,
+    APPROVED_BANNERS, Part1Mapping, banner, build_manufacturer_first_finding, compose_triage, load_part1_mapping,
+    raised_instructions,
 )
 from pgdr.application.photo_first import warning_indicator_from_entry
 from pgdr.errors import ConfigurationError
 from pgdr.models import Consent, DiagnosticSession, InitialComplaint, PreGarageDiagnosticRequest
 from pgdr.safety_engine import SafetyEngine
+from pgdr import v1_contenu as vc
 from pgdr.adapters.manifest_notice_repository import (
     ManifestNoticeRepository, NoticeCatalogue, NoticeEntry, NoticeRejected, Pictogram,
 )
@@ -122,6 +129,45 @@ class V1Wiring:
     error: Optional[str] = None
     findings: Part1Mapping = field(default_factory=dict)
     findings_status: str = "absent"
+    findings_covered: frozenset = frozenset()   # entries a VALIDATED classification reviewed
+    groups: list = field(default_factory=list)  # merged: identical files + validated groups
+    groups_status: str = "absent"
+    explanations: dict = field(default_factory=dict)
+    explanations_rejected: dict = field(default_factory=dict)
+    explanations_status: str = "absent"
+
+
+def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
+                 findings_path=None, groups_path=None, explanations_path=None) -> V1Wiring:
+    """All notice content is loaded and verified ONCE here and then shared by
+    every parcours of this process (no re-read, no external fetch)."""
+    w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error)
+    if repo is None:
+        return w
+    c = repo.catalogue
+    if findings_path:
+        try:
+            w.findings = load_v1_findings(findings_path, repo)
+            w.findings_status = "validated"
+            header = yaml.safe_load(open(findings_path, encoding="utf-8"))["header"]
+            w.findings_covered = frozenset(header.get("covered_entry_ids") or [])
+        except ConfigurationError as exc:
+            w.findings_status = f"refused: {exc}"
+    validated_groups = []
+    if groups_path:
+        try:
+            validated_groups = vc.load_groups(groups_path, c)
+            w.groups_status = "validated"
+        except vc.ContentRejected as exc:
+            w.groups_status = f"refused: {exc}"
+    w.groups = vc.merge_groups(c, vc.auto_groups(c), validated_groups)
+    if explanations_path:
+        try:
+            w.explanations, w.explanations_rejected, w.explanations_status = vc.load_explanations(
+                explanations_path, c, dev_trial=dev_trial)
+        except vc.ContentRejected as exc:
+            w.explanations_status = f"refused: {exc}"
+    return w
 
 
 def load_v1_findings(path, repository: ManifestNoticeRepository) -> Part1Mapping:
@@ -171,15 +217,10 @@ def get_wiring() -> V1Wiring:
                 repo = ManifestNoticeRepository(path)
             except NoticeRejected as exc:
                 error = str(exc)
-        findings, findings_status = {}, "absent"
-        if repo is not None and os.environ.get("PGDR_V1_FINDINGS"):
-            try:
-                findings = load_v1_findings(os.environ["PGDR_V1_FINDINGS"], repo)
-                findings_status = "validated"
-            except ConfigurationError as exc:
-                findings_status = f"refused: {exc}"
-        _wiring = V1Wiring(repository=repo, dev_trial=dev, dev_vehicle=vehicle, error=error,
-                           findings=findings, findings_status=findings_status)
+        _wiring = build_wiring(repo, dev_trial=dev, dev_vehicle=vehicle, error=error,
+                               findings_path=os.environ.get("PGDR_V1_FINDINGS"),
+                               groups_path=os.environ.get("PGDR_V1_GROUPS"),
+                               explanations_path=os.environ.get("PGDR_V1_EXPLANATIONS"))
     return _wiring
 
 
@@ -190,6 +231,7 @@ class Parcours:
     selection: list[str] = field(default_factory=list)  # entry_ids, manual order
     confirmed: bool = False
     colour: Optional[str] = None
+    resolved: dict = field(default_factory=dict)  # group index -> entry_id chosen by the driver
     phase: str = "vir"  # vir -> consent -> catalogue -> confirmation -> restitution | colour -> fallback
 
 
@@ -434,16 +476,16 @@ def selection(pid: str, req: SelectionRequest):
 _safety_engine: Optional[SafetyEngine] = None
 
 
-def premier_constat(p: Parcours) -> dict:
-    """The existing Part 1 chain on the driver's confirmed selection."""
+def premier_constat(p: Parcours, entry_ids: list[str]) -> dict:
+    """The existing Part 1 chain on the driver's confirmed (and, for a
+    variant group, clarified) selection, presented with the V1 labels."""
     global _safety_engine
-    from pgdr.web_app import present_first_finding  # lazy: web_app mounts this router
     if _safety_engine is None:
         _safety_engine = SafetyEngine()
     w = get_wiring()
     c = _catalogue()
     live = {e.entry_id: e for e in w.repository.entries_for_document(c.document.document_id)}
-    chosen = [live[x] for x in p.selection]
+    chosen = [live[x] for x in entry_ids]
     session = DiagnosticSession(request=PreGarageDiagnosticRequest(
         request_id=f"PGDR-V1-{uuid.uuid4().hex[:12]}",
         vehicle_identity_context=VehicleIdentityContext(
@@ -456,20 +498,25 @@ def premier_constat(p: Parcours) -> dict:
     engine = _safety_engine.evaluate(session)
     finding = build_manufacturer_first_finding(
         [(e, "user_selection") for e in chosen], mapping=w.findings,
-        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in p.selection},
+        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in entry_ids},
     )
+    # R-5: may raise the SafetyEngine level, never lower it. Its wording is
+    # not displayed in V1 (internal level only).
     triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
+    entries = [vc.present_entry(f, c.entry(f.provenance.entry_id), covered=f.provenance.entry_id in w.findings_covered,
+                                explanation=w.explanations.get(f.provenance.entry_id),
+                                t5_label=APPROVED_BANNERS["T5"][0]) for f in finding.entries]
     return {
-        "presentation": present_first_finding(finding),
+        "presentation": {
+            "title": APPROVED_BANNERS["T2"][0], "entries": entries,
+            "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
+            "end": APPROVED_BANNERS["T8"][0],
+        },
         "triage": {"level": triage.level.value, "driving_assessment": triage.driving_assessment.value,
                    "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
                    "r5_rows": rows},
         "classification_status": w.findings_status,
-        # Verbatim linked warnings, shown inside the synthesis next to the
-        # manufacturer text: a stop instruction printed in a note must never
-        # appear only below a « non établi » label.
-        "linked_warnings": {x: [{"number": lw.number, "text": lw.text} for lw in c.entry(x).linked_warnings]
-                            for x in p.selection},
+        "explanations_status": w.explanations_status,
     }
 
 
@@ -480,10 +527,72 @@ def confirm(pid: str, req: ConfirmRequest):
     if p.phase != "confirmation" or not req.confirmed or _validated_selection(req.entry_ids) != p.selection:
         raise HTTPException(status_code=409, detail="Confirmation explicite de la sélection affichée requise.")
     p.confirmed = True
-    p.phase = "restitution"
+    p.resolved = {}
+    return _after_confirmation(pid, p)
+
+
+def _hit_groups(p: Parcours) -> list[int]:
+    groups = get_wiring().groups
+    return [i for i, g in enumerate(groups) if any(x in g for x in p.selection)]
+
+
+def _question(pid: str, i: int) -> dict:
+    """Only the elements the notice documents to tell the variants apart,
+    each choice with its source. Never chosen for the driver."""
     c = _catalogue()
-    return {**_state(pid, p), "document": _document(c), "premier_constat": premier_constat(p),
-            "sections": [_section(pid, c.entry(x)) for x in p.selection]}
+    variants = [c.entry(x) for x in get_wiring().groups[i]]
+    fields = vc.distinguishing_fields(variants)
+    return {"group": i, "image": _asset_url(pid, variants[0].image_sha256), "choices": [
+        {"entry_id": v.entry_id,
+         "elements": [{"field": f, "label": "Message affiché" if f == "displayed_message" else "État du voyant",
+                       "value": v.displayed_message if f == "displayed_message" else STATE_LABELS.get(v.state, v.state),
+                       "notice_value": getattr(v, f)} for f in fields],
+         "source": {"designation": v.designation, "page_reference": v.page_reference, "pdf_page": v.pdf_page,
+                    "text": next((s.text for s in v.field_sources if s.field in fields), v.documented_meaning)}}
+        for v in variants]}
+
+
+def _after_confirmation(pid: str, p: Parcours) -> dict:
+    c = _catalogue()
+    pending = [i for i in _hit_groups(p) if i not in p.resolved]
+    for i in pending:
+        if not vc.distinguishing_fields([c.entry(x) for x in get_wiring().groups[i]]):
+            # The notice documents nothing that tells these passages apart: fallback, no question.
+            p.phase = "colour"
+            return {**_state(pid, p), "reason": "group_without_distinction"}
+    if pending:
+        p.phase = "clarification"
+        return {**_state(pid, p), "questions": [_question(pid, i) for i in pending]}
+    groups = get_wiring().groups
+    chosen = set()
+    for x in p.selection:
+        gi = next((i for i, g in enumerate(groups) if x in g), None)
+        chosen.add(p.resolved[gi] if gi is not None else x)
+    resolved_ids = [e.entry_id for e in c.entries if e.entry_id in chosen]  # manual order
+    p.phase = "restitution"
+    return {**_state(pid, p), "document": _document(c), "premier_constat": premier_constat(p, resolved_ids),
+            "sections": [_section(pid, c.entry(x)) for x in resolved_ids]}
+
+
+class ClarifyRequest(BaseModel):
+    group: int
+    answer: str = Field(max_length=200)  # an entry_id of the group, "dont_know" or "none"
+
+
+@router.post("/api/v1/parcours/{pid}/clarify")
+def clarify(pid: str, req: ClarifyRequest):
+    p = _get(pid)
+    _require_consent(p)
+    groups = get_wiring().groups
+    if p.phase != "clarification" or req.group not in _hit_groups(p) or req.group in p.resolved:
+        raise HTTPException(status_code=409, detail="Aucune précision n'est attendue pour ce groupe.")
+    if req.answer in ("dont_know", "none"):
+        p.phase = "colour"  # existing fallback, by the colour the driver declares
+        return {**_state(pid, p), "reason": req.answer}
+    if req.answer not in groups[req.group]:
+        raise HTTPException(status_code=400, detail="Choix invalide.")
+    p.resolved[req.group] = req.answer
+    return _after_confirmation(pid, p)
 
 
 @router.post("/api/v1/parcours/{pid}/no-match")
@@ -518,6 +627,7 @@ def return_to_images(pid: str):
     p = _get(pid)
     _require_consent(p)
     p.confirmed = False
+    p.resolved = {}
     p.phase = "catalogue"
     return _state(pid, p)
 
@@ -571,6 +681,13 @@ V1_HTML = """<!DOCTYPE html>
  .finding-entry h3 { font-size: 1em; margin: 12px 0 4px; }
  .finding-entry blockquote { margin: 4px 0; padding: 6px 10px; background: #fbfbf4; border-left: 4px solid #999; }
  .passage-title { margin-top: 8px; }
+ .draft-mention { background: #fff3cd; border: 1px solid #c9a227; padding: 6px 10px; font-weight: 700; }
+ .explanation { background: #f4f8fc; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .citation { color: #555; font-size: .9em; font-style: italic; }
+ .question { border: 1px solid #ccc; border-radius: 8px; padding: 10px; margin: 10px 0; }
+ .question img { max-width: 96px; display: block; }
+ .question button.choice { display: block; text-align: left; width: 100%; }
+ .choice-source { display: block; font-size: .85em; color: #444; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
  [hidden] { display: none !important; }
 </style>
@@ -620,6 +737,13 @@ V1_HTML = """<!DOCTYPE html>
   <p>Vous avez choisi ces images :</p>
   <div class="grid" id="confirmation-grid"></div>
   <button class="primary" id="confirm">Je confirme : ces images correspondent à ce que je vois</button>
+  <button class="return">Revenir aux images de la notice</button>
+ </section>
+
+ <section class="screen" id="screen-clarification" hidden>
+  <h1>Précisez ce que vous voyez</h1>
+  <p>La même image correspond à plusieurs passages de la notice. Choisissez ce que vous constatez, tel que la notice le décrit.</p>
+  <div id="clarification-questions"></div>
   <button class="return">Revenir aux images de la notice</button>
  </section>
 
@@ -758,60 +882,78 @@ function sec(parent, title, cls) { const s = make("div", null, cls); s.append(ma
 function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
 function renderConstat(pc) {
   const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
-  if (p.banner.length) {
-    const b = make("div"); b.id = "part1-t2"; b.append(make("strong", p.banner[0]));
-    for (const line of p.banner.slice(1)) b.append(make("p", line));
-    root.append(b);
-  }
-  if (p.entries.length) {
-    const ident = sec(root, "Voyant identifié", "identified"); const ul = make("ul");
-    for (const e of p.entries) {
-      const li = make("li"); li.dataset.entryId = e.entry_id; li.dataset.origin = e.identified.origin;
-      const d = make("span", e.identified.designation); d.lang = noticeLang;
-      li.append(d, document.createTextNode(" — " + e.identified.origin_text)); ul.append(li);
-    }
-    ident.append(ul);
-  }
+  root.append(make("h1", p.title));
   for (const e of p.entries) {
     const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
+    const h = make("p", null, "selected"); h.append(make("strong", e.selected_label + " : "));
+    const d = make("span", e.designation); d.lang = noticeLang; h.append(d); block.append(h);
+    if (e.explanation) {
+      const ex = make("div", null, "explanation");
+      if (e.explanation.mention) ex.append(make("p", e.explanation.mention, "draft-mention"));
+      for (const part of e.explanation.parts) {
+        const s = sec(ex, part.title, "part-" + part.key);
+        for (const sen of part.sentences) {
+          const pp = make("p", sen.text); const c = make("span", " « " + sen.citation + " »", "citation"); c.lang = noticeLang;
+          pp.append(c); s.append(pp);
+        }
+      }
+      block.append(ex);
+    }
+    for (const pt of e.points) {
+      const s = sec(block, pt.title, "point point-" + pt.key);
+      if (pt.label) s.append(make("p", pt.label, "point-label"));
+      for (const q of pt.quotes) quote(s, q);
+    }
+    if (e.stop_conditions.length) { const rs = sec(block, "Restrictions / conditions d'arrêt", "restrictions"); for (const sc of e.stop_conditions) quote(rs, sc); }
     const mt = sec(block, "Ce que dit le constructeur", "manufacturer-text");
     mt.append(make("p", e.manufacturer_text.label));
     for (const v of [e.manufacturer_text.documented_meaning, e.manufacturer_text.documented_instruction,
                      e.manufacturer_text.displayed_message]) if (v) quote(mt, v);
-    for (const w of (pc.linked_warnings[e.entry_id] || [])) {
+    for (const w of e.manufacturer_text.linked_warnings) {
       const q = make("blockquote", null, "linked-warning"); q.append(make("strong", "Avertissement " + w.number + " "));
       const s = make("span", w.text); s.lang = noticeLang; q.append(s); mt.append(q);
-    }
-    if (e.immediate_safety.length) { const s = sec(block, "Sécurité immédiate", "immediate-safety"); for (const l of e.immediate_safety) s.append(make("p", l)); }
-    sec(block, "Utilisation du véhicule", "vehicle-use").append(make("p", e.vehicle_use));
-    const r = e.restrictions;
-    if (r.stop_conditions.length || r.figures.length) {
-      const rs = sec(block, "Restrictions / conditions d'arrêt", "restrictions");
-      for (const sc of r.stop_conditions) quote(rs, sc);
-      for (const f of r.figures) { quote(rs, f.figure); if (f.caution) rs.append(make("p", f.caution)); }
-    }
-    if (e.professional) {
-      const ps = sec(block, "Intervention d'un professionnel", "professional"); ps.append(make("p", e.professional.label));
-      if (e.professional.documented_suitability) quote(ps, e.professional.documented_suitability);
-    }
-    if (e.practical.label || e.practical.notice.length) {
-      const pa = sec(block, "Assistance pratique", "practical"); pa.dataset.requirement = e.practical.requirement;
-      if (e.practical.label) pa.append(make("p", e.practical.label));
-      for (const line of e.practical.notice) pa.append(make("p", line));
-    }
-    if (e.not_established.length) {
-      const ne = sec(block, "Points non établis par la notice", "not-established"); const ul = make("ul");
-      for (const l of e.not_established) ul.append(make("li", l)); ne.append(ul);
-      if (p.legend) ne.append(make("p", p.legend, "legend"));
     }
   }
   const src = el("part1-sources"); src.replaceChildren();
   if (p.sources.length) { const s = sec(src, "Source", "source"); for (const line of p.sources) s.append(make("p", line)); }
   el("part1-t8").textContent = p.end;
 }
+function renderQuestions(s) {
+  const root = el("clarification-questions"); root.replaceChildren();
+  for (const q of s.questions) {
+    const box = make("div", null, "question"); box.dataset.group = q.group;
+    const img = make("img"); img.src = q.image; img.alt = ""; box.append(img);
+    for (const c of q.choices) {
+      const b = make("button", null, "choice"); b.dataset.entryId = c.entry_id;
+      b.append(make("span", c.elements.map(x => x.label + " : " + x.value).join(" · "), "choice-label"));
+      const src = make("span", " — page de la notice " + c.source.page_reference + " (page PDF " + c.source.pdf_page + ") : ", "choice-source");
+      const t = make("span", "« " + c.source.text + " »"); t.lang = noticeLang; src.append(t); b.append(src);
+      b.onclick = () => clarify(q.group, c.entry_id); box.append(b);
+    }
+    const dk = make("button", "Je ne sais pas"); dk.className = "dont-know-variant"; dk.onclick = () => clarify(q.group, "dont_know");
+    const nn = make("button", "Aucun de ceux-ci"); nn.className = "none-variant"; nn.onclick = () => clarify(q.group, "none");
+    box.append(dk, nn); root.append(box);
+  }
+  show("screen-clarification");
+}
+async function clarify(group, answer) {
+  try { outcome(await call("/clarify", {group, answer})); } catch (e) { fail(e); }
+}
+function showColour(s) {
+  const box = el("colour-choices"); box.replaceChildren();
+  for (const c of s.colours) { const b = make("button", c.label); b.dataset.colour = c.key; if (s.colour === c.key) b.classList.add("primary"); b.onclick = () => chooseColour(c.key); box.append(b); }
+  show("screen-colour");
+}
+function outcome(s) {
+  applyState(s);
+  if (s.phase === "clarification") return renderQuestions(s);
+  if (s.phase === "colour") return showColour(s);
+  renderRestitution(s);
+}
 el("confirm").onclick = async () => {
-  try {
-    const s = await call("/confirm", {entry_ids: state.selection, confirmed: true}); applyState(s);
+  try { outcome(await call("/confirm", {entry_ids: state.selection, confirmed: true})); } catch (e) { fail(e); }
+};
+function renderRestitution(s) {
     noticeLang = s.document.language || "en";
     const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
     const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
@@ -847,14 +989,11 @@ el("confirm").onclick = async () => {
       root.append(a);
     }
     show("screen-restitution");
-  } catch (e) { fail(e); }
-};
+}
 async function noMatch(reason) {
   try {
     const s = await call("/no-match", {reason, entry_ids: [...selected]}); applyState(s);
-    const box = el("colour-choices"); box.replaceChildren();
-    for (const c of s.colours) { const b = make("button", c.label); b.dataset.colour = c.key; if (s.colour === c.key) b.classList.add("primary"); b.onclick = () => chooseColour(c.key); box.append(b); }
-    show("screen-colour");
+    showColour(s);
   } catch (e) { fail(e); }
 }
 el("none-match").onclick = () => noMatch("none_match");

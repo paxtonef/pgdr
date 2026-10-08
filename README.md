@@ -113,7 +113,28 @@ question is asked afterwards (C1/C2). Structured fields come only from a
 VALIDATED classification (`PGDR_V1_FINDINGS`: Part 1 mapping format, header
 `status: VALIDE`, named approval, bound to the catalogue content fingerprint;
 anchors may cite a linked warning with `source_field: linked_warnings`).
-Without it every structured field is « non établi ».
+In V1 a structured point shows only the cited phrase (never an approved
+label that adds an action); derived values (R-1/R-2) are never displayed and
+only feed the internal R-5 level. Unstructured points read « Point pas encore
+vérifié par PGDR… »; « La notice n'indique pas ce point. » needs a VALIDATED
+classification covering the entry (`covered_entry_ids`) and is never used
+when the entry has linked warnings.
+
+Variant groups (`pgdr.v1_contenu`): identical image files are grouped
+automatically; look-alike files only via a VALIDATED `PGDR_V1_GROUPS`. The
+driver is asked only the documented distinguishing elements (displayed
+message, fixed/flashing), each choice with its source; « Je ne sais pas » /
+« Aucun de ceux-ci », or nothing distinctive documented → colour fallback.
+
+Explanations (`PGDR_V1_EXPLANATIONS`): prepared in advance, three parts, every
+sentence anchored verbatim (invalid anchor → that entry's explanation is
+dropped). Draft = development trial only, marked « Explication en brouillon,
+non validée »; elsewhere only with a named validation bound to the catalogue.
+
+Persistence: the notice files are read from disk once per process and kept
+verified in memory, shared by all parcours (content only); parcours state
+(selection, answers, colour) is per parcours, in process memory, lost on
+restart; nothing is stored in a database; the photo never leaves the browser.
 
 Tests: `tests/test_v1_parcours.py`, `tests/test_v1_premier_constat.py` (unit +
 integration) and `tests/test_v1_browser_e2e.py` (Playwright), on a FICTIVE
