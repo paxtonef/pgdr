@@ -165,6 +165,13 @@ def validate_safety_rules(data: dict) -> None:
         if not isinstance(conditions, dict) or len(conditions) == 0:
             raise ConfigurationError(f"{where}: 'conditions' is required and must be a non-empty mapping")
 
+        if "exclude_established_situations" in conditions:
+            ex = conditions["exclude_established_situations"]
+            if (not isinstance(ex, list) or not ex or not all(isinstance(x, str) and x for x in ex)
+                    or not ({"warning_color", "warning_keywords_any", "warning_behavior"} & set(conditions))):
+                raise ConfigurationError(f"{where}: 'exclude_established_situations' must be a non-empty list of "
+                                         "situation natures, on a rule with warning conditions")
+
         _validate_safety_action_fields(rule, where)
 
 

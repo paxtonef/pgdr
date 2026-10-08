@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Optional, Union
 from uuid import uuid4
 
@@ -140,6 +141,10 @@ class WarningIndicator(BaseModel):
     first_observed_at: Optional[datetime] = None
     associated_message: Optional[str] = None
     photo_evidence_id: Optional[str] = None
+    # Structured fact on the documented situation of this indicator, with its provenance
+    # (V1: {"entry_id", "nature", "provenance", "variant"}). None = not available: rules
+    # behave exactly as before.
+    situation_fact: Optional[dict] = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +189,15 @@ class SafetyTriage(BaseModel):
     driving_assessment: DrivingAssessment = DrivingAssessment.NOT_ASSESSED
     emergency_services_required: bool = False
     roadside_assistance_recommended: bool = False
+    # R-5: "uncertain" when a documented stop instruction may apply but its condition is
+    # unknown (or excluded on an unvalidated interpretation): an explicit uncertainty,
+    # distinct from an ordinary situation to monitor; never a confirmed defect, never a
+    # permission to drive. The level is not changed by it.
+    safety_status: str = "established"
+    safety_uncertainties: list[dict] = Field(default_factory=list)
+    # Rules that would have matched on the warning text alone but did not, because a
+    # structured situation fact (with provenance) established an ordinary indication.
+    rule_exclusions: list[dict] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -376,6 +390,34 @@ class FindingItem(BaseModel):
         return cls(value=NOT_ESTABLISHED_VALUE, basis=FindingBasis.NOT_ESTABLISHED)
 
 
+class ConditionStatus(str, Enum):
+    """The driver's answer on the condition of a documented stop instruction."""
+    CONFIRMED = "confirmed"
+    EXCLUDED = "excluded"
+    UNKNOWN = "unknown"  # also: not answered (the only default)
+
+
+class ConditionalStop(BaseModel):
+    """A documented stop instruction of ONE entry whose application depends on
+    a condition, carried to R-5 with its source, whole citation, pages, the
+    condition (when an interpretation is available), whether that
+    interpretation is validated, the driver's answer and the variant status."""
+    model_config = ConfigDict(frozen=True)
+
+    key: str
+    source_field: str
+    citation: str
+    printed_page: str
+    pdf_page: int
+    origin: str  # where the instruction comes from (e.g. the reviewed manufacturer catalogue)
+    condition: Optional[str] = None
+    condition_printed_page: Optional[str] = None
+    condition_pdf_page: Optional[int] = None
+    condition_established: bool = False  # True only from a VALIDATED structured preparation
+    condition_status: ConditionStatus = ConditionStatus.UNKNOWN
+    variant: str = "selected"  # selected / possible (group left undetermined)
+
+
 class DocumentedPhrase(BaseModel):
     """A verbatim phrase of the manufacturer record (e.g. a stop condition)."""
     model_config = ConfigDict(frozen=True)
@@ -464,6 +506,7 @@ class EntryFinding(BaseModel):
     max_distance: FindingItem
     max_duration: FindingItem
     stop_conditions: list[DocumentedPhrase] = Field(default_factory=list)
+    conditional_stops: list[ConditionalStop] = Field(default_factory=list)
     documented_figures: list[DocumentedFigure] = Field(default_factory=list)
     professional_attention: FindingItem
     urgency_phrase: FindingItem

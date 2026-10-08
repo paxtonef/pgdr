@@ -439,6 +439,17 @@ def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, 
     expect(block.locator(".conditional .condition-answer")).to_have_text("Vous avez indiqué que cette condition est remplie.")
     expect(block.locator(".conditional .conditional-quote")).to_contain_text("If the fictive steering light flashes, stop the fictive vehicle at once.")
     expect(block.locator("button.red-offer")).to_have_count(1)  # confirmed stop: red screen offered, never automatic
+    # Confirmed: at the top of the result, without any click, with its condition and source.
+    top = page.locator("#premier-constat .confirmed-stops")
+    expect(top.locator("h3")).to_have_text("Consigne d'arrêt applicable — condition confirmée par vous")
+    expect(top.locator(".confirmed-condition")).to_contain_text("If the fictive steering light flashes")
+    expect(top.locator(".confirmed-citation")).to_contain_text(
+        "If the fictive steering light flashes, stop the fictive vehicle at once. — page de la notice F-14 (page PDF 14)")
+    assert page.evaluate("() => document.querySelector('#premier-constat h1').nextElementSibling.classList.contains('confirmed-stops')")
+    # Unknown stays unknown in the stops list (the procedure is not one).
+    items = page.locator("#premier-constat .stops .stop-item")
+    expect(items).to_have_count(1)
+    expect(page.locator("#premier-constat .stops")).not_to_contain_text(fx.STEER_PROCEDURE)
     expect(block.locator('.variant[data-entry-id="fx_red_steer_a"] .action-label')).to_have_text("Action attendue de votre part :")
     _no_english_ui(page)
 

@@ -1,12 +1,17 @@
-"""V1 internal processing on a FICTIVE notice: what reaches the unchanged
-SafetyEngine and R-5, and what the result carries.
+"""V1 safety processing on a FICTIVE notice: what reaches the SafetyEngine and
+R-5, the rules applied and what the result carries (internal data, not titles).
 
-Covered: temporary stop + wait + restart procedure; real immediate stop;
-conditional stop with its condition confirmed, excluded and unknown; group
-mixing a parking brake failure and a low brake fluid; restoring the pressure
-kept apart from the conditional stop; « stop lights » without any stop;
-citations, conditions and pages kept up to the result; the colour fallback
-for an unidentified red light. Assertions are on internal data and results.
+Corrected behaviours (the defects were first reproduced, then turned into
+these tests):
+  1. R-5 conditions of application: confirmed / excluded / unknown, the last
+     one an explicit uncertainty (safety_status), distinct from an ordinary
+     situation; no answer == unknown.
+  2. PGDR-SAF-012: no « do_not_drive » for an established ordinary
+     indication from the shared designation keyword; unchanged otherwise.
+  3. A reviewed manufacturer stop instruction reaches R-5 without any
+     presentation classification; an unvalidated interpretation of its
+     condition stays uncertain.
+Plus: restart procedure, other alerts, multiple selection, colour fallback.
 """
 from __future__ import annotations
 
@@ -22,6 +27,9 @@ from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
 from pgdr.application.part1_first_finding import entry_fingerprint
 from test_v1_premier_constat import confirm, open_parcours, wire
 
+TYRE_KEY = vc.stop_key("fx_amber_tyre_low", fx.TYRE_STOP)
+FLUID_KEY = vc.stop_key("fx_red_pb_fluid", fx.PB_FLUID_WARNING)
+
 
 @pytest.fixture
 def grouped(tmp_path):
@@ -33,20 +41,25 @@ def client():
     return TestClient(web.app)
 
 
-def situations(monkeypatch, manifest, **kw):
+def draft(monkeypatch, manifest, **kw):
     return wire(monkeypatch, manifest, situations_path=fx.build_situations(manifest), **kw)
 
 
-def internal(r) -> dict:
-    return r["premier_constat"]["internal"]
+def validated(monkeypatch, manifest, *, consignes=True, **kw):
+    return wire(monkeypatch, manifest, situations_path=fx.build_situations(
+        manifest, status="VALIDE", validated_by="Fictive Owner", consignes_validated_by="Fictive Owner" if consignes else ""), **kw)
 
 
-def consignes(r, entry_id) -> list[dict]:
-    return [c for c in internal(r)["consignes"] if c["entry_id"] == entry_id]
+def constat(ids, ambiguous=(), conditions=None) -> dict:
+    return v1.premier_constat(v1.Parcours(vehicle={}, conditions=dict(conditions or {})), list(ids), list(ambiguous))
 
 
-def triage(r) -> dict:
-    return r["premier_constat"]["triage"]
+def group_of(x) -> int:
+    return next(i for i, g in enumerate(v1.get_wiring().groups) if x in g)
+
+
+def stops(r, entry_id) -> list[dict]:
+    return [s for s in r["internal"]["stops"] if s["entry_id"] == entry_id]
 
 
 def answer(client, r, key, value) -> dict:
@@ -56,7 +69,7 @@ def answer(client, r, key, value) -> dict:
 
 
 def findings_file(manifest, records) -> str:
-    """A FICTIVE validated Part 1 classification with the given records (tests only)."""
+    """A FICTIVE validated Part 1 classification (tests only)."""
     repo = ManifestNoticeRepository(manifest)
     live = {e.entry_id: e for e in repo.entries_for_document("FICTIVE-NOTICE-001")}
     doc = {"header": {"status": "VALIDE", "approved_by": "Fictive Owner", "approval_date": "2026-10-08",
@@ -74,148 +87,185 @@ def stop_item(field, phrase):
     return {"stop_vehicle_engine_off": {"value": "required", "basis": "documented", "source_field": field, "source_phrase": phrase}}
 
 
-class TestRestartProcedure:
-    def test_procedure_alone_never_an_emergency(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped)
-        r = confirm(client, ["fx_red_steer_a"])
-        kinds = [(c["kind"], c["transmitted"]) for c in consignes(r, "fx_red_steer_a")]
-        assert kinds == [("restart_procedure", None), ("conditional_stop", None)]
-        assert triage(r)["level"] not in ("emergency_stop", "do_not_drive") and triage(r)["r5_rows"] == []
-        # Recorded in stop_conditions by the classification: cited, not an immediate stop.
-        assert not vc.immediate_stop_item(ManifestNoticeRepository(grouped).catalogue.entry("fx_red_steer_a"), fx.STEER_PROCEDURE)
-        situations(monkeypatch, grouped, findings_path=findings_file(grouped, {"fx_red_steer_a": {
-            "items": {}, "stop_conditions": [{"source_field": "documented_instruction", "source_phrase": fx.STEER_PROCEDURE}]}}))
-        r = confirm(client, ["fx_red_steer_a"])
-        assert triage(r)["r5_rows"] == [] and triage(r)["level"] == "monitor_and_document"
-        assert internal(r)["limits"][0]["key"] == "fx_red_steer_a#1"  # the unknown conditional stop, listed
+# --- 1. R-5 conditions of application -------------------------------------------------------------
 
-    def test_procedure_recorded_as_immediate_stop_is_reported_not_altered(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped, findings_path=findings_file(grouped, {"fx_red_steer_a": {
-            "items": stop_item("documented_instruction", "stop the fictive vehicle, stop the fictive motor for about 20 seconds")}}))
-        r = confirm(client, ["fx_red_steer_a"])
-        # R-5 is unchanged and receives the validated item: the level is NOT forced down.
-        assert triage(r)["level"] == "emergency_stop" and triage(r)["r5_rows"] == ["R-5:stop_vehicle_engine_off:fx_red_steer_a"]
-        assert any("procédure d'arrêt temporaire" in x["limit"] for x in internal(r)["limits"])
-        assert consignes(r, "fx_red_steer_a")[0]["transmitted"] == "R-5 stop_vehicle_engine_off (classement validé)"
+class TestConditionOfApplication:
+    def test_unknown_is_an_explicit_uncertainty_distinct_from_ordinary(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        t = constat(["fx_amber_tyre_low"])["triage"]
+        ordinary = constat(["fx_green_lamps"])["triage"]
+        assert ordinary["safety_status"] == "established" and ordinary["safety_uncertainties"] == []
+        assert t["safety_status"] == "uncertain" and t["level"] == ordinary["level"]  # level not forced
+        (u,) = [u for u in t["safety_uncertainties"] if u["key"] == TYRE_KEY]
+        assert u == {"kind": "condition_inconnue", "rule": "R-5:conditional_stop_uncertain:fx_amber_tyre_low",
+                     "entry_id": "fx_amber_tyre_low", "key": TYRE_KEY, "variant": "selected",
+                     "origin": v1.CATALOGUE_ORIGIN, "source_field": "linked_warnings", "citation": fx.TYRE_STOP,
+                     "printed_page": "F-17", "pdf_page": 17, "condition": fx.TYRE_CONDITION,
+                     "condition_established": False, "condition_status": "unknown"}
+        assert t["driving_assessment"] != "do_not_drive" and "R-5" not in " ".join(t["triggered_rules"])
 
+    def test_no_answer_equals_unknown(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        a = constat(["fx_amber_tyre_low"])
+        b = constat(["fx_amber_tyre_low"], conditions={TYRE_KEY: "unknown"})
+        c = constat(["fx_amber_tyre_low"], conditions={TYRE_KEY: "nonsense"})
+        assert a["triage"] == b["triage"] == c["triage"] and a["internal"]["stops"] == b["internal"]["stops"] == c["internal"]["stops"]
 
-class TestImmediateStop:
-    def test_real_immediate_stop_reaches_r5(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped, findings_path=fx.build_findings(grouped))
-        r = confirm(client, ["fx_red_alarm_a"])
-        assert triage(r)["level"] == "emergency_stop" and "R-5:stop_vehicle_engine_off:fx_red_alarm_a" in triage(r)["r5_rows"]
-        (c,) = consignes(r, "fx_red_alarm_a")
-        assert c["kind"] == "immediate_stop" and c["transmitted"] == "R-5 stop_vehicle_engine_off (classement validé)"
-        assert c["citation"]["text"] == fx.ALARM_STOP and c["citation"]["printed_page"] == "F-10"
-        assert c["condition"]["text"] == "If the fictive alarm light comes on while driving" and c["condition_status"] == "stated"
-
-
-class TestConditionalStop:
-    KEY = "fx_amber_tyre_low#1"
-
-    def _start(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped)
+    def test_confirmed_applies_with_its_rule_condition_and_source(self, monkeypatch, grouped, client):
+        draft(monkeypatch, grouped)
         r = confirm(client, ["fx_amber_tyre_low"])
-        assert r["phase"] == "restitution"
-        return r
+        r = answer(client, r, TYRE_KEY, "confirmed")
+        t = r["premier_constat"]["triage"]
+        assert t["level"] == "emergency_stop" and t["driving_assessment"] == "do_not_drive"
+        assert t["r5_rows"] == ["R-5:conditional_stop_confirmed:fx_amber_tyre_low"]
+        o = next(o for o in t["origin"] if o["origin"] == "passage documenté")
+        assert (o["citation"], o["condition"], o["condition_status"], o["printed_page"]) == (
+            fx.TYRE_STOP, fx.TYRE_CONDITION, "confirmed", "F-17")
+        # Shown at the top of the result, without any click, with its condition and source.
+        (top,) = r["premier_constat"]["presentation"]["stops_confirmed"]
+        assert top["citation"] == {"text": fx.TYRE_STOP, "printed_page": "F-17", "pdf_page": 17}
+        assert top["condition"]["text"] == fx.TYRE_CONDITION and top["answer"] == "confirmed"
+        # The other variant's own stop keeps its own (unknown) answer: never transferred.
+        (other,) = stops(r["premier_constat"], "fx_amber_tyre_fault")
+        assert other["condition_status"] == "unknown"
 
-    def test_unknown_kept_as_unknown(self, monkeypatch, grouped, client):
-        r = self._start(monkeypatch, grouped, client)
-        c = next(c for c in consignes(r, "fx_amber_tyre_low") if c["key"] == self.KEY)
-        assert (c["kind"], c["condition_status"], c["transmitted"]) == ("conditional_stop", "unknown", None)
-        assert self.KEY in [x["key"] for x in internal(r)["limits"]]
-        assert triage(r)["r5_rows"] == []
-        # Neither fulfilled nor excluded: still shown under its exact condition.
-        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
-        assert [p["answer"] for x in b["conditionals"] for p in x["passages"]] == ["unknown", "unknown"]
+    def test_excluded_on_unvalidated_interpretation_stays_uncertain(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        t = constat(["fx_amber_tyre_low"], conditions={TYRE_KEY: "excluded"})["triage"]
+        (u,) = [u for u in t["safety_uncertainties"] if u["key"] == TYRE_KEY]
+        assert u["kind"] == "condition_exclue_interpretation_non_validee" and u["condition_status"] == "excluded"
+        assert t["r5_rows"] == [] and t["safety_status"] == "uncertain"
 
-    def test_confirmed_taken_into_account(self, monkeypatch, grouped, client):
-        r = self._start(monkeypatch, grouped, client)
-        before = triage(r)
-        r = answer(client, r, self.KEY, "confirmed")
-        c = next(c for c in consignes(r, "fx_amber_tyre_low") if c["key"] == self.KEY)
-        assert c["condition_status"] == "confirmed" and c["transmitted"].startswith("R-5 stop_vehicle_engine_off")
-        assert triage(r)["r5_rows"] == ["R-5:stop_vehicle_engine_off:fx_amber_tyre_low"]
-        assert triage(r)["level"] == "emergency_stop" != before["level"]
-        assert triage(r)["engine_level"] == before["engine_level"]  # SafetyEngine untouched
-        origin = next(o for o in triage(r)["origin"] if o["origin"] == "passage documenté")
-        assert origin["citation"] == "stop the fictive car"
-        # The other variant's own conditional stop keeps its own (unknown) answer.
-        other = consignes(r, "fx_amber_tyre_fault")[0]
-        assert other["condition_status"] == "unknown" and other["transmitted"] is None
+    def test_excluded_on_validated_preparation_does_not_raise_but_stays_consultable(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped)
+        r = constat(["fx_amber_tyre_low"], conditions={TYRE_KEY: "excluded"})
+        assert [u for u in r["triage"]["safety_uncertainties"] if u["key"] == TYRE_KEY] == []
+        assert r["triage"]["r5_rows"] == [] and r["triage"]["level"] == "monitor_and_document"
+        (s,) = stops(r, "fx_amber_tyre_low")
+        assert (s["citation"], s["condition"], s["condition_status"], s["condition_established"]) == (
+            fx.TYRE_STOP, fx.TYRE_CONDITION, "excluded", True)
 
-    def test_excluded_not_transmitted_but_kept(self, monkeypatch, grouped, client):
-        r = self._start(monkeypatch, grouped, client)
-        r = answer(client, r, self.KEY, "excluded")
-        c = next(c for c in consignes(r, "fx_amber_tyre_low") if c["key"] == self.KEY)
-        assert (c["condition_status"], c["transmitted"]) == ("excluded", None)
-        assert self.KEY not in [x["key"] for x in internal(r)["limits"]]
-        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
-        kept = [p for x in b["conditionals"] for p in x["passages"] if p["key"] == self.KEY]
-        assert kept and kept[0]["text"] == fx.TYRE_STOP and kept[0]["answer"] == "excluded"
+    def test_restore_pressure_is_not_a_stop(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        r = constat(["fx_amber_tyre_low"])
+        assert [s["citation"] for s in stops(r, "fx_amber_tyre_low")] == [fx.TYRE_STOP]
+        kinds = [c["kind"] for c in r["internal"]["consignes"] if c["entry_id"] == "fx_amber_tyre_low"]
+        assert kinds == ["expected_action", "conditional_stop"]
 
-    def test_answer_refused_where_no_condition(self, monkeypatch, grouped, client):
-        r = self._start(monkeypatch, grouped, client)
+    def test_answer_refused_where_no_stop(self, monkeypatch, grouped, client):
+        draft(monkeypatch, grouped)
+        r = confirm(client, ["fx_amber_tyre_low"])
         out = client.post(f"/api/v1/parcours/{r['pid']}/condition", json={"key": "fx_amber_tyre_low#0", "answer": "confirmed"})
-        assert out.status_code == 409  # « restore the pressure » is an action, not a condition to answer
-
-    def test_restore_pressure_separate_from_conditional_stop(self, monkeypatch, grouped, client):
-        r = self._start(monkeypatch, grouped, client)
-        kinds = [(c["kind"], c["citation"]["text"]) for c in consignes(r, "fx_amber_tyre_low")]
-        assert kinds == [("expected_action", "In this case restore the fictive tyre pressure."), ("conditional_stop", fx.TYRE_STOP)]
-        tyre = consignes(r, "fx_amber_tyre_low")[1]
-        # Citation, condition and pages kept up to the result.
-        assert tyre["citation"] | {} == {"text": fx.TYRE_STOP, "source_field": "linked_warnings", "source_phrase": "stop the fictive car",
-                                         "printed_page": "F-17", "pdf_page": 17}
-        assert tyre["condition"] == {"text": fx.TYRE_CONDITION, "source_field": "linked_warnings", "printed_page": "F-17", "pdf_page": 17}
+        assert out.status_code == 409
 
 
-class TestParkingBrakeAndFluid:
-    def test_group_keeps_critical_possibility_without_confirming_a_defect(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped, findings_path=findings_file(grouped, {"fx_red_pb_fluid": {
-            "items": stop_item("linked_warnings", "stop the fictive vehicle immediately")}}))
-        r = confirm(client, ["fx_red_pb_failure"])
-        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
-        assert {x["entry_id"]: x["status"] for x in internal(r)["variants"]} == {
-            "fx_red_pb_failure": "possible", "fx_red_pb_fluid": "possible", "fx_red_pb_applied": "possible"}
-        # The stop belongs to the fluid variant only, with its condition; never to the parking brake.
-        assert [(u["entry_id"], [p["text"] for p in u["passages"]]) for u in b["urgent"]] == [("fx_red_pb_fluid", [fx.PB_FLUID_WARNING])]
-        assert [c["kind"] for c in consignes(r, "fx_red_pb_failure")] == ["instruction"]
-        (stop,) = consignes(r, "fx_red_pb_fluid")
-        assert stop["kind"] == "immediate_stop" and stop["condition"]["text"] == "If the fictive light comes on while driving"
-        # Critical possibility kept internally (highest of the variants), not concluded absent.
-        assert triage(r)["level"] == "emergency_stop" and triage(r)["r5_rows"] == ["R-5:stop_vehicle_engine_off:fx_red_pb_fluid"]
-        assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]
+# --- 2. PGDR-SAF-012 -------------------------------------------------------------------------------
 
-    def test_unresolved_variant_never_transmitted_as_selection(self, monkeypatch, grouped):
-        situations(monkeypatch, grouped)
-        c = ManifestNoticeRepository(grouped).catalogue
-        groups = v1.get_wiring().groups
-        gi = next(i for i, g in enumerate(groups) if "fx_red_pb_fluid" in g)
-        r = v1.premier_constat(v1.Parcours(vehicle={}), [], [gi])
+class TestBrakeRule:
+    def test_parking_brake_applied_established_no_do_not_drive(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped)
+        t = constat(["fx_red_pb_applied"])["triage"]
+        assert "PGDR-SAF-012" not in t["triggered_rules"] and t["engine_level"] == "monitor_and_document"
+        assert t["rule_exclusions"] == [{"rule": "PGDR-SAF-012", "excluded": [{
+            "entry_id": "fx_red_pb_applied", "nature": "fonctionnement_normal",
+            "provenance": "classement des situations validé", "variant": "selected"}]}]
+
+    def test_insufficient_information_no_silent_downgrade(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)  # draft classification: no structured fact
+        t = constat(["fx_red_pb_applied"])["triage"]
+        assert "PGDR-SAF-012" in t["triggered_rules"] and t["engine_level"] == "do_not_drive" and t["rule_exclusions"] == []
+        wire(monkeypatch, grouped)  # no classification at all (other parcours shape)
+        assert "PGDR-SAF-012" in constat(["fx_red_pb_applied"])["triage"]["triggered_rules"]
+
+    def test_low_fluid_with_applicable_instruction_kept(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped)
+        t = constat(["fx_red_pb_fluid"])["triage"]
+        assert "PGDR-SAF-012" in t["triggered_rules"] and t["level"] == "do_not_drive" and t["safety_status"] == "uncertain"
+        t = constat(["fx_red_pb_fluid"], conditions={FLUID_KEY: "confirmed"})["triage"]
+        assert t["level"] == "emergency_stop" and "PGDR-SAF-012" in t["triggered_rules"]
+        assert t["r5_rows"] == ["R-5:conditional_stop_confirmed:fx_red_pb_fluid"]
+
+    def test_undetermined_group_keeps_critical_possibility_without_confirming(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped)
+        r = constat([], [group_of("fx_red_pb_fluid")])
+        t = r["triage"]
+        assert "PGDR-SAF-012" in t["triggered_rules"] and t["rule_exclusions"] == []  # possible variant: never excluded
         assert {v["status"] for v in r["internal"]["variants"]} == {"possible"}
-        r = v1.premier_constat(v1.Parcours(vehicle={}), ["fx_red_pb_failure"])
-        assert r["internal"]["variants"] == [{"entry_id": "fx_red_pb_failure", "status": "selected"}]
-        assert c.entry("fx_red_pb_failure").designation == fx.PB_TITLE
+        (u,) = [u for u in t["safety_uncertainties"] if u["entry_id"] == "fx_red_pb_fluid"]
+        assert u["variant"] == "possible" and u["kind"] == "condition_inconnue" and u["citation"] == fx.PB_FLUID_WARNING
+        # With a validated immediate stop for the fluid variant: critical level kept, variant still not confirmed.
+        validated(monkeypatch, grouped, findings_path=findings_file(grouped, {"fx_red_pb_fluid": {
+            "items": stop_item("linked_warnings", "stop the fictive vehicle immediately")}}))
+        t = constat([], [group_of("fx_red_pb_fluid")])["triage"]
+        assert t["level"] == "emergency_stop"
+        assert [u["kind"] for u in t["safety_uncertainties"] if u["entry_id"] == "fx_red_pb_fluid"] == ["variante_non_departagee"]
 
-    def test_engine_limit_brake_keyword_on_shared_designation(self, monkeypatch, grouped):
-        """REPRODUCIBLE LIMIT (SafetyEngine unchanged): PGDR-SAF-012 matches « brake » in the shared
-        designation with a red colour, so a variant documented as an operating indication (parking
-        brake applied) alone gets do_not_drive. Not corrected here; reported."""
-        situations(monkeypatch, grouped)
-        r = v1.premier_constat(v1.Parcours(vehicle={}), ["fx_red_pb_applied"])
-        assert v1.get_wiring().situations["fx_red_pb_applied"].nature == "fonctionnement_normal"
-        assert r["triage"]["engine_level"] == "do_not_drive" and "PGDR-SAF-012" in r["triage"]["triggered_rules"]
+    def test_other_rules_and_parcours_unchanged(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped)
+        # Multiple selection: the established ordinary indication does not hide the other red brake indicator.
+        t = constat(["fx_red_pb_applied", "fx_red_pb_fluid"])["triage"]
+        assert "PGDR-SAF-012" in t["triggered_rules"]
 
 
-class TestNoStopAndFallback:
-    def test_stop_lights_no_stop_internally(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped)
-        r = confirm(client, ["fx_amber_lamp_fault"])
-        assert consignes(r, "fx_amber_lamp_fault") == [] and triage(r)["r5_rows"] == [] and internal(r)["limits"] == []
+# --- 3. Manufacturer instruction without a presentation classification ------------------------------
+
+class TestManufacturerInstructionAlone:
+    def test_reviewed_stop_reaches_r5_without_any_classification(self, monkeypatch, grouped):
+        wire(monkeypatch, grouped)  # no situations, no Part 1 classification
+        r = constat(["fx_red_pb_fluid"])
+        (s,) = stops(r, "fx_red_pb_fluid")
+        assert (s["citation"], s["origin"], s["condition"], s["condition_established"], s["condition_status"]) == (
+            fx.PB_FLUID_WARNING, v1.CATALOGUE_ORIGIN, None, False, "unknown")
+        assert r["triage"]["safety_status"] == "uncertain"
+        t = constat(["fx_red_pb_fluid"], conditions={FLUID_KEY: "confirmed"})["triage"]
+        assert t["level"] == "emergency_stop" and t["r5_rows"] == ["R-5:conditional_stop_confirmed:fx_red_pb_fluid"]
+
+    def test_exact_citation_does_not_validate_an_interpretation(self, monkeypatch, grouped):
+        validated(monkeypatch, grouped, consignes=False)  # presentation validated, preparation NOT validated
+        (s,) = stops(constat(["fx_red_pb_fluid"]), "fx_red_pb_fluid")
+        assert s["condition"] == "If the fictive light comes on while driving" and s["condition_established"] is False
+
+
+# --- 4. Restart procedure (non-regression) ----------------------------------------------------------
+
+class TestRestartProcedure:
+    def test_procedure_never_an_emergency_nor_a_permission(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        r = constat(["fx_red_steer_a"])
+        assert fx.STEER_PROCEDURE not in [s["citation"] for s in r["internal"]["stops"]]
+        (proc,) = [c for c in r["internal"]["consignes"] if c["kind"] == "restart_procedure"]
+        assert proc["citation"]["text"] == fx.STEER_PROCEDURE and proc["condition"]["text"] == fx.STEER_CONDITION
+        assert proc["citation"]["printed_page"] == "F-13"
+        assert r["triage"]["level"] == "monitor_and_document" and r["triage"]["r5_rows"] == []
+        assert r["triage"]["driving_assessment"] != "do_not_drive"
+        # The real stop of the mixed warning stays an explicit uncertainty.
+        assert [u["citation"] for u in r["triage"]["safety_uncertainties"]] == [
+            "If the fictive steering light flashes, stop the fictive vehicle at once."]
+
+    def test_procedure_recorded_as_immediate_stop_is_reported_not_altered(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped, findings_path=findings_file(grouped, {"fx_red_steer_a": {
+            "items": stop_item("documented_instruction", "stop the fictive vehicle, stop the fictive motor for about 20 seconds")}}))
+        r = constat(["fx_red_steer_a"])
+        assert r["triage"]["level"] == "emergency_stop"  # never forced down after calculation
+        assert any("procédure d'arrêt temporaire" in x["limit"] for x in r["internal"]["limits"])
+
+
+# --- Other behaviours kept --------------------------------------------------------------------------
+
+class TestKept:
+    def test_other_alert_and_multiple_selection(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped, findings_path=fx.build_findings(grouped))
+        t = constat(["fx_red_fluid", "fx_green_lamps"])["triage"]
+        assert t["level"] == "emergency_stop" and "R-5:stop_vehicle_engine_off:fx_red_fluid" in t["r5_rows"]
+        assert "PGDR-SAF-012" not in t["rule_exclusions"]
+
+    def test_stop_lights_no_stop(self, monkeypatch, grouped):
+        draft(monkeypatch, grouped)
+        r = constat(["fx_amber_lamp_fault"])
+        assert r["internal"]["stops"] == [] and r["triage"]["safety_status"] == "established"
 
     def test_unknown_red_light_fallback_kept(self, monkeypatch, grouped, client):
-        situations(monkeypatch, grouped)
+        draft(monkeypatch, grouped)
         pid = open_parcours(client)
         client.post(f"/api/v1/parcours/{pid}/no-match", json={"reason": "dont_know", "entry_ids": []})
         s = client.post(f"/api/v1/parcours/{pid}/colour", json={"colour": "incertain"}).json()["screen"]

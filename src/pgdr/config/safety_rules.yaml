@@ -233,6 +233,12 @@ rules:
     conditions:
       warning_color: red
       warning_keywords_any: ["frein", "brake"]
+      # A red indicator whose OWN documented situation is established (structured fact with
+      # provenance, variant selected by the driver) as an ordinary operating indication does
+      # not trigger this rule by the keyword of a designation shared with other situations.
+      # Without such a fact (other parcours, undetermined variant, draft classification) the
+      # rule is unchanged.
+      exclude_established_situations: ["fonctionnement_normal"]
     triage_level: do_not_drive
     driving_assessment: do_not_drive
     emergency_services: false

@@ -20,6 +20,7 @@ the file is not used at all.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import defaultdict
 from dataclasses import dataclass
@@ -62,6 +63,12 @@ DRAFT_LABELS = {
     "condition_answer.confirmed": "Vous avez indiqué que cette condition est remplie.",
     "condition_answer.excluded": "Vous avez indiqué que cette condition n'est pas remplie. La consigne reste affichée.",
     "condition_answer.unknown": "Condition non renseignée : la consigne s'applique si la condition est remplie.",
+    "stops_title": "Consignes d'arrêt de la notice et leur condition",
+    "stop_question": "Cette consigne correspond-elle à votre situation ?",
+    "stop_condition_none": "Condition d'application : non établie dans les données validées.",
+    "stop_condition_draft": "Condition d'application (interprétation en brouillon, non validée) :",
+    "stop_condition_validated": "Condition d'application :",
+    "stop_confirmed_title": "Consigne d'arrêt applicable — condition confirmée par vous",
     "message_question": "Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.",
     "message_submit": "Valider ce message",
     "message_none": "Aucun message / Je ne sais pas",
@@ -367,7 +374,7 @@ def conditional_passages(e: NoticeEntry, situation: Optional["Situation"] = None
     for i, c in enumerate(situation.consignes if situation else ()):
         if not c.conditional:
             continue
-        key = consigne_key(e.entry_id, i)
+        key = stop_key(e.entry_id, _first_stop_sentence(c.full))
         answer = condition_answer(answers, key)
         out.append({"condition": {"text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
                                   "pdf_page": c.condition.pdf_page},
@@ -407,8 +414,9 @@ def internal_consignes(e: NoticeEntry, situation: Optional["Situation"], variant
             "condition": None if c.condition is None else {
                 "text": c.condition.source_phrase, "source_field": c.condition.source_field,
                 "printed_page": c.condition.printed_page, "pdf_page": c.condition.pdf_page},
-            "condition_status": (condition_answer(answers, key) if kind == "conditional_stop"
-                                 else "stated" if c.condition is not None else "none"),
+            "stop_key": stop_key(e.entry_id, _first_stop_sentence(c.full)) if kind in ("conditional_stop", "immediate_stop") else None,
+            "condition_status": (condition_answer(answers, stop_key(e.entry_id, _first_stop_sentence(c.full)))
+                                 if kind == "conditional_stop" else "stated" if c.condition is not None else "none"),
         })
     return out
 
@@ -440,8 +448,50 @@ def red_offer(variants: list[NoticeEntry], findings: Mapping[str, EntryFinding],
     colour alone, nor from a conditional instruction shown apart."""
     situations = situations or {}
     return any((findings.get(v.entry_id) is not None
-                and findings[v.entry_id].stop_vehicle_engine_off.basis.value == "documented")
+                and (findings[v.entry_id].stop_vehicle_engine_off.basis.value == "documented"
+                     or any(cs.condition_status.value == "confirmed" for cs in findings[v.entry_id].conditional_stops)))
                or urgent_passages(v, situations.get(v.entry_id)) for v in variants)
+
+
+def stop_key(entry_id: str, sentence: str) -> str:
+    return f"{entry_id}#{hashlib.sha256(sentence.encode()).hexdigest()[:10]}"
+
+
+_FIELD_OF_UNIT = {"Texte de la notice": "documented_meaning", "Consigne": "documented_instruction"}
+
+
+def catalogue_stops(e: NoticeEntry) -> list[dict]:
+    """The stop instructions of ONE entry, read from the reviewed manufacturer
+    text itself (no presentation classification needed): each whole sentence,
+    its field and page. A restart procedure is not a stop instruction here."""
+    out, seen = [], set()
+    for u in text_units(e):
+        field = _FIELD_OF_UNIT.get(u["field"]) or ("linked_warnings" if u["field"].startswith("Avertissement") else None)
+        if field is None:
+            continue
+        for sentence in _SENTENCE.split(u["text"]):
+            sentence = sentence.strip()
+            if not is_stop_instruction(sentence) or _RESTART_PROCEDURE.search(sentence) or sentence in seen:
+                continue
+            seen.add(sentence)
+            out.append({"key": stop_key(e.entry_id, sentence), "text": sentence, "source_field": field,
+                        "printed_page": u["printed_page"], "pdf_page": u["pdf_page"]})
+    return out
+
+
+def stop_condition(stop: dict, situation: Optional["Situation"]) -> Optional[tuple["Consigne", bool]]:
+    """The condition a structured preparation pairs with this stop sentence, and
+    whether that pairing is validated. None when no preparation gives one."""
+    for c in (situation.consignes if situation else ()):
+        if c.restart or c.condition is None:
+            continue
+        if c.anchor.source_phrase in stop["text"] or stop["text"] in c.full:
+            return c, situation.conditions_validated
+    return None
+
+
+def _first_stop_sentence(full: str) -> str:
+    return next((x.strip() for x in _SENTENCE.split(full) if is_stop_instruction(x)), full)
 
 
 _MESSAGE_WORD = re.compile(r"\bmessages?\b", re.I)
@@ -501,6 +551,9 @@ class Situation:
     conditions: tuple[Anchor, ...]
     title: Optional[str]
     draft: bool
+    # The structured preparation of instructions and conditions is approved SEPARATELY
+    # from the presentation classification (header « structured_consignes »).
+    conditions_validated: bool = False
 
 
 def _anchor(e: NoticeEntry, raw) -> Anchor:
@@ -532,6 +585,11 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
         draft, status = True, "draft_dev_trial"
     else:
         raise ContentRejected("situations not validated")
+    sc = header.get("structured_consignes") or {}
+    # Named, separate approval of the instructions/conditions preparation; never implied by
+    # an exact citation nor by the presentation classification's own approval.
+    conditions_validated = bool(isinstance(sc, dict) and sc.get("status") == "VALIDE" and sc.get("validated_by")
+                                and sc.get("validated_on"))
     out, rejected = {}, {}
     for entry_id, d in (raw.get("entries") or {}).items():
         e = catalogue.entry(entry_id)
@@ -576,7 +634,8 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
                                       or any(f in title.lower() for f in FORBIDDEN)):
                 raise ContentRejected("invalid title")
             out[entry_id] = Situation(nature, just, consignes,
-                                      tuple(_anchor(e, c) for c in d.get("conditions") or []), title, draft)
+                                      tuple(_anchor(e, c) for c in d.get("conditions") or []), title, draft,
+                                      conditions_validated)
         except ContentRejected as exc:
             rejected[entry_id] = str(exc)
     return out, rejected, status
@@ -590,7 +649,7 @@ def present_situation(st: Optional[Situation], entry_id: Optional[str] = None,
     def answer(i, c) -> dict:
         if not (c.conditional and entry_id):
             return {}
-        key = consigne_key(entry_id, i)
+        key = stop_key(entry_id, _first_stop_sentence(c.full))
         a = condition_answer(answers, key)
         return {"key": key, "answer": a, "answer_label": DRAFT_LABELS[f"condition_answer.{a}"]}
 

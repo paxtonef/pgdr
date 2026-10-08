@@ -70,16 +70,25 @@ class SafetyEngine:
 
         triage = SafetyTriage()
         for rule in self.rules:
-            if self._matches(rule.get("conditions", {}), text, warning_texts, session):
-                level = TriageLevel(rule["triage_level"])
-                if _severity_rank(level) >= _severity_rank(triage.level):
-                    triage.level = level
-                    triage.triggered_rules.append(rule["id"])
-                    triage.reasons.append(rule["reason"])
-                    triage.user_instruction = rule["instruction"]
-                    triage.driving_assessment = DrivingAssessment(rule["driving_assessment"])
-                    triage.emergency_services_required = bool(rule.get("emergency_services", False))
-                    triage.roadside_assistance_recommended = bool(rule.get("roadside_assistance", False))
+            cond = rule.get("conditions", {})
+            texts, indicators = warning_texts, None
+            if "exclude_established_situations" in cond:
+                kept, excluded = self._established_exclusions(session, cond["exclude_established_situations"])
+                # The driver's own words keep the rule as before: only a keyword carried by the
+                # indicators' designations can be set aside by an established fact.
+                if any(normalize(kw) in text for kw in cond.get("warning_keywords_any", [])):
+                    excluded = []
+                if excluded:
+                    texts, indicators = self._texts_of(kept), kept
+                    if not self._matches(cond, text, texts, session, indicators=indicators):
+                        if self._matches(cond, text, warning_texts, session):
+                            # Matched only through indicators established, by a structured fact with
+                            # its provenance, as ordinary indications: recorded, never silent.
+                            triage.rule_exclusions.append(
+                                {"rule": rule["id"], "excluded": [dict(wi.situation_fact) for wi in excluded]})
+                        continue
+            if self._matches(cond, text, texts, session, indicators=indicators):
+                self._apply(triage, rule)
 
         if not triage.triggered_rules:
             triage.level = TriageLevel(self.default["triage_level"])
@@ -90,6 +99,41 @@ class SafetyEngine:
             triage.reasons.append(self.default["reason"])
 
         return triage
+
+    @staticmethod
+    def _apply(triage: SafetyTriage, rule: dict) -> None:
+        level = TriageLevel(rule["triage_level"])
+        if _severity_rank(level) >= _severity_rank(triage.level):
+            triage.level = level
+            triage.triggered_rules.append(rule["id"])
+            triage.reasons.append(rule["reason"])
+            triage.user_instruction = rule["instruction"]
+            triage.driving_assessment = DrivingAssessment(rule["driving_assessment"])
+            triage.emergency_services_required = bool(rule.get("emergency_services", False))
+            triage.roadside_assistance_recommended = bool(rule.get("roadside_assistance", False))
+
+    @staticmethod
+    def _established_exclusions(session: DiagnosticSession, natures: list) -> tuple[list, list]:
+        """Indicators whose structured situation fact establishes one of `natures`:
+        a variant the driver selected (never a possible one) and a fact with a
+        provenance. Without such a fact, nothing is excluded (rule unchanged)."""
+        kept, excluded = [], []
+        for wi in session.warning_indicators:
+            f = wi.situation_fact or {}
+            if f.get("nature") in natures and f.get("provenance") and f.get("variant") == "selected":
+                excluded.append(wi)
+            else:
+                kept.append(wi)
+        return kept, excluded
+
+    @staticmethod
+    def _texts_of(indicators: list) -> list[str]:
+        out = []
+        for wi in indicators:
+            out.append(normalize(wi.label))
+            if wi.associated_message:
+                out.append(normalize(wi.associated_message))
+        return out
 
     # -- matching -----------------------------------------------------
 
@@ -109,9 +153,11 @@ class SafetyEngine:
                 out.append(normalize(wi.associated_message))
         return out
 
-    def _matches(self, cond: dict, text: str, warning_texts: list[str], session: DiagnosticSession) -> bool:
+    def _matches(self, cond: dict, text: str, warning_texts: list[str], session: DiagnosticSession,
+                 indicators: list | None = None) -> bool:
         if not cond:
             return False
+        indicators = session.warning_indicators if indicators is None else indicators
 
         if "keywords_any" in cond:
             if not any(normalize(kw) in text for kw in cond["keywords_any"]):
@@ -145,12 +191,12 @@ class SafetyEngine:
 
         if "warning_behavior" in cond:
             target = cond["warning_behavior"]
-            if not any(wi.behavior.value == target for wi in session.warning_indicators):
+            if not any(wi.behavior.value == target for wi in indicators):
                 return False
 
         if "warning_color" in cond:
             target = cond["warning_color"]
-            if not any(wi.observed_color.value == target for wi in session.warning_indicators):
+            if not any(wi.observed_color.value == target for wi in indicators):
                 return False
 
         return True

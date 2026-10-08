@@ -370,12 +370,16 @@ SITUATIONS = {
 
 
 def build_situations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", validated_by: str = "",
-                     entries: dict | None = None) -> Path:
+                     entries: dict | None = None, consignes_validated_by: str = "") -> Path:
+    """consignes_validated_by: the SEPARATE named approval of the structured
+    instructions/conditions preparation (fictive)."""
     repo = ManifestNoticeRepository(manifest)
     known = {e.entry_id for e in repo.catalogue.entries}
     header = {"status": status, "catalogue_content_sha256": repo.catalogue.content_sha256}
     if validated_by:
         header.update(validated_by=validated_by, validated_on="2026-10-08")
+    if consignes_validated_by:
+        header["structured_consignes"] = {"status": "VALIDE", "validated_by": consignes_validated_by, "validated_on": "2026-10-08"}
     doc = {"header": header,
            "entries": entries if entries is not None else {k: v for k, v in SITUATIONS.items() if k in known}}
     path = manifest.parent / "situations.yaml"

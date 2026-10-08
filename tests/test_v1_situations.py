@@ -263,7 +263,7 @@ class TestStopNeverLowered:
         assert b["conditionals"] == [{"only_for": b["actions"][0]["only_for"], "entry_id": "fx_red_steer_a", "passages": [{
             "condition": {"text": "If the fictive steering light flashes", "printed_page": "F-14", "pdf_page": 14},
             "text": "If the fictive steering light flashes, stop the fictive vehicle at once.",
-            "printed_page": "F-14", "pdf_page": 14, "key": "fx_red_steer_a#1", "answer": "unknown",
+            "printed_page": "F-14", "pdf_page": 14, "key": vc.stop_key("fx_red_steer_a", "If the fictive steering light flashes, stop the fictive vehicle at once."), "answer": "unknown",
             "answer_label": vc.DRAFT_LABELS["condition_answer.unknown"]}]}]
         st = b["variants"][0]["entry"]["situation"]
         assert [(c["label"], c["action"]) for c in st["consignes"]] == [
@@ -309,8 +309,8 @@ class TestConditionalStopApart:
                  "text": fx.TYRE_STOP, "printed_page": "F-17", "pdf_page": 17}
         unknown = {"answer": "unknown", "answer_label": vc.DRAFT_LABELS["condition_answer.unknown"]}
         assert [(x["entry_id"], x["passages"]) for x in b["conditionals"]] == [
-            ("fx_amber_tyre_low", [{**whole, **unknown, "key": "fx_amber_tyre_low#1"}]),
-            ("fx_amber_tyre_fault", [{**whole, **unknown, "key": "fx_amber_tyre_fault#0"}])]
+            ("fx_amber_tyre_low", [{**whole, **unknown, "key": vc.stop_key("fx_amber_tyre_low", fx.TYRE_STOP)}]),
+            ("fx_amber_tyre_fault", [{**whole, **unknown, "key": vc.stop_key("fx_amber_tyre_fault", fx.TYRE_STOP)}])]
         # No urgent title, no red button, the whole warning still visible.
         assert b["urgent"] == [] and b["red_offer"] is None and r["premier_constat"]["presentation"]["red_screen"] is None
         assert all(v["entry"]["manufacturer_text"]["linked_warnings"][0]["text"] == fx.TYRE_WARNING for v in b["variants"])

@@ -36,7 +36,7 @@ from pgdr.enums import (
 from pgdr.errors import ConfigurationError
 from pgdr.safety_engine import _severity_rank as _safety_engine_severity_rank
 from pgdr.models import (
-    FINDING_SOURCE_FIELDS, DocumentedFigure, DocumentedPhrase, EntryFinding, FindingItem, FindingProvenance,
+    FINDING_SOURCE_FIELDS, ConditionStatus, DocumentedFigure, DocumentedPhrase, EntryFinding, FindingItem, FindingProvenance,
     ManufacturerFirstFinding, PracticalAssistanceRequirement, SafetyTriage,
 )
 
@@ -333,10 +333,18 @@ class R5Row:
     label: str          # traceability: which row, for which entry
 
 
+UNRESOLVED_VARIANT = "unresolved_variant"  # identification origin of a variant the driver could not tell apart
+
+
 def r5_rows(finding: ManufacturerFirstFinding) -> list[R5Row]:
     rows: list[R5Row] = []
     for e in finding.entries:
         eid = e.provenance.entry_id
+        # A documented stop instruction whose condition the DRIVER CONFIRMED applies, with
+        # the same safety treatment as a documented stop (excluded / unknown: see
+        # r5_uncertainties; never a row of their own).
+        if any(cs.condition_status == ConditionStatus.CONFIRMED for cs in e.conditional_stops):
+            rows.append(R5Row(TriageLevel.EMERGENCY_STOP, True, True, f"R-5:conditional_stop_confirmed:{eid}"))
         if e.stop_vehicle_engine_off.value == ImmediateRequirement.REQUIRED.value:
             rows.append(R5Row(TriageLevel.EMERGENCY_STOP, True, True, f"R-5:stop_vehicle_engine_off:{eid}"))
         elif e.operability.value == ManufacturerOperability.DO_NOT_DRIVE.value:
@@ -345,6 +353,37 @@ def r5_rows(finding: ManufacturerFirstFinding) -> list[R5Row]:
               and e.urgency_phrase.value == WITHOUT_DELAY):
             rows.append(R5Row(TriageLevel.PROMPT_INSPECTION, False, False, f"R-5:professional_without_delay:{eid}"))
     return rows
+
+
+def r5_uncertainties(finding: ManufacturerFirstFinding) -> list[dict]:
+    """Explicit safety uncertainties (never a level, never a confirmed defect):
+      - a documented stop instruction whose condition is unknown (or not answered);
+      - one excluded by the driver while the condition's interpretation is not
+        validated (the exclusion is kept, the uncertainty too);
+      - a documented stop of a variant the driver could not tell apart (the
+        critical possibility is kept by its row; the variant is not confirmed)."""
+    out = []
+    for e in finding.entries:
+        eid = e.provenance.entry_id
+        for cs in e.conditional_stops:
+            if cs.condition_status == ConditionStatus.CONFIRMED:
+                continue
+            if cs.condition_status == ConditionStatus.EXCLUDED and cs.condition_established:
+                continue
+            out.append({
+                "kind": "condition_inconnue" if cs.condition_status == ConditionStatus.UNKNOWN
+                        else "condition_exclue_interpretation_non_validee",
+                "rule": f"R-5:conditional_stop_uncertain:{eid}", "entry_id": eid, "key": cs.key,
+                "variant": cs.variant, "origin": cs.origin, "source_field": cs.source_field, "citation": cs.citation,
+                "printed_page": cs.printed_page, "pdf_page": cs.pdf_page, "condition": cs.condition,
+                "condition_established": cs.condition_established, "condition_status": cs.condition_status.value,
+            })
+        if (e.provenance.identification_origin == UNRESOLVED_VARIANT
+                and e.stop_vehicle_engine_off.value == ImmediateRequirement.REQUIRED.value):
+            out.append({"kind": "variante_non_departagee", "rule": f"R-5:stop_vehicle_engine_off:{eid}", "entry_id": eid,
+                        "variant": "possible", "source_field": e.stop_vehicle_engine_off.source_field,
+                        "citation": e.stop_vehicle_engine_off.source_phrase})
+    return out
 
 
 def compose_triage(
@@ -363,8 +402,14 @@ def compose_triage(
     keyed by the row kind); the engine's reasons and triggered rules are
     kept and the applied R-5 row is appended to both."""
     rows = r5_rows(finding)
-    if not rows:
+    uncertainties = r5_uncertainties(finding)
+    if not rows and not uncertainties:
         return engine, []
+    if not rows:
+        composed = engine.model_copy(deep=True)
+        composed.safety_status = "uncertain"
+        composed.safety_uncertainties = uncertainties
+        return composed, []
     top = max(rows, key=lambda r: severity_rank(r.level))
     raised = severity_rank(top.level) > severity_rank(engine.level)
     composed = engine.model_copy(deep=True)
@@ -382,6 +427,9 @@ def compose_triage(
     composed.reasons = [*engine.reasons, *(
         f"PGDR Part 1 {label} (Manufacturer First Finding, monotonic composition)" for label in labels
     )]
+    if uncertainties:
+        composed.safety_status = "uncertain"
+        composed.safety_uncertainties = uncertainties
     return composed, labels
 
 
@@ -510,6 +558,7 @@ def raised_instructions(finding: ManufacturerFirstFinding) -> dict[str, str]:
     )
     return {
         "stop_vehicle_engine_off": APPROVED_LABELS["stop_vehicle_engine_off = REQUIRED"],
+        "conditional_stop_confirmed": APPROVED_LABELS["stop_vehicle_engine_off = REQUIRED"],
         "operability_do_not_drive": APPROVED_LABELS["operability = DO_NOT_DRIVE"],
         "professional_without_delay": professional_label(urgency),
     }

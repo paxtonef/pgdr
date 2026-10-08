@@ -63,14 +63,14 @@ from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from pgdr.application.part1_first_finding import (
-    APPROVED_BANNERS, Part1Mapping, banner, build_manufacturer_first_finding, compose_triage, load_part1_mapping,
-    raised_instructions, severity_rank,
+    APPROVED_BANNERS, UNRESOLVED_VARIANT, Part1Mapping, banner, build_manufacturer_first_finding, compose_triage,
+    load_part1_mapping, raised_instructions, severity_rank,
 )
 from pgdr.config_loader import load_safety_rules
 from pgdr.application.photo_first import warning_indicator_from_entry
 from pgdr.errors import ConfigurationError
 from pgdr.models import (
-    FINDING_SOURCE_FIELDS, Consent, DiagnosticSession, FindingBasis, FindingItem, InitialComplaint,
+    ConditionalStop, ConditionStatus, Consent, DiagnosticSession, FindingBasis, InitialComplaint,
     ManufacturerFirstFinding, PreGarageDiagnosticRequest,
 )
 from pgdr.safety_engine import SafetyEngine
@@ -513,6 +513,11 @@ def _level_origin(engine, triage, rows, finding) -> list[dict]:
     items = {f.provenance.entry_id: f for f in finding.entries}
     for row in rows:
         _, kind, entry_id = row.split(":", 2)
+        if kind == "conditional_stop_confirmed":
+            cs = next(x for x in items[entry_id].conditional_stops if x.condition_status == ConditionStatus.CONFIRMED)
+            out.append({"origin": "passage documenté", "rule": row, "entry_id": entry_id, "citation": cs.citation,
+                        "condition": cs.condition, "condition_status": "confirmed", "printed_page": cs.printed_page})
+            continue
         item = {"stop_vehicle_engine_off": "stop_vehicle_engine_off", "operability_do_not_drive": "operability",
                 "professional_without_delay": "professional_attention"}[kind]
         out.append({"origin": "passage documenté", "rule": row, "entry_id": entry_id,
@@ -523,51 +528,54 @@ def _level_origin(engine, triage, rows, finding) -> list[dict]:
     return out
 
 
-UNRESOLVED_VARIANT = "unresolved_variant"
+CATALOGUE_ORIGIN = "texte du constructeur, catalogue revu par le propriétaire"
 
 
-def transmit_conditions(finding: ManufacturerFirstFinding, internal: list[dict], c: NoticeCatalogue):
-    """Conversion of the driver's answers before R-5 (R-5 itself unchanged).
+def situation_fact(x: str, situation: Optional[vc.Situation], variant: str) -> Optional[dict]:
+    """Structured fact on the documented situation of one indicator, for the
+    SafetyEngine. Provenance only from a VALIDATED classification; a draft
+    gives no fact (the engine then behaves as before)."""
+    if situation is None or situation.draft:
+        return None
+    return {"entry_id": x, "nature": situation.nature, "provenance": "classement des situations validé",
+            "variant": variant}
 
-    A conditional stop whose condition the DRIVER CONFIRMED is transmitted as
-    the documented stop it then is (exact citation, its own entry). Excluded:
-    not transmitted, still shown. Unknown: not transmitted either, because
-    R-5 has no row for a stop that applies only under an unknown condition;
-    it is listed in `limits` (never treated as excluded). A documented restart
-    procedure recorded as an immediate stop by a classification is reported,
-    never altered."""
-    by_id = {e.provenance.entry_id: e for e in finding.entries}
-    limits = []
-    for i in internal:
-        f = by_id.get(i["entry_id"])
-        if f is None:
-            continue
-        if i["kind"] == "conditional_stop" and i["condition_status"] == "confirmed":
-            if (f.stop_vehicle_engine_off.basis != FindingBasis.DOCUMENTED
-                    and i["citation"]["source_field"] in FINDING_SOURCE_FIELDS):
-                by_id[i["entry_id"]] = f.model_copy(update={"stop_vehicle_engine_off": FindingItem(
-                    value="required", basis=FindingBasis.DOCUMENTED, source_field=i["citation"]["source_field"],
-                    source_phrase=i["citation"]["source_phrase"])})
-            i["transmitted"] = "R-5 stop_vehicle_engine_off (condition confirmée par le conducteur)"
-        elif i["kind"] == "conditional_stop":
-            i["transmitted"] = None
-            if i["condition_status"] == "unknown":
-                limits.append({"key": i["key"], "entry_id": i["entry_id"], "limit": (
-                    "Consigne d'arrêt conditionnelle, condition inconnue : R-5 n'a pas de ligne pour un arrêt "
-                    "possible sous condition ; non transmise au niveau interne, conservée et affichée.")})
-        elif i["kind"] == "restart_procedure":
-            i["transmitted"] = None
-            if (f.stop_vehicle_engine_off.basis == FindingBasis.DOCUMENTED
-                    and vc.consigne_is_action(c.entry(i["entry_id"]), f.stop_vehicle_engine_off.source_phrase)):
-                i["transmitted"] = "R-5 stop_vehicle_engine_off (classement validé)"
-                limits.append({"key": i["key"], "entry_id": i["entry_id"], "limit": (
-                    "Le classement validé enregistre une procédure d'arrêt temporaire, d'attente puis de redémarrage "
-                    "comme arrêt immédiat (stop_vehicle_engine_off) : à corriger dans le classement (stop_conditions).")})
-        else:
-            i["transmitted"] = ("R-5 stop_vehicle_engine_off (classement validé)"
-                                if i["kind"] == "immediate_stop" and f.stop_vehicle_engine_off.basis == FindingBasis.DOCUMENTED
-                                else None)
-    return ManufacturerFirstFinding(entries=[by_id[e.provenance.entry_id] for e in finding.entries]), limits
+
+def attach_conditional_stops(finding: ManufacturerFirstFinding, c: NoticeCatalogue, situations: dict,
+                             variant: dict, answers: dict) -> tuple[ManufacturerFirstFinding, list[dict]]:
+    """Raccordement V1 -> R-5 (R-5 decides): every stop instruction of the
+    reviewed manufacturer text, per entry and variant, whole sentence and
+    page, with the condition a preparation pairs with it (validated or not)
+    and the driver's answer (unknown by default). Already covered by a
+    VALIDATED structured item (stop_vehicle_engine_off): not repeated. A
+    restart procedure is never one. Also reports a validated item that
+    records a restart procedure as an immediate stop (never altered)."""
+    entries, limits = [], []
+    for f in finding.entries:
+        x = f.provenance.entry_id
+        e, st = c.entry(x), situations.get(x)
+        item = f.stop_vehicle_engine_off
+        if item.basis == FindingBasis.DOCUMENTED and vc.consigne_is_action(e, item.source_phrase):
+            limits.append({"entry_id": x, "limit": (
+                "Le classement validé enregistre une procédure d'arrêt temporaire, d'attente puis de redémarrage comme "
+                "arrêt immédiat (stop_vehicle_engine_off) : à corriger dans le classement (stop_conditions).")})
+        stops = []
+        for s_ in vc.catalogue_stops(e):
+            if item.basis == FindingBasis.DOCUMENTED and item.source_phrase in s_["text"]:
+                continue
+            paired = vc.stop_condition(s_, st)
+            cond = paired[0].condition if paired else None
+            stops.append(ConditionalStop(
+                key=s_["key"], source_field=s_["source_field"], citation=s_["text"], printed_page=s_["printed_page"],
+                pdf_page=s_["pdf_page"], origin=CATALOGUE_ORIGIN,
+                condition=cond.source_phrase if cond else None,
+                condition_printed_page=cond.printed_page if cond else None,
+                condition_pdf_page=cond.pdf_page if cond else None,
+                condition_established=bool(paired and paired[1]),
+                condition_status=ConditionStatus(vc.condition_answer(answers, s_["key"])),
+                variant=variant[x]))
+        entries.append(f.model_copy(update={"conditional_stops": stops}) if stops else f)
+    return ManufacturerFirstFinding(entries=entries), limits
 
 
 def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = (), pid: str = "",
@@ -598,7 +606,10 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
         # The optional photo is never analysed nor kept.
         consent=Consent(media_analysis_allowed=False, report_storage_allowed=False),
     ))
-    session.warning_indicators = [warning_indicator_from_entry(e, photo_evidence_id=None) for e in chosen]
+    session.warning_indicators = [
+        warning_indicator_from_entry(e, photo_evidence_id=None).model_copy(update={
+            "situation_fact": situation_fact(e.entry_id, w.situations.get(e.entry_id), variant[e.entry_id])})
+        for e in chosen]
     engine = _safety_engine.evaluate(session)
     finding = build_manufacturer_first_finding(
         # A variant left undetermined is never transmitted as the driver's confirmed selection.
@@ -607,7 +618,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     )
     answers = p.conditions
     internal = [i for x in eval_ids for i in vc.internal_consignes(c.entry(x), w.situations.get(x), variant[x], answers)]
-    finding, limits = transmit_conditions(finding, internal, c)
+    finding, limits = attach_conditional_stops(finding, c, w.situations, variant, answers)
     # R-5: may raise the SafetyEngine level, never lower it. Its wording is
     # not displayed in V1 (internal level only).
     triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
@@ -660,6 +671,16 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 "entry": present(v.entry_id), "section": _section(pid, v)} for v in variants],
             "red_offer": vc.DRAFT_LABELS["red_offer"] if vc.red_offer(variants, by_id, w.situations) else None,
         })
+    def stop_view(f, cs) -> dict:
+        label = (vc.DRAFT_LABELS["stop_condition_none"] if cs.condition is None else
+                 vc.DRAFT_LABELS["stop_condition_validated"] if cs.condition_established else vc.DRAFT_LABELS["stop_condition_draft"])
+        return {"key": cs.key, "entry_id": f.provenance.entry_id, "only_for": vc.DRAFT_LABELS["only_for"] + title(c.entry(f.provenance.entry_id)),
+                "citation": {"text": cs.citation, "printed_page": cs.printed_page, "pdf_page": cs.pdf_page},
+                "condition_label": label, "condition": None if cs.condition is None else {
+                    "text": cs.condition, "printed_page": cs.condition_printed_page, "pdf_page": cs.condition_pdf_page},
+                "answer": cs.condition_status.value, "answer_label": vc.DRAFT_LABELS[f"condition_answer.{cs.condition_status.value}"]}
+
+    stops = [stop_view(f, cs) for f in finding.entries for cs in f.conditional_stops]
     red_screen = None
     if any(b["red_offer"] for b in blocks):
         s = load_fallback_screens()["screens"]["red_or_uncertain"]
@@ -668,15 +689,24 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
         "presentation": {
             "title": vc.T2_V1, "entries": [present(x) for x in entry_ids], "ambiguous": blocks, "red_screen": red_screen,
             "condition_question": {k: vc.DRAFT_LABELS[f"condition_{k}"] for k in ("question", "confirmed", "excluded", "unknown")},
+            # Stop instructions of the manufacturer text with their condition and the driver's answer; a confirmed
+            # one is shown at the top of the result, without any click.
+            "stops_title": vc.DRAFT_LABELS["stops_title"], "stop_question": vc.DRAFT_LABELS["stop_question"],
+            "stops_confirmed_title": vc.DRAFT_LABELS["stop_confirmed_title"], "draft_texts": vc.DRAFT_LABELS["draft_texts"],
+            "stops_confirmed": [x for x in stops if x["answer"] == "confirmed"], "stops": stops,
             "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
             "end": APPROVED_BANNERS["T8"][0],
         },
         "triage": {"level": triage.level.value, "driving_assessment": triage.driving_assessment.value,
+                   "safety_status": triage.safety_status, "safety_uncertainties": triage.safety_uncertainties,
+                   "rule_exclusions": engine.rule_exclusions,
                    "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
                    "r5_rows": rows, "origin": _level_origin(engine, triage, rows, finding)},
         # Internal data carried to the result: nature of each instruction, exact condition and the driver's
         # answer, entry and variant, whole citation and page; what R-5 cannot represent is listed, never hidden.
-        "internal": {"variants": [{"entry_id": x, "status": variant[x]} for x in eval_ids]
+        "internal": {"stops": [{**cs.model_dump(mode="json"), "entry_id": f.provenance.entry_id}
+                               for f in finding.entries for cs in f.conditional_stops],
+                     "variants": [{"entry_id": x, "status": variant[x]} for x in eval_ids]
                      + [{"entry_id": x, "status": "excluded"} for x in excluded],
                      "consignes": internal, "limits": limits},
         "classification_status": w.findings_status,
@@ -790,7 +820,7 @@ def clarify(pid: str, req: ClarifyRequest):
 
 
 class ConditionRequest(BaseModel):
-    key: str = Field(max_length=300)  # « entry_id#index » of a conditional stop instruction
+    key: str = Field(max_length=300)  # stop key « entry_id#hash » of a documented stop instruction
     answer: Literal["confirmed", "excluded", "unknown"]
 
 
@@ -799,11 +829,9 @@ def condition(pid: str, req: ConditionRequest):
     """The driver's answer on the condition of a conditional stop instruction."""
     p = _get(pid)
     _require_consent(p)
-    w = get_wiring()
-    entry_id, _, index = req.key.partition("#")
-    st = w.situations.get(entry_id)
-    if p.phase != "restitution" or st is None or not index.isdigit() or int(index) >= len(st.consignes) \
-            or not st.consignes[int(index)].conditional:
+    entry_id = req.key.partition("#")[0]
+    e = _catalogue().entry(entry_id)
+    if p.phase != "restitution" or e is None or req.key not in {s_["key"] for s_ in vc.catalogue_stops(e)}:
         raise HTTPException(status_code=409, detail="Aucune condition n'est attendue ici.")
     p.conditions[req.key] = req.answer
     return _after_confirmation(pid, p)
@@ -913,9 +941,11 @@ V1_HTML = """<!DOCTYPE html>
  .urgent h3 { color: #b00020; }
  .expected-action { border: 2px solid #8a5a00; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
  .conditional { border: 1px solid #555; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .confirmed-stops { border: 3px solid #b00020; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .stops { border: 1px solid #555; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
  .described { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
  .situation { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
- .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page { display: block; font-size: .85em; color: #444; }
+ .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page, .stops blockquote .page, .confirmed-stops blockquote .page { display: block; font-size: .85em; color: #444; }
  .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
@@ -1247,11 +1277,32 @@ function renderConstat(pc) {
   const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
   condQ = p.condition_question;
   root.append(make("h1", p.title));
+  if (p.stops_confirmed.length) {
+    const cb = sec(root, p.stops_confirmed_title, "confirmed-stops");
+    cb.append(make("p", p.draft_texts, "draft-mention"));
+    for (const x of p.stops_confirmed) {
+      const d = make("div", null, "confirmed-stop"); d.dataset.key = x.key; cb.append(d);
+      d.append(make("p", x.only_for, "label"));
+      d.append(make("p", x.condition_label, "label")); if (x.condition) cite(d, x.condition, "confirmed-condition");
+      cite(d, x.citation, "confirmed-citation"); d.append(make("p", x.answer_label, "condition-answer"));
+    }
+  }
   for (const e of p.entries) {
     const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
     renderEntry(e, block, e.selected_label + " : ");
   }
   for (const b of p.ambiguous) renderAmbiguous(b, root, p.red_screen);
+  if (p.stops.length) {
+    const sb = sec(root, p.stops_title, "stops");
+    sb.append(make("p", p.draft_texts, "draft-mention"));
+    for (const x of p.stops) {
+      const d = make("div", null, "stop-item"); d.dataset.key = x.key; d.dataset.answer = x.answer; sb.append(d);
+      d.append(make("p", x.only_for, "label"));
+      d.append(make("p", x.condition_label, "label")); if (x.condition) cite(d, x.condition, "stop-condition");
+      cite(d, x.citation, "stop-citation");
+      conditionQuestion(d, x, {...condQ, question: p.stop_question});
+    }
+  }
   const src = el("part1-sources"); src.replaceChildren();
   if (p.sources.length) { const s = sec(src, "Source", "source"); for (const line of p.sources) s.append(make("p", line)); }
   el("part1-t8").textContent = p.end;
