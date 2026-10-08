@@ -133,10 +133,29 @@ its source; a choice resolves the group. Otherwise (« Je ne sais pas »,
 « Aucun de ceux-ci », or nothing distinctive) the group is shown as ambiguous:
 the limit, the texts identical word for word in every variant (with pages),
 then each variant's own complete passage under « Indiqué seulement pour ».
-When a variant is red or cites a stop, the validated red/uncertain screen
-text is shown in the result itself, right after the limit and above the
-variants, with no click (the button stays); never for a wholly informative
-group. The internal level is the highest of the variants and its origin
+Meanings and instructions of the variants are never merged. A documented
+urgent instruction (a sentence citing a stop, or the instruction of a
+situation classified `alerte_consigne_immediate`) stays visible above the
+variants, under the variant it belongs to only, with its page; the
+red/uncertain screen is then on offer as a button, never automatic. Colour
+or ambiguity alone never trigger it (e.g. two red belt reminders). When the
+notice speaks of a message for some variants only, the driver may type the
+message exactly (or « Aucun message / Je ne sais pas »); only an exact match
+with a documented displayed message resolves the group, otherwise the typed
+text is shown back verbatim. Limit (owner wording): « Avec les informations
+renseignées, nous ne pouvons pas déterminer laquelle de ces situations
+correspond à votre voyant. » An unidentified light keeps the colour fallback.
+
+Situation classification (`PGDR_V1_SITUATIONS`): per entry, the nature of
+the situation described (`fonctionnement_normal`, `action_conducteur`,
+`anomalie_defaut`, `alerte_consigne_immediate`, `situation_non_determinee`),
+its exact justification, the exact manufacturer instructions with their
+conditions, general conditions, and the validation status — each anchor
+checked verbatim, page taken from the catalogue. A passage citing a stop is
+never accepted as an operating indication or a driver action. Validated by
+name: used everywhere; draft: development trial only, marked « Classement de
+la situation en brouillon, non validé ». A validated explanation never
+validates a classification. It is shown under the French explanation. The internal level is the highest of the variants and its origin
 (PGDR rule or documented passage) is recorded, never displayed. New French
 texts of this display are drafts and marked as such.
 

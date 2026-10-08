@@ -59,6 +59,9 @@ ALARM_A = "The fictive alarm light shows a fictive pressure loss."
 ALARM_B = "The fictive alarm light shows a fictive service reminder."
 ALARM_STOP = "If the fictive alarm light comes on while driving, stop the fictive vehicle immediately."
 ALARM_STOP_PHRASE = "stop the fictive vehicle immediately"
+CODE_A = "The fictive code symbol shows a fictive code fault. Contact a fictive workshop soon."
+CODE_A_INSTRUCTION = "Contact a fictive workshop soon."
+CODE_B = "The fictive code symbol comes on with a dedicated message to report a fictive intrusion attempt."
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -78,6 +81,7 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/belt.png": png((180, 0, 0), 8), "images/twin.png": png((200, 140, 0), 8),
         "images/look_a.png": png((0, 120, 0), 8), "images/look_b.png": png((0, 121, 0), 8),
         "images/mode.png": png((0, 0, 200), 8), "images/alarm.png": png((210, 10, 10), 8),
+        "images/code.png": png((220, 160, 0), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -128,6 +132,10 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
                   linked_warnings=[{"number": "9)", "text": ALARM_STOP, "printed_page": "F-10", "pdf_page": 10,
                                     "inline_pictograms": []}]),
             entry("fx_red_alarm_b", "FICTIVE ALARM", "red", "images/alarm.png", ALARM_B, 9, state="flashing"),
+            # Identical file, nothing distinctive; only variant B speaks of a (non documented) message.
+            entry("fx_amber_code_a", "FICTIVE CODE FAULT", "amber", "images/code.png", CODE_A, 11, state=None,
+                  documented_instruction=CODE_A_INSTRUCTION),
+            entry("fx_amber_code_b", "FICTIVE INTRUSION", "amber", "images/code.png", CODE_B, 11, state=None),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
@@ -239,5 +247,53 @@ def build_explanations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", 
     doc = {"header": header,
            "entries": entries if entries is not None else {"fx_red_fluid": EXPLANATION_RED, "fx_green_lamps": EXPLANATION_GREEN}}
     path = manifest.parent / "explications.yaml"
+    path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    return path
+
+
+def situation(nature: str, phrase: str, field: str = "documented_meaning", *, consignes=(), conditions=(),
+              intitule: str | None = None) -> dict:
+    """consignes: (phrase, field, condition_phrase_or_None, condition_field) tuples."""
+    d = {"nature": nature, "justification": {"source_field": field, "source_phrase": phrase},
+         "consignes": [{"source_field": f, "source_phrase": ph,
+                        **({"condition": {"source_field": cf, "source_phrase": cp}} if cp else {})}
+                       for ph, f, cp, cf in consignes],
+         "conditions": [{"source_field": f, "source_phrase": ph} for ph, f in conditions]}
+    if intitule:
+        d["intitule"] = intitule
+    return d
+
+
+SITUATIONS = {
+    "fx_green_lamps": situation("fonctionnement_normal", "the fictive lamps are on", intitule="Feux fictifs allumés"),
+    "fx_blue_mode_x": situation("fonctionnement_normal", "The fictive mode X is selected.", intitule="Mode X fictif choisi"),
+    "fx_blue_mode_y": situation("fonctionnement_normal", "The fictive mode Y is active", intitule="Mode Y fictif actif"),
+    "fx_red_belt_fixed": situation("action_conducteur", "while the fictive belt is open", intitule="Ceinture fictive ouverte"),
+    "fx_red_belt_flashing": situation("action_conducteur", "while the fictive vehicle moves with the belt open",
+                                      intitule="Ceinture fictive ouverte en roulant"),
+    "fx_red_alarm_a": situation("alerte_consigne_immediate", "a fictive pressure loss",
+                                consignes=[(ALARM_STOP_PHRASE, "linked_warnings",
+                                            "If the fictive alarm light comes on while driving", "linked_warnings")],
+                                intitule="Perte de pression fictive"),
+    "fx_red_alarm_b": situation("action_conducteur", "a fictive service reminder", intitule="Rappel d'entretien fictif"),
+    "fx_amber_code_a": situation("anomalie_defaut", "a fictive code fault",
+                                 consignes=[(CODE_A_INSTRUCTION, "documented_instruction", None, None)],
+                                 intitule="Défaut possible du code fictif"),
+    "fx_amber_code_b": situation("situation_non_determinee", "to report a fictive intrusion attempt",
+                                 conditions=[("comes on with a dedicated message", "documented_meaning")],
+                                 intitule="Possible tentative d'intrusion fictive"),
+}
+
+
+def build_situations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", validated_by: str = "",
+                     entries: dict | None = None) -> Path:
+    repo = ManifestNoticeRepository(manifest)
+    known = {e.entry_id for e in repo.catalogue.entries}
+    header = {"status": status, "catalogue_content_sha256": repo.catalogue.content_sha256}
+    if validated_by:
+        header.update(validated_by=validated_by, validated_on="2026-10-08")
+    doc = {"header": header,
+           "entries": entries if entries is not None else {k: v for k, v in SITUATIONS.items() if k in known}}
+    path = manifest.parent / "situations.yaml"
     path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return path

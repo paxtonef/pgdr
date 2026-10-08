@@ -193,7 +193,8 @@ class TestVariantGroups:
     def test_identical_files_grouped_automatically(self, grouped):
         c = ManifestNoticeRepository(grouped).catalogue
         assert vc.auto_groups(c) == [("fx_red_belt_fixed", "fx_red_belt_flashing"), ("fx_amber_twin_a", "fx_amber_twin_b"),
-                                     ("fx_blue_mode_x", "fx_blue_mode_y"), ("fx_red_alarm_a", "fx_red_alarm_b")]
+                                     ("fx_blue_mode_x", "fx_blue_mode_y"), ("fx_red_alarm_a", "fx_red_alarm_b"),
+                                     ("fx_amber_code_a", "fx_amber_code_b")]
 
     def test_question_with_documented_elements_and_sources(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
@@ -218,14 +219,16 @@ class TestVariantGroups:
             assert out["phase"] == "restitution" and out["premier_constat"]["presentation"]["entries"] == []
             (b,) = ambiguous(out)
             assert [v["entry"]["entry_id"] for v in b["variants"]] == ["fx_red_belt_fixed", "fx_red_belt_flashing"]
-            assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]  # red variants
+            # Red belts, no stop documented: no red screen, no urgent instruction from the ambiguity.
+            assert b["red_offer"] is None and b["urgent"] == []
+            assert out["premier_constat"]["presentation"]["red_screen"] is None
 
     def test_indistinguishable_with_common_information(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
         r = confirm(client, ["fx_amber_twin_b"])
         assert r["phase"] == "restitution" and "questions" not in r
         (b,) = ambiguous(r)
-        assert b["limit"] == vc.DRAFT_LABELS["limit"] and b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
+        assert b["limit"] == vc.LIMIT_V1 and b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
         assert [c["text"] for c in b["common"]] == ["FICTIVE TWIN", fx.TWIN_COMMON] and b["no_common"] is None
         assert b["common"][1]["sources"] == [
             {"entry_id": "fx_amber_twin_a", "manual_order": 6, "field": "Texte de la notice", "printed_page": "F-5", "pdf_page": 5},

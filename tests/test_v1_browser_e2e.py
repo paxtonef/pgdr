@@ -79,7 +79,8 @@ def live_server(tmp_path_factory):
     ORDER[:] = [e["entry_id"] for e in fx.load(notice)["entries"]]
     saved = (v1._wiring, os.environ.get(web.IDENTITY_HANDOFF_TOKEN_ENV), web._photo_wiring)
     v1._wiring = v1.build_wiring(ManifestNoticeRepository(notice), dev_trial=True,
-                                 explanations_path=fx.build_explanations(notice))
+                                 explanations_path=fx.build_explanations(notice),
+                                 situations_path=fx.build_situations(notice))
     v1._parcours.clear()
     os.environ[web.IDENTITY_HANDOFF_TOKEN_ENV] = TOKEN
     web._photo_wiring = web.PhotoWiring()  # no interpretation provider at all
@@ -288,9 +289,9 @@ def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_
         w.findings, w.findings_status, w.findings_covered = saved
 
 
-def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, live_server):
-    """Same image, two passages told apart by fixed/flashing: the driver answers. « Je ne sais
-    pas » -> the ambiguity is shown (both variants, complete), the red screen stays on offer.
+def test_v1_variant_group_question_then_ambiguity_belts_without_stop(page: Page, live_server):
+    """Same image, two belt passages told apart by fixed/flashing: the driver answers. « Je ne sais
+    pas » -> both belt situations are shown, complete; no stop screen from this ambiguity alone.
     An informative group with nothing distinctive -> ambiguity shown, no red offer."""
     _open(page, live_server)
     _to_catalogue(page, None)
@@ -310,29 +311,23 @@ def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, liv
     block = page.locator("#premier-constat .ambiguous")
     expect(block).to_have_count(1)
     expect(block.locator(".limit")).to_have_text(
-        "Ce pictogramme correspond à plusieurs voyants de la notice, et rien dans la notice ne permet de les "
-        "distinguer ici. PGDR ne choisit pas à votre place.")
+        "Avec les informations renseignées, nous ne pouvons pas déterminer laquelle de ces situations "
+        "correspond à votre voyant.")
     expect(block.locator(".variant")).to_have_count(2)
     expect(block.locator(".variant").nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE BELT")
+    expect(block.locator(".variant").nth(0).locator(".meaning")).to_have_text(fx.BELT_MEANING_FIXED)
     expect(block.locator(".variant").nth(1).locator(".meaning")).to_have_text(fx.BELT_MEANING_FLASHING)
+    expect(block.locator(".variant .situation-title")).to_have_text(["Ceinture fictive ouverte",
+                                                                    "Ceinture fictive ouverte en roulant"])
     expect(block.locator(".draft-mention").first).to_be_visible()
-    # Red variant: the validated red / uncertain screen is in the result itself, no click,
-    # right after the limit and above the variants.
-    red = _french_screens()["red_or_uncertain"]
-    inline = block.locator(".red-inline")
-    expect(inline).to_have_count(1)
-    expect(inline).to_be_visible()
-    expect(inline.locator("h1")).to_have_text(red["heading"])
-    expect(inline.locator("p")).to_have_text([" ".join(x.split()) for x in red["paragraphs"]])
-    assert block.evaluate("""b => { const l = b.querySelector('.limit'), r = b.querySelector('.red-inline'),
-        v = b.querySelector('.variant'); return l.nextElementSibling === r
-        && !!(r.compareDocumentPosition(v) & Node.DOCUMENT_POSITION_FOLLOWING); }""")
+    # Red belts, no stop documented: no stop screen, no urgent block, no red offer.
+    expect(page.locator("#premier-constat .urgent")).to_have_count(0)
+    expect(block.locator("button.red-offer")).to_have_count(0)
+    expect(page.locator("#screen-restitution")).not_to_contain_text("Arrêtez-vous en sécurité")
     _no_english_ui(page)
-    block.locator("button.red-offer").click()
-    expect(page.locator("#fallback-content h1")).to_have_text(_french_screens()["red_or_uncertain"]["heading"])
 
     # Back to images, answer this time: only the driver's own choice is restituted.
-    page.click("#screen-fallback button.return")
+    page.click("#screen-restitution button.return")
     expect(page.locator("#screen-catalogue")).to_be_visible()
     page.click("#selection-continue")
     page.click("#confirm")
@@ -351,7 +346,69 @@ def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, liv
     block = page.locator("#premier-constat .ambiguous")
     expect(block.locator(".no-common")).to_have_text("Aucune information commune n'est citée par la notice pour ces voyants.")
     expect(block.locator("button.red-offer")).to_have_count(0)
-    expect(page.locator("#premier-constat .red-inline")).to_have_count(0)
+
+
+def _restitution_for(page: Page, live_server, ids: list[str]) -> None:
+    _open(page, live_server)
+    _to_catalogue(page, None)
+    for x in ids:
+        page.click(f'.tile[data-entry-id="{x}"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+
+
+def test_v1_operating_group_mixed_group_and_message_question(page: Page, live_server):
+    """Operating indications: possibilities explained, no stop screen. Mixed group: the stop
+    instruction stays visible under its own variant only. Message question: exact text, never mapped."""
+    _restitution_for(page, live_server, ["fx_blue_mode_x"])
+    expect(page.locator("#screen-restitution")).to_be_visible()
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".situation-fonctionnement_normal")).to_have_count(2)
+    expect(block.locator(".situation-title")).to_have_text(["Mode X fictif choisi", "Mode Y fictif actif"])
+    expect(page.locator("#premier-constat .urgent")).to_have_count(0)
+    expect(block.locator("button.red-offer")).to_have_count(0)
+    expect(page.locator("#screen-restitution")).not_to_contain_text("Arrêtez-vous en sécurité")
+    _no_english_ui(page)
+
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_blue_mode_x"]')
+    page.click('.tile[data-entry-id="fx_red_alarm_b"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    expect(page.locator("#screen-restitution")).to_be_visible()
+    block = page.locator("#premier-constat .ambiguous")
+    urgent = block.locator(".urgent")
+    expect(urgent).to_be_visible()
+    expect(urgent.locator(".urgent-variant")).to_have_count(1)
+    assert urgent.locator(".urgent-variant").get_attribute("data-entry-id") == "fx_red_alarm_a"
+    expect(urgent).to_contain_text("Indiqué seulement pour : FICTIVE ALARM — Perte de pression fictive")
+    expect(urgent).to_contain_text(fx.ALARM_STOP)
+    # Above the variants, and never under variant B.
+    assert block.evaluate("b => !!(b.querySelector('.urgent').compareDocumentPosition(b.querySelector('.variant')) "
+                          "& Node.DOCUMENT_POSITION_FOLLOWING)")
+    expect(block.locator('.variant[data-entry-id="fx_red_alarm_b"]')).not_to_contain_text(fx.ALARM_STOP)
+    expect(block.locator(".red-inline")).to_have_count(0)
+    _no_english_ui(page)
+
+    page.click("#screen-restitution button.return")
+    page.click('.tile[data-entry-id="fx_red_alarm_b"]')
+    page.click('.tile[data-entry-id="fx_amber_code_a"]')
+    page.click("#selection-continue")
+    page.click("#confirm")
+    expect(page.locator("#screen-clarification")).to_be_visible()
+    q = page.locator('#clarification-questions .question[data-kind="message"]')
+    expect(q).to_contain_text("Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.")
+    expect(q.locator("button.message-none")).to_have_text("Aucun message / Je ne sais pas")
+    _no_english_ui(page)
+    q.locator("input.message-input").fill("CODE 12")
+    q.locator("button.message-submit").click()
+    expect(page.locator("#screen-restitution")).to_be_visible()
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".message-given")).to_have_text("Message renseigné par vous : « CODE 12 »")
+    expect(block.locator(".variant")).to_have_count(2)
+    expect(block.locator('.variant[data-entry-id="fx_amber_code_a"] .consigne')).to_contain_text(fx.CODE_A_INSTRUCTION)
+    expect(block.locator('.variant[data-entry-id="fx_amber_code_b"]')).not_to_contain_text(fx.CODE_A_INSTRUCTION)
+    expect(page.locator("#premier-constat .urgent")).to_have_count(0)
 
 
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):

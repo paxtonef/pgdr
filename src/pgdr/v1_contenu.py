@@ -39,10 +39,11 @@ LABELS = {
 # V1 title, owner wording (2026-10-08), exact. The photo parcours keeps its own T2.
 T2_V1 = ("Premier Constat Constructeur — à partir des voyants sélectionnés par vous dans le catalogue. "
          "Aucune reconnaissance sur photo.")
+# Ambiguity limit, owner wording (2026-10-08), exact.
+LIMIT_V1 = ("Avec les informations renseignées, nous ne pouvons pas déterminer laquelle de ces situations "
+            "correspond à votre voyant.")
 # New French texts for ambiguous pictograms: DRAFT, shown with DRAFT_LABELS["draft_texts"].
 DRAFT_LABELS = {
-    "limit": ("Ce pictogramme correspond à plusieurs voyants de la notice, et rien dans la notice ne permet de "
-              "les distinguer ici. PGDR ne choisit pas à votre place."),
     "common": "Indiqué par la notice pour tous ces voyants",
     "no_common": "Aucune information commune n'est citée par la notice pour ces voyants.",
     "only_for": "Indiqué seulement pour : ",
@@ -51,6 +52,32 @@ DRAFT_LABELS = {
     "red_offer": "Voir l'écran prévu pour un voyant rouge ou incertain",
     "draft_texts": "Textes de cette section en brouillon, non validés",
     "group_draft": "Groupe en brouillon, non validé",
+    "urgent_title": "Consigne urgente possible — elle s'applique seulement si votre voyant correspond à cette situation",
+    "message_question": "Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.",
+    "message_submit": "Valider ce message",
+    "message_none": "Aucun message / Je ne sais pas",
+    "message_given": "Message renseigné par vous : ",
+}
+# Situation classification: the situation DESCRIBED by the passage, never the
+# pictogram or its colour alone. Labels are DRAFT texts.
+NATURES = ("fonctionnement_normal", "action_conducteur", "anomalie_defaut", "alerte_consigne_immediate",
+           "situation_non_determinee")
+NATURE_LABELS = {
+    "fonctionnement_normal": "Indication de fonctionnement",
+    "action_conducteur": "Action attendue du conducteur",
+    "anomalie_defaut": "Anomalie ou défaut possible, selon la notice",
+    "alerte_consigne_immediate": "Alerte avec consigne immédiate de la notice",
+    "situation_non_determinee": "Situation non déterminée",
+}
+SITUATION_LABELS = {
+    "type": "Type de situation",
+    "justification": "Passage qui le justifie",
+    "consigne": "Consigne du constructeur",
+    "condition": "Si",
+    "conditions": "Conditions d'application",
+    "no_consigne": "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.",
+    "draft": "Classement de la situation en brouillon, non validé",
+    "page": "page de la notice",
 }
 EXPLANATION_PARTS = (("indique", "Ce que la notice indique"), ("maintenant", "Quoi faire maintenant"),
                      ("inconnu", "Ce qui reste inconnu"))
@@ -199,10 +226,157 @@ def stop_cited(e: NoticeEntry, finding: Optional[EntryFinding] = None) -> bool:
     return any(_STOP_WORD.search(t) for t in texts)
 
 
-def red_offer(variants: list[NoticeEntry], findings: Mapping[str, EntryFinding]) -> bool:
-    """An ambiguous group keeps the red/uncertain screen on offer when at
-    least one variant is red or cites a stop. Never from ambiguity alone."""
-    return any(v.colour == "red" or stop_cited(v, findings.get(v.entry_id)) for v in variants)
+def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
+    """The urgent instructions documented for ONE entry, verbatim with page:
+    every sentence citing a stop (passage or linked warning; conservative),
+    plus the instruction of a situation classified alerte_consigne_immediate
+    (a classification can add urgency, never remove it)."""
+    out = [{**u} for u in text_units(e) if u["field"] != "Désignation" and _STOP_WORD.search(u["text"])]
+    if situation is not None and situation.nature == "alerte_consigne_immediate":
+        for c in situation.consignes:
+            if not any(c.anchor.source_phrase in u["text"] for u in out):
+                out.append({"field": "Consigne", "text": c.anchor.source_phrase, "printed_page": c.anchor.printed_page,
+                            "pdf_page": c.anchor.pdf_page})
+    return out
+
+
+def red_offer(variants: list[NoticeEntry], findings: Mapping[str, EntryFinding],
+              situations: Optional[Mapping[str, "Situation"]] = None) -> bool:
+    """An ambiguous group keeps the red/uncertain screen on offer (a button,
+    never automatic) only when a variant documents an urgent instruction.
+    Never from ambiguity or colour alone."""
+    situations = situations or {}
+    return any(stop_cited(v, findings.get(v.entry_id)) or urgent_passages(v, situations.get(v.entry_id))
+               for v in variants)
+
+
+_MESSAGE_WORD = re.compile(r"\bmessages?\b", re.I)
+
+
+def mentions_message(e: NoticeEntry) -> bool:
+    return bool(e.displayed_message) or any(_MESSAGE_WORD.search(t or "") for t in (e.documented_meaning, e.documented_instruction))
+
+
+def message_question(variants: list[NoticeEntry], situations: Mapping[str, "Situation"]) -> bool:
+    """Ask for the displayed message only where the notice speaks of a message
+    for some variants and not all of them, and the variants are not all
+    classified as operating indications."""
+    some = [mentions_message(v) for v in variants]
+    if not any(some) or all(some):
+        return False
+    return not all(situations.get(v.entry_id) is not None and situations[v.entry_id].nature == "fonctionnement_normal"
+                   for v in variants)
+
+
+def _norm_message(t: str) -> str:
+    return " ".join(t.split()).casefold()
+
+
+def message_match(variants: list[NoticeEntry], message: str) -> Optional[str]:
+    """Exact match only (spacing and case aside) with a DOCUMENTED displayed
+    message. Never inferred from a description of a message."""
+    hits = [v.entry_id for v in variants if v.displayed_message and _norm_message(v.displayed_message) == _norm_message(message)]
+    return hits[0] if len(hits) == 1 else None
+
+
+# --- situation classification ---------------------------------------------------
+
+@dataclass(frozen=True)
+class Anchor:
+    source_field: str
+    source_phrase: str
+    printed_page: str
+    pdf_page: int
+
+
+@dataclass(frozen=True)
+class Consigne:
+    anchor: Anchor
+    condition: Optional[Anchor]
+
+
+@dataclass(frozen=True)
+class Situation:
+    nature: str
+    justification: Anchor
+    consignes: tuple[Consigne, ...]
+    conditions: tuple[Anchor, ...]
+    title: Optional[str]
+    draft: bool
+
+
+def _anchor(e: NoticeEntry, raw) -> Anchor:
+    if not isinstance(raw, dict):
+        raise ContentRejected("anchor required")
+    field, phrase = raw.get("source_field"), raw.get("source_phrase")
+    if field not in ANCHOR_FIELDS or not isinstance(phrase, str) or not phrase:
+        raise ContentRejected("invalid anchor")
+    if field == "linked_warnings":
+        w = next((w for w in e.linked_warnings if phrase in w.text), None)
+        if w is None:
+            raise ContentRejected(f"anchor not verbatim in linked_warnings: {phrase!r}")
+        return Anchor(field, phrase, w.printed_page, w.pdf_page)
+    if not any(phrase in t for t in entry_texts(e, field)):
+        raise ContentRejected(f"anchor not verbatim in {field}: {phrase!r}")
+    return Anchor(field, phrase, e.page_reference, e.pdf_page)
+
+
+def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tuple[dict[str, Situation], dict[str, str], str]:
+    """Situation classification per entry. Returns (usable by entry_id,
+    rejected entry_id -> reason, status). VALIDATED by name and bound to this
+    catalogue: used everywhere. Draft: development trial only, marked. A
+    validated explanation never validates a classification."""
+    raw = _read(path)
+    header = _header(raw, catalogue)
+    if _validated(header):
+        draft, status = False, "validated"
+    elif header.get("status") == "BROUILLON_NON_VALIDE" and dev_trial:
+        draft, status = True, "draft_dev_trial"
+    else:
+        raise ContentRejected("situations not validated")
+    out, rejected = {}, {}
+    for entry_id, d in (raw.get("entries") or {}).items():
+        e = catalogue.entry(entry_id)
+        try:
+            if e is None or not isinstance(d, dict):
+                raise ContentRejected("unknown entry")
+            nature = d.get("nature")
+            if nature not in NATURES:
+                raise ContentRejected("unknown nature")
+            consignes = tuple(Consigne(_anchor(e, c), _anchor(e, c["condition"]) if c.get("condition") else None)
+                              for c in d.get("consignes") or [])
+            if nature == "alerte_consigne_immediate" and not consignes:
+                raise ContentRejected("an immediate alert needs its exact instruction")
+            if nature in ("fonctionnement_normal", "action_conducteur") and stop_cited(e):
+                # A passage citing a stop is never presented as a plain indication.
+                raise ContentRejected("stop cited: not an operating indication")
+            title = d.get("intitule")
+            if title is not None and (not isinstance(title, str) or not title.strip()
+                                      or any(f in title.lower() for f in FORBIDDEN)):
+                raise ContentRejected("invalid title")
+            out[entry_id] = Situation(nature, _anchor(e, d.get("justification")), consignes,
+                                      tuple(_anchor(e, c) for c in d.get("conditions") or []), title, draft)
+        except ContentRejected as exc:
+            rejected[entry_id] = str(exc)
+    return out, rejected, status
+
+
+def present_situation(st: Optional[Situation]) -> Optional[dict]:
+    if st is None:
+        return None
+
+    def a(x: Anchor) -> dict:
+        return {"text": x.source_phrase, "printed_page": x.printed_page, "pdf_page": x.pdf_page}
+
+    return {
+        "nature": st.nature, "label": NATURE_LABELS[st.nature], "title": st.title,
+        "mention": SITUATION_LABELS["draft"] if st.draft else None,
+        "validation": "brouillon" if st.draft else "validé",
+        "justification": a(st.justification),
+        "consignes": [{"consigne": a(c.anchor), "condition": a(c.condition) if c.condition else None} for c in st.consignes],
+        "conditions": [a(c) for c in st.conditions],
+        "no_consigne": None if st.consignes else SITUATION_LABELS["no_consigne"],
+    }
 
 
 # --- explanations ---------------------------------------------------------------
@@ -278,7 +452,7 @@ def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
 
 
 def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation: Optional[Explanation],
-                  t5_label: str) -> dict:
+                  t5_label: str, situation: Optional[Situation] = None) -> dict:
     def cited(item) -> Optional[str]:
         # Only DOCUMENTED values are shown, as the cited phrase itself.
         # Derived values (R-1/R-2) are never displayed (internal level only).
@@ -310,6 +484,7 @@ def present_entry(f: EntryFinding, e: NoticeEntry, *, covered: bool, explanation
                                      for s in explanation.parts[k]]}
                       for k, title in EXPLANATION_PARTS],
         },
+        "situation": present_situation(situation),
         "points": points,
         "stop_conditions": [p.source_phrase for p in f.stop_conditions],
     }
