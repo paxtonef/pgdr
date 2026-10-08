@@ -39,6 +39,9 @@ Configuration (environment):
   PGDR_V1_TRANSLATIONS  optional: prepared French translations of notice
                         sentences (anchored word for word). Draft = development
                         trial only, marked « Traduction préparée, non validée ».
+  PGDR_V1_LABELS        optional: VALIDATED interface texts (keys of the draft
+                        labels, exact current text). Without it, or for a key
+                        it does not validate, the text keeps its draft status.
   PGDR_V1_FINDINGS      optional: VALIDATED structured classification of the
                         notice entries (Part 1 mapping format, header status
                         VALIDE, bound to the catalogue content fingerprint).
@@ -154,11 +157,14 @@ class V1Wiring:
     translations: dict = field(default_factory=dict)  # exact notice text -> prepared French
     translations_rejected: dict = field(default_factory=dict)
     translations_status: str = "absent"
+    labels_validated: frozenset = frozenset()  # interface text keys validated by a VALIDATED labels file
+    labels_rejected: dict = field(default_factory=dict)
+    labels_status: str = "absent"
 
 
 def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
                  findings_path=None, groups_path=None, explanations_path=None, situations_path=None,
-                 translations_path=None) -> V1Wiring:
+                 translations_path=None, labels_path=None) -> V1Wiring:
     """All notice content is loaded and verified ONCE here and then shared by
     every parcours of this process (no re-read, no external fetch)."""
     w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error)
@@ -201,6 +207,11 @@ def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, d
                 translations_path, c, dev_trial=dev_trial)
         except vc.ContentRejected as exc:
             w.translations_status = f"refused: {exc}"
+    if labels_path:
+        try:
+            w.labels_validated, w.labels_rejected, w.labels_status = vc.load_labels(labels_path, c, dev_trial=dev_trial)
+        except vc.ContentRejected as exc:
+            w.labels_status = f"refused: {exc}"
     # Defect wording follows the notice: an explanation that does not, is not shown.
     for x, reason in vc.defect_wording_rejections(w.explanations, w.situations, c).items():
         w.explanations.pop(x, None)
@@ -260,7 +271,8 @@ def get_wiring() -> V1Wiring:
                                groups_path=os.environ.get("PGDR_V1_GROUPS"),
                                explanations_path=os.environ.get("PGDR_V1_EXPLANATIONS"),
                                situations_path=os.environ.get("PGDR_V1_SITUATIONS"),
-                               translations_path=os.environ.get("PGDR_V1_TRANSLATIONS"))
+                               translations_path=os.environ.get("PGDR_V1_TRANSLATIONS"),
+                               labels_path=os.environ.get("PGDR_V1_LABELS"))
     return _wiring
 
 
@@ -372,6 +384,24 @@ def _state(pid: str, p: Parcours) -> dict:
         "colours": [{"key": k, "label": v} for k, v in COLOURS],
         "return_label": load_fallback_screens()["shared"]["return_button"],
     }
+
+
+# Interface texts of each section (DRAFT_LABELS keys). « Textes de cette section en brouillon » is shown
+# only when one of the section's texts comes from draft content: a label not validated, or a draft group,
+# explanation, classification or translation shown in it.
+QUESTION_LABEL_KEYS = ("message_question", "message_submit", "message_none")
+BLOCK_LABEL_KEYS = ("only_for", "message_given", "urgent_title", "action_title", "conditional_title", "condition_question",
+                    "condition_confirmed", "condition_excluded", "condition_unknown", "condition_answer.confirmed",
+                    "condition_answer.excluded", "condition_answer.unknown", "common", "no_common", "condition",
+                    "not_documented", "red_offer", "details")
+STOPS_LABEL_KEYS = ("only_for", "stops_title", "stop_question", "stop_confirmed_title", "stop_condition_none",
+                    "stop_condition_draft", "stop_condition_validated", "condition_answer.confirmed",
+                    "condition_answer.excluded", "condition_answer.unknown", "details")
+
+
+def draft_texts(keys, drafted: bool = False) -> Optional[str]:
+    w = get_wiring()
+    return vc.DRAFT_LABELS["draft_texts"] if drafted or not set(keys) <= w.labels_validated else None
 
 
 def _open_parcours(identity: VehicleIdentityContext) -> dict:
@@ -670,22 +700,25 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
         common = vc.common_texts(variants)
         if w.group_draft[i]:
             uncertainties.append(vc.uncertainty("group.draft", "technique", reason="draft_status", group=i))
-        uncertainties.append(vc.uncertainty("texts.draft", "technique", reason="draft_status", group=i))
+        sits = [w.situations.get(v.entry_id) for v in variants]
+        heads = [w.explanations.get(v.entry_id) for v in variants]
+        block_draft = draft_texts(BLOCK_LABEL_KEYS, w.group_draft[i] or w.translations_status == "draft_dev_trial"
+                                  or any(h is not None and h.draft for h in heads) or any(st is not None and st.draft for st in sits))
+        if block_draft:
+            uncertainties.append(vc.uncertainty("texts.draft", "technique", reason="draft_status", group=i))
         # The undetermined variant always changes the explanation; it also touches the action and the
         # applicability of a safety instruction when a variant documents one. Always in the body.
-        sits = [w.situations.get(v.entry_id) for v in variants]
         touched = ((["applicabilite_consigne"] if any(vc.urgent_passages(v, st) or vc.conditional_passages(v, st)
                                                       for v, st in zip(variants, sits)) else [])
                    + (["action"] if any(st is not None and st.consignes for st in sits) else []) + ["explication"])
         uncertainties.append(vc.uncertainty("group.variant_undetermined", touched[0], group=i,
                                             variants=list(groups[i]), points=touched))
-        heads = [w.explanations.get(v.entry_id) for v in variants]
         if any(h is not None and h.draft for h in heads):
             uncertainties.append(vc.uncertainty("explanation.draft", "technique", reason="draft_status", group=i))
         blocks.append({
             "group": i, "image": _asset_url(pid, variants[0].image_sha256),
             "group_draft": vc.DRAFT_LABELS["group_draft"] if w.group_draft[i] else None,
-            "draft_texts": vc.DRAFT_LABELS["draft_texts"], "limit": vc.LIMIT_V1,
+            "draft_texts": block_draft, "limit": vc.LIMIT_V1,
             # Draft status: technical, in the block's folded « Détails ».
             "group_draft_placement": "details" if w.group_draft[i] else None, "draft_texts_placement": "details",
             "details_label": vc.DRAFT_LABELS["details"],
@@ -751,7 +784,8 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
                 uncertainties.append(vc.uncertainty("stop.condition_interpretation_draft", "applicabilite_consigne", **where))
             if cs.condition_status == ConditionStatus.UNKNOWN:
                 uncertainties.append(vc.uncertainty("stop.condition_unknown", "applicabilite_consigne", **where))
-    if stops:
+    stops_draft = draft_texts(STOPS_LABEL_KEYS, w.translations_status == "draft_dev_trial")
+    if stops and stops_draft:
         uncertainties.append(vc.uncertainty("texts.draft", "technique", reason="draft_status", block="stops"))
     red_screen = None
     if any(b["red_offer"] for b in blocks):
@@ -764,7 +798,7 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             # Stop instructions of the manufacturer text with their condition and the driver's answer; a confirmed
             # one is shown at the top of the result, without any click.
             "stops_title": vc.DRAFT_LABELS["stops_title"], "stop_question": vc.DRAFT_LABELS["stop_question"],
-            "stops_confirmed_title": vc.DRAFT_LABELS["stop_confirmed_title"], "draft_texts": vc.DRAFT_LABELS["draft_texts"],
+            "stops_confirmed_title": vc.DRAFT_LABELS["stop_confirmed_title"], "draft_texts": stops_draft,
             "draft_texts_placement": "details", "details_label": vc.DRAFT_LABELS["details"],
             "stops_confirmed": [x for x in stops if x["answer"] == "confirmed"], "stops": stops,
             "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
@@ -815,7 +849,8 @@ def _question(pid: str, i: int) -> dict:
         # The notice speaks of a message for some variants only: ask for it, typed exactly.
         return {"group": i, "image": _asset_url(pid, variants[0].image_sha256), "kind": "message",
                 "question": vc.DRAFT_LABELS["message_question"], "submit": vc.DRAFT_LABELS["message_submit"],
-                "none": vc.DRAFT_LABELS["message_none"], "draft_texts": vc.DRAFT_LABELS["draft_texts"], "choices": []}
+                "none": vc.DRAFT_LABELS["message_none"], "choices": [],
+                "draft_texts": draft_texts(QUESTION_LABEL_KEYS, get_wiring().group_draft[i])}
     return {"group": i, "image": _asset_url(pid, variants[0].image_sha256), "kind": "choice", "choices": [
         {"entry_id": v.entry_id,
          "elements": [{"field": f, "label": "Message affiché" if f == "displayed_message" else "État du voyant",
@@ -1313,7 +1348,7 @@ function renderAmbiguous(b, root, redScreen) {
     const img = make("img"); img.src = b.image; img.alt = ""; box.append(img);
     const det = detailsBox(b.details_label);
     if (b.group_draft) (b.group_draft_placement === "details" ? det : box).append(make("p", b.group_draft, "draft-mention group-draft"));
-    (b.draft_texts_placement === "details" ? det : box).append(make("p", b.draft_texts, "draft-mention"));
+    if (b.draft_texts) (b.draft_texts_placement === "details" ? det : box).append(make("p", b.draft_texts, "draft-mention"));
     // What each variant concerns first (prepared explanations side by side, never merged), then the limit.
     const hd = make("div", null, "variant-explanations"); box.append(hd);
     for (const x of b.explanations) {
@@ -1402,7 +1437,7 @@ function renderConstat(pc) {
   if (p.stops_confirmed.length) {
     const cb = sec(root, p.stops_confirmed_title, "confirmed-stops");
     const cdet = detailsBox(p.details_label);
-    (p.draft_texts_placement === "details" ? cdet : cb).append(make("p", p.draft_texts, "draft-mention"));
+    if (p.draft_texts) (p.draft_texts_placement === "details" ? cdet : cb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops_confirmed) {
       const d = make("div", null, "confirmed-stop"); d.dataset.key = x.key; cb.append(d);
       d.append(onlyFor(x));
@@ -1419,7 +1454,7 @@ function renderConstat(pc) {
   if (p.stops.length) {
     const sb = sec(root, p.stops_title, "stops");
     const sdet = detailsBox(p.details_label);
-    (p.draft_texts_placement === "details" ? sdet : sb).append(make("p", p.draft_texts, "draft-mention"));
+    if (p.draft_texts) (p.draft_texts_placement === "details" ? sdet : sb).append(make("p", p.draft_texts, "draft-mention"));
     for (const x of p.stops) {
       const d = make("div", null, "stop-item"); d.dataset.key = x.key; d.dataset.answer = x.answer; sb.append(d);
       d.append(onlyFor(x));
@@ -1440,7 +1475,7 @@ function renderQuestions(s) {
     const img = make("img"); img.src = q.image; img.alt = ""; box.append(img);
     if (q.kind === "message") {
       box.dataset.kind = "message";
-      box.append(make("p", q.draft_texts, "draft-mention"));
+      if (q.draft_texts) box.append(make("p", q.draft_texts, "draft-mention"));
       const lab = make("label", q.question); const inp = make("input"); inp.type = "text"; inp.maxLength = 200;
       inp.className = "message-input"; lab.append(document.createElement("br"), inp); box.append(lab);
       const ok = make("button", q.submit, "message-submit");

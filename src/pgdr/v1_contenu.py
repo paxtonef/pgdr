@@ -849,6 +849,31 @@ def load_explanations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> t
     return out, rejected, status
 
 
+def load_labels(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tuple[frozenset, dict[str, str], str]:
+    """Interface texts (DRAFT_LABELS keys) approved by name. Returns
+    (validated keys, rejected key -> reason, status). A VALIDATED file bound to
+    this catalogue validates each key whose text is exactly the current one;
+    any other key is rejected alone. A draft is accepted only in the
+    development trial and validates nothing. Never a new or changed text."""
+    raw = _read(path)
+    header = _header(raw, catalogue)
+    if _validated(header):
+        status = "validated"
+    elif header.get("status") == "BROUILLON_NON_VALIDE" and dev_trial:
+        return frozenset(), {}, "draft_dev_trial"
+    else:
+        raise ContentRejected("labels not validated")
+    ok, rejected = set(), {}
+    for key, text in (raw.get("labels") or {}).items():
+        if key not in DRAFT_LABELS:
+            rejected[key] = "unknown label"
+        elif text != DRAFT_LABELS[key]:
+            rejected[key] = "text differs from the current label"
+        else:
+            ok.add(key)
+    return frozenset(ok), rejected, status
+
+
 # Prepared French translations of manufacturer sentences. Shown BESIDE the exact
 # notice text, never instead of it; a draft is marked with TRANSLATION_MENTION.
 TRANSLATION_MENTION = "Traduction préparée, non validée"
