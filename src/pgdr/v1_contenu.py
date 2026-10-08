@@ -107,6 +107,11 @@ ANCHOR_FIELDS = ("manufacturer_designation", "documented_meaning", "documented_i
 # grading of its own (the manufacturer's own words stay in the citation).
 FORBIDDEN = ("vous pouvez rouler", "vous pouvez continuer", "sans danger", "sans risque", "pas dangereux",
              "peu grave", "pas grave", "rien de grave", "aucun danger", "pouvez reprendre la route")
+# Immediacy markers of a manufacturer instruction. A stop instruction carrying one (or also cited in a linked
+# warning carrying one) is never presented as a plain expected action: it stays urgent, passed to R-5 with its
+# condition question. Matched as whole words, case-insensitive.
+IMMEDIACY_MARKERS = ("immediately", "at once", "straight away", "right away", "without delay")
+_IMMEDIACY = re.compile(r"\b(" + "|".join(re.escape(m) for m in IMMEDIACY_MARKERS) + r")\b", re.I)
 # A stop instruction names what is stopped (car, vehicle, motor, engine) or
 # the pause; « stop lights » / « stop light(s) » / « STOP position » never.
 _STOP_INSTRUCTION = re.compile(
@@ -311,22 +316,63 @@ def failure_term(text: str) -> bool:
     return bool(_FAILURE_TERM.search(text)) and not _NEGATED_FAILURE.search(text)
 
 
-def presented_as_action_stop(sentence: str, situation: Optional["Situation"]) -> bool:
-    """A stop sentence that a VALIDATED « action attendue » (action_conducteur) classification presents as the
-    expected action: its own justification or one of its stop instructions (presented_as_action). Shown under
-    « Action attendue de votre part », with its cited condition; never asked about as a stop condition."""
-    return situation is not None and situation.action_validated and any(
-        a in sentence or sentence in a for a in [situation.justification.source_phrase] + [
-            c.anchor.source_phrase for c in situation.consignes if c.presented_as_action])
+def has_immediacy_marker(text: str) -> bool:
+    return bool(_IMMEDIACY.search(text or ""))
 
 
-def _covered(sentence: str, situation: Optional["Situation"]) -> bool:
+def _core(text: str) -> str:
+    return (text or "").strip().rstrip(".!?").strip().lower()
+
+
+def immediacy_in_linked_warning(e: Optional[NoticeEntry], phrase: str) -> bool:
+    """The phrase is also cited in a linked warning that carries an immediacy marker."""
+    core = _core(phrase)
+    return e is not None and bool(core) and any(core in w.text.lower() and has_immediacy_marker(w.text) for w in e.linked_warnings)
+
+
+def _action_anchors(situation: Optional["Situation"]) -> list[str]:
+    """Anchors of a VALIDATED action_conducteur classification that present a stop sentence as the expected
+    action: its stop instructions marked presented_as_action and, only if one exists, its justification when the
+    justification itself is a stop instruction (never a mere fragment of the passage)."""
+    if situation is None or not situation.action_validated:
+        return []
+    presented = [c.anchor.source_phrase for c in situation.consignes if c.presented_as_action]
+    if not presented:
+        return []
+    just = situation.justification.source_phrase
+    return presented + ([just] if is_stop_instruction(just) else [])
+
+
+def action_exclusion_refusal(sentence: str, situation: Optional["Situation"], e: Optional[NoticeEntry] = None) -> Optional[str]:
+    """Why a stop sentence that the classification would present as the expected action is NOT excluded from
+    the stops passed to R-5 (None when nothing refuses it, or when it is no candidate at all)."""
+    anchors = [a for a in _action_anchors(situation) if a in sentence or sentence in a]
+    if not anchors:
+        return None
+    if has_immediacy_marker(sentence) or any(has_immediacy_marker(a) for a in anchors):
+        return "immediacy_marker"
+    if immediacy_in_linked_warning(e, sentence) or any(immediacy_in_linked_warning(e, a) for a in anchors):
+        return "linked_warning_marker"
+    return None
+
+
+def presented_as_action_stop(sentence: str, situation: Optional["Situation"], e: Optional[NoticeEntry] = None) -> bool:
+    """A stop sentence excluded from the stops passed to R-5 and from the condition question, shown under
+    « Action attendue de votre part » with its cited condition. ALL of: classification VALIDATED, nature
+    action_conducteur, a stop instruction marked presented_as_action; no immediacy marker in the sentence;
+    not also cited in a linked warning carrying one. (An entry that another validated classification makes an
+    immediate stop is never action_validated: see v1_parcours.build_wiring.) Otherwise: passed to R-5, as before."""
+    return bool([a for a in _action_anchors(situation) if a in sentence or sentence in a]) and \
+        action_exclusion_refusal(sentence, situation, e) is None
+
+
+def _covered(sentence: str, situation: Optional["Situation"], e: Optional[NoticeEntry] = None) -> bool:
     """A stop sentence presented elsewhere than as urgent: a documented
     restart procedure, or a CONDITIONAL stop instruction of a situation that
     is not an immediate alert (shown under « Consigne applicable si… »)."""
     if _RESTART_PROCEDURE.search(sentence):
         return True
-    if presented_as_action_stop(sentence, situation):
+    if presented_as_action_stop(sentence, situation, e):
         return True
     return situation is not None and any(
         c.conditional and (c.anchor.source_phrase in sentence or sentence in c.anchor.source_phrase)
@@ -335,7 +381,7 @@ def _covered(sentence: str, situation: Optional["Situation"]) -> bool:
 
 def uncovered_stops(e: NoticeEntry, situation: Optional["Situation"]) -> list[str]:
     return [s for u in text_units(e) if u["field"] != "Désignation" for s in _SENTENCE.split(u["text"])
-            if is_stop_instruction(s) and not _covered(s, situation)]
+            if is_stop_instruction(s) and not _covered(s, situation, e)]
 
 
 def action_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
@@ -450,7 +496,7 @@ def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
         return None if c is None else {"text": c.source_phrase, "printed_page": c.printed_page, "pdf_page": c.pdf_page}
 
     out = [{**u, "condition": condition(u["text"])} for u in text_units(e) if u["field"] != "Désignation" and is_stop_instruction(u["text"])
-           and not all(_covered(s, situation) for s in _SENTENCE.split(u["text"]) if is_stop_instruction(s))]
+           and not all(_covered(s, situation, e) for s in _SENTENCE.split(u["text"]) if is_stop_instruction(s))]
     if situation is not None and situation.nature == "alerte_consigne_immediate":
         for c in situation.consignes:
             if c.action:
@@ -684,6 +730,13 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
                                           presented_as_action=(action_validated and cond is None and not restart
                                                                and is_stop_instruction(full))))
             consignes = tuple(consignes)
+            for c in consignes:
+                # Guard: a validated « action attendue » never carries an immediate stop instruction.
+                if c.presented_as_action and (has_immediacy_marker(c.anchor.source_phrase) or has_immediacy_marker(c.full)):
+                    raise ContentRejected("expected action refused: immediacy marker in the stop instruction")
+                if c.presented_as_action and (immediacy_in_linked_warning(e, c.anchor.source_phrase)
+                                              or immediacy_in_linked_warning(e, c.full)):
+                    raise ContentRejected("expected action refused: stop instruction also in a linked warning with an immediacy marker")
             if nature == "alerte_consigne_immediate" and not consignes:
                 raise ContentRejected("an immediate alert needs its exact instruction")
             just = _anchor(e, d.get("justification"))

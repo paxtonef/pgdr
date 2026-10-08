@@ -58,6 +58,7 @@ is asked afterwards (decisions C1/C2): the parcours ends with T8.
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import uuid
@@ -160,6 +161,9 @@ class V1Wiring:
     labels_validated: frozenset = frozenset()  # interface text keys validated by a VALIDATED labels file
     labels_rejected: dict = field(default_factory=dict)
     labels_status: str = "absent"
+    # Entries whose validated « action attendue » presentation is refused because another VALIDATED
+    # classification (Part 1, stop_vehicle_engine_off REQUIRED) makes them an immediate stop.
+    action_refused: dict = field(default_factory=dict)
 
 
 def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
@@ -212,6 +216,15 @@ def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, d
             w.labels_validated, w.labels_rejected, w.labels_status = vc.load_labels(labels_path, c, dev_trial=dev_trial)
         except vc.ContentRejected as exc:
             w.labels_status = f"refused: {exc}"
+    # An entry that another VALIDATED classification makes an immediate stop is never presented as an expected
+    # action: its stop sentences stay passed to R-5 with their condition question, as without that presentation.
+    for x, st in list(w.situations.items()):
+        rec = w.findings.get((c.document.document_id, x))
+        svo = rec.items.get("stop_vehicle_engine_off") if rec is not None else None
+        if st.action_validated and svo is not None and getattr(svo.value, "value", svo.value) == "required":
+            w.situations[x] = dataclasses.replace(st, action_validated=False, consignes=tuple(
+                dataclasses.replace(k, presented_as_action=False) for k in st.consignes))
+            w.action_refused[x] = "immediate_alert_classification"
     # Defect wording follows the notice: an explanation that does not, is not shown.
     for x, reason in vc.defect_wording_rejections(w.explanations, w.situations, c).items():
         w.explanations.pop(x, None)
@@ -615,7 +628,7 @@ def attach_conditional_stops(finding: ManufacturerFirstFinding, c: NoticeCatalog
         for s_ in vc.catalogue_stops(e):
             if item.basis == FindingBasis.DOCUMENTED and item.source_phrase in s_["text"]:
                 continue
-            if vc.presented_as_action_stop(s_["text"], st):
+            if vc.presented_as_action_stop(s_["text"], st, e):
                 continue
             paired = vc.stop_condition(s_, st)
             cond = paired[0].condition if paired else None
@@ -681,10 +694,22 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
     uncertainties: list[dict] = []
     for x in eval_ids:
         for s_ in vc.catalogue_stops(c.entry(x)):
-            if vc.presented_as_action_stop(s_["text"], w.situations.get(x)):
+            st = w.situations.get(x)
+            if vc.presented_as_action_stop(s_["text"], st, c.entry(x)):
                 # Shown as the expected action; no condition question, not passed to R-5 by the driver's answer.
                 uncertainties.append(vc.uncertainty("stop.presented_as_action", "action", entry_id=x, key=s_["key"],
                                                     cause="validated_action_situation"))
+            elif vc.action_exclusion_refusal(s_["text"], st, c.entry(x)):
+                uncertainties.append(vc.uncertainty("stop.action_exclusion_refused", "applicabilite_consigne", entry_id=x,
+                                                    key=s_["key"], cause=vc.action_exclusion_refusal(s_["text"], st, c.entry(x))))
+        # Refused before the parcours: at loading (guard) or by another validated classification. The stop
+        # sentences of the entry stay passed to R-5 with their condition question.
+        why = w.situations_rejected.get(x, "")
+        cause = ("immediacy_marker" if "immediacy marker in the stop instruction" in why
+                 else "linked_warning_marker" if "linked warning with an immediacy marker" in why
+                 else w.action_refused.get(x))
+        if cause:
+            uncertainties.append(vc.uncertainty("stop.action_exclusion_refused", "applicabilite_consigne", entry_id=x, cause=cause))
 
     def present(x, members=None, **where):
         out = vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
@@ -951,7 +976,7 @@ def condition(pid: str, req: ConditionRequest):
     entry_id = req.key.partition("#")[0]
     e = _catalogue().entry(entry_id)
     if p.phase != "restitution" or e is None or req.key not in {
-            s_["key"] for s_ in vc.catalogue_stops(e) if not vc.presented_as_action_stop(s_["text"], get_wiring().situations.get(entry_id))}:
+            s_["key"] for s_ in vc.catalogue_stops(e) if not vc.presented_as_action_stop(s_["text"], get_wiring().situations.get(entry_id), e)}:
         raise HTTPException(status_code=409, detail="Aucune condition n'est attendue ici.")
     p.conditions[req.key] = req.answer
     return _after_confirmation(pid, p)

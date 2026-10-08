@@ -106,11 +106,12 @@ class TestValidatedAction:
         assert vc.present_situation(st)["consignes"][0]["label"] == vc.SITUATION_LABELS["consigne"]
 
     def test_internal_level_identical_with_and_without_the_presentation(self, monkeypatch, notice, client):
+        # No Part 1 classification here: one recording an immediate stop for this entry refuses the presentation
+        # (see test_v1_exclusion_encadree).
         path = situations(notice, "action_conducteur", validated_by="Fictive Owner")
-        findings = fx.build_findings(notice)
         out = []
         for presented in (True, False):
-            w = wire(monkeypatch, notice, situations_path=path, findings_path=findings)
+            w = wire(monkeypatch, notice, situations_path=path)
             if not presented:  # the same validated classification, without the new presentation
                 st = w.situations["fx_red_fluid"]
                 w.situations["fx_red_fluid"] = dataclasses.replace(st, action_validated=False, consignes=tuple(
@@ -118,7 +119,7 @@ class TestValidatedAction:
             out.append(confirm(client, ["fx_red_fluid"]))
         a, b = out
         ta, tb = a["premier_constat"]["triage"], b["premier_constat"]["triage"]
-        assert ta["level"] == tb["level"] == "emergency_stop" and ta["r5_rows"] == tb["r5_rows"]
+        assert ta["level"] == tb["level"] and ta["r5_rows"] == tb["r5_rows"]
         assert ta["engine_level"] == tb["engine_level"] and ta["triggered_rules"] == tb["triggered_rules"]
         # Only the stop presented as the expected action leaves the R-5 list (no question, no answer on it).
         key = vc.stop_key("fx_red_fluid", INSTRUCTION)
