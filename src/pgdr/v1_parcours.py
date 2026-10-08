@@ -183,6 +183,10 @@ def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, d
                 situations_path, c, dev_trial=dev_trial)
         except vc.ContentRejected as exc:
             w.situations_status = f"refused: {exc}"
+    # Defect wording follows the notice: an explanation that does not, is not shown.
+    for x, reason in vc.defect_wording_rejections(w.explanations, w.situations, c).items():
+        w.explanations.pop(x, None)
+        w.explanations_rejected[x] = reason
     return w
 
 
@@ -573,8 +577,16 @@ def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = ()
             "urgent_title": vc.DRAFT_LABELS["urgent_title"],
             "urgent": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
                        for v in variants for u in [vc.urgent_passages(v, w.situations.get(v.entry_id))] if u],
-            # A documented temporary stop + wait + restart: an expected action, with its condition and page.
+            # What each variant's passage describes comes first (type, title, exact passage).
+            "situations": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id,
+                            "situation": vc.present_situation(w.situations[v.entry_id])}
+                           for v in variants if v.entry_id in w.situations],
+            # Expected actions (restart procedure, documented action), with their condition and page.
             "action_title": vc.DRAFT_LABELS["action_title"], "condition_label": vc.SITUATION_LABELS["condition"],
+            # Conditional stop instructions: never urgent here, never the red button; condition then whole text.
+            "conditional_title": vc.DRAFT_LABELS["conditional_title"],
+            "conditionals": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
+                             for v in variants for u in [vc.conditional_passages(v, w.situations.get(v.entry_id))] if u],
             "actions": [{"only_for": vc.DRAFT_LABELS["only_for"] + title(v), "entry_id": v.entry_id, "passages": u}
                         for v in variants for u in [vc.action_passages(v, w.situations.get(v.entry_id))] if u],
             "common_title": vc.DRAFT_LABELS["common"], "common": common,
@@ -813,8 +825,10 @@ V1_HTML = """<!DOCTYPE html>
  .urgent { border: 2px solid #b00020; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
  .urgent h3 { color: #b00020; }
  .expected-action { border: 2px solid #8a5a00; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .conditional { border: 1px solid #555; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .described { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
  .situation { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
- .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page { display: block; font-size: .85em; color: #444; }
+ .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page { display: block; font-size: .85em; color: #444; }
  .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
@@ -1053,7 +1067,8 @@ function renderSituation(st, block) {
     s.append(make("p", "Passage qui le justifie :", "label")); cite(s, st.justification, "justification");
     for (const c of st.conditions) { s.append(make("p", "Conditions d'application :", "label")); cite(s, c, "condition-quote"); }
     for (const c of st.consignes) {
-      s.append(make("p", (c.label || "Consigne du constructeur") + " :", c.action ? "label action-label" : "label"));
+      s.append(make("p", (c.label || "Consigne du constructeur") + (c.conditional ? "" : " :"),
+                    c.action ? "label action-label" : c.conditional ? "label conditional-label" : "label"));
       if (c.condition) cite(s, c.condition, "consigne-condition");
       cite(s, c.consigne, "consigne");
     }
@@ -1067,6 +1082,15 @@ function renderAmbiguous(b, root, redScreen) {
     box.append(make("p", b.limit, "limit"));
     if (b.message_given) {
       const m = make("p", b.message_given.label, "message-given"); m.append(make("strong", "« " + b.message_given.text + " »")); box.append(m);
+    }
+    if (b.situations.length) {
+      const ss = sec(box, "Ce que décrit la notice pour chaque possibilité", "described");
+      for (const x of b.situations) {
+        const d = make("div", null, "described-variant"); d.dataset.entryId = x.entry_id; ss.append(d);
+        d.append(make("p", x.only_for, "label"));
+        d.append(make("p", "Type de situation : " + x.situation.label, "described-type nature-" + x.situation.nature));
+        cite(d, x.situation.justification, "described-quote");
+      }
     }
     if (b.urgent.length) {
       // Urgent instructions of the variants not excluded, each under its own variant.
@@ -1085,6 +1109,17 @@ function renderAmbiguous(b, root, redScreen) {
         for (const pa of u.passages) {
           if (pa.condition) { d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "action-condition"); }
           cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "action-quote");
+        }
+      }
+    }
+    if (b.conditionals.length) {
+      const cs2 = sec(box, b.conditional_title, "conditional");
+      for (const u of b.conditionals) {
+        const d = make("div", null, "conditional-variant"); d.dataset.entryId = u.entry_id; cs2.append(d);
+        d.append(make("p", u.only_for, "label"));
+        for (const pa of u.passages) {
+          d.append(make("p", b.condition_label + " :", "label")); cite(d, pa.condition, "conditional-condition");
+          cite(d, {text: pa.text, printed_page: pa.printed_page, pdf_page: pa.pdf_page}, "conditional-quote");
         }
       }
     }

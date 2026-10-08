@@ -54,6 +54,7 @@ DRAFT_LABELS = {
     "group_draft": "Groupe en brouillon, non validé",
     "urgent_title": "Consigne urgente possible — elle s'applique seulement si votre voyant correspond à cette situation",
     "action_title": "Action attendue de votre part",
+    "conditional_title": "Consigne applicable si…",
     "message_question": "Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.",
     "message_submit": "Valider ce message",
     "message_none": "Aucun message / Je ne sais pas",
@@ -65,7 +66,7 @@ NATURES = ("fonctionnement_normal", "information_a_prendre_en_compte", "action_c
            "alerte_consigne_immediate", "situation_non_determinee")
 NATURE_LABELS = {
     "fonctionnement_normal": "Indication de fonctionnement",
-    "information_a_prendre_en_compte": "À prendre en compte",
+    "information_a_prendre_en_compte": "Signalement du véhicule",
     "action_conducteur": "Action attendue du conducteur",
     "anomalie_defaut": "Défaut signalé par la notice",
     "alerte_consigne_immediate": "Alerte avec consigne immédiate de la notice",
@@ -80,6 +81,7 @@ SITUATION_LABELS = {
     "no_consigne": "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.",
     "draft": "Classement de la situation en brouillon, non validé",
     "action": "Action attendue de votre part",
+    "conditional": "Consigne applicable si…",
     "page": "page de la notice",
 }
 EXPLANATION_PARTS = (("indique", "Ce que la notice indique"), ("maintenant", "Quoi faire maintenant"),
@@ -90,7 +92,11 @@ ANCHOR_FIELDS = ("manufacturer_designation", "documented_meaning", "documented_i
 # grading of its own (the manufacturer's own words stay in the citation).
 FORBIDDEN = ("vous pouvez rouler", "vous pouvez continuer", "sans danger", "sans risque", "pas dangereux",
              "peu grave", "pas grave", "rien de grave", "aucun danger", "pouvez reprendre la route")
-_STOP_WORD = re.compile(r"\bstop", re.I)
+# A stop instruction names what is stopped (car, vehicle, motor, engine) or
+# the pause; « stop lights » / « stop light(s) » / « STOP position » never.
+_STOP_INSTRUCTION = re.compile(
+    r"\bstop\b(?!\s+(lights?|lamps?|position)\b)\s+(?:(?:the|your)\s+)?(?:[\w-]+\s+){0,2}?(?:car|vehicle|motor|engine)s?\b"
+    r"|\bstop\s+(?:to\s+pause|for\s+a\s+break)\b", re.I)
 # A defect term of the notice. anomalie_defaut needs one in the entry's own
 # passage (never the shared designation), not negated.
 _FAILURE_TERM = re.compile(r"\b(fail\w*|fault\w*|malfunction\w*)", re.I)
@@ -228,56 +234,120 @@ def common_texts(variants: list[NoticeEntry]) -> list[dict]:
     return out
 
 
+def is_stop_instruction(text: str) -> bool:
+    """A stop instruction asked of the driver, with its object (« stop the
+    car », « stop the vehicle immediately », « stop the motor », « stop to
+    pause »). Never the bare word: « stop lights », « STOP position »."""
+    return bool(_STOP_INSTRUCTION.search(text))
+
+
 def stop_cited(e: NoticeEntry, finding: Optional[EntryFinding] = None) -> bool:
     """A stop instruction is cited for this entry: a documented stop item of
-    a validated classification, or the word « stop » in its passage or its
-    linked warnings (conservative: may over-detect, never under-detect)."""
+    a validated classification, or a stop instruction in its passage or its
+    linked warnings."""
     if finding is not None and finding.stop_vehicle_engine_off.basis.value == "documented":
         return True
     texts = [e.documented_meaning, e.documented_instruction or ""] + [w.text for w in e.linked_warnings]
-    return any(_STOP_WORD.search(t) for t in texts)
+    return any(is_stop_instruction(t) for t in texts)
 
 
 def is_restart_procedure(text: str) -> bool:
     """Every stop of `text` belongs to a documented temporary stop + wait +
     restart procedure (sentence by sentence: another stop in the same unit
     keeps the whole unit urgent)."""
-    stops = [s for s in _SENTENCE.split(text) if _STOP_WORD.search(s)]
+    stops = [s for s in _SENTENCE.split(text) if is_stop_instruction(s)]
     return bool(stops) and all(_RESTART_PROCEDURE.search(s) for s in stops)
+
+
+def _sentences_with(e: NoticeEntry, phrase: str) -> list[str]:
+    return [s for u in text_units(e) if u["field"] != "Désignation" for s in _SENTENCE.split(u["text"]) if phrase in s]
 
 
 def consigne_is_action(e: NoticeEntry, phrase: str) -> bool:
     """Every sentence citing this instruction is a restart procedure."""
-    found = [s for u in text_units(e) if u["field"] != "Désignation" for s in _SENTENCE.split(u["text"]) if phrase in s]
+    found = _sentences_with(e, phrase)
     return bool(found) and all(_RESTART_PROCEDURE.search(s) for s in found)
+
+
+def full_text(e: NoticeEntry, phrase: str) -> str:
+    """The cited phrase widened to its whole sentence(s), verbatim: a stop
+    instruction is never shortened."""
+    for u in text_units(e):
+        if u["field"] == "Désignation" or phrase not in u["text"]:
+            continue
+        t = u["text"]
+        i = t.index(phrase)
+        bounds = [0] + [m.end() for m in _SENTENCE.finditer(t)] + [len(t)]
+        a = max(b for b in bounds if b <= i)
+        z = min(b for b in bounds[1:] if b >= i + len(phrase))
+        return t[a:z].strip()
+    return phrase
 
 
 def failure_term(text: str) -> bool:
     return bool(_FAILURE_TERM.search(text)) and not _NEGATED_FAILURE.search(text)
 
 
+def _covered(sentence: str, situation: Optional["Situation"]) -> bool:
+    """A stop sentence presented elsewhere than as urgent: a documented
+    restart procedure, or a CONDITIONAL stop instruction of a situation that
+    is not an immediate alert (shown under « Consigne applicable si… »)."""
+    if _RESTART_PROCEDURE.search(sentence):
+        return True
+    return situation is not None and any(
+        c.conditional and (c.anchor.source_phrase in sentence or sentence in c.anchor.source_phrase)
+        for c in situation.consignes)
+
+
+def uncovered_stops(e: NoticeEntry, situation: Optional["Situation"]) -> list[str]:
+    return [s for u in text_units(e) if u["field"] != "Désignation" for s in _SENTENCE.split(u["text"])
+            if is_stop_instruction(s) and not _covered(s, situation)]
+
+
 def action_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
-    """The restart procedure(s) of ONE entry, verbatim with page, each with
-    the condition the classification cites for it (None if none)."""
+    """The expected actions of ONE entry, verbatim with page and condition:
+    each restart procedure, and each instruction the classification presents
+    as an expected action (never a stop instruction)."""
     out = []
     for u in text_units(e):
-        if u["field"] == "Désignation" or not is_restart_procedure(u["text"]):
+        if u["field"] == "Désignation":
             continue
-        cond = next((c.condition for c in (situation.consignes if situation else ())
-                     if c.condition is not None and c.anchor.source_phrase in u["text"]), None)
-        out.append({**u, "condition": None if cond is None else {
-            "text": cond.source_phrase, "printed_page": cond.printed_page, "pdf_page": cond.pdf_page}})
+        # Sentence by sentence: a restart procedure inside a mixed warning is shown too.
+        for t in ([u["text"]] if is_restart_procedure(u["text"]) else
+                  [x for x in _SENTENCE.split(u["text"]) if is_restart_procedure(x)]):
+            if any(t == o["text"] for o in out):
+                continue
+            cond = next((c.condition for c in (situation.consignes if situation else ())
+                         if c.condition is not None and c.anchor.source_phrase in t), None)
+            out.append({**u, "text": t, "condition": None if cond is None else {
+                "text": cond.source_phrase, "printed_page": cond.printed_page, "pdf_page": cond.pdf_page}})
+    for c in (situation.consignes if situation else ()):
+        if c.action and not consigne_is_action(e, c.anchor.source_phrase) and not any(c.anchor.source_phrase in o["text"] for o in out):
+            out.append({"field": "Consigne", "text": c.anchor.source_phrase, "printed_page": c.anchor.printed_page,
+                        "pdf_page": c.anchor.pdf_page, "condition": None if c.condition is None else {
+                            "text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
+                            "pdf_page": c.condition.pdf_page}})
     return out
+
+
+def conditional_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
+    """Conditional stop instructions of ONE entry (not an immediate alert):
+    exact condition, then the whole instruction with its page."""
+    return [{"condition": {"text": c.condition.source_phrase, "printed_page": c.condition.printed_page,
+                           "pdf_page": c.condition.pdf_page},
+             "text": c.full, "printed_page": c.anchor.printed_page, "pdf_page": c.anchor.pdf_page}
+            for c in (situation.consignes if situation else ()) if c.conditional]
 
 
 def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> list[dict]:
     """The urgent instructions documented for ONE entry, verbatim with page:
-    every sentence citing a stop (passage or linked warning; conservative),
-    plus the instruction of a situation classified alerte_consigne_immediate
-    (a classification can add urgency, never remove it). Only a documented
-    restart procedure leaves this list, for action_passages."""
-    out = [{**u} for u in text_units(e) if u["field"] != "Désignation" and _STOP_WORD.search(u["text"])
-           and not is_restart_procedure(u["text"])]
+    every unit citing a stop instruction (passage or linked warning), plus
+    the instruction of a situation classified alerte_consigne_immediate (a
+    classification can add urgency, never remove it). A unit leaves this
+    list only when each of its stop sentences is a restart procedure or a
+    conditional instruction shown, whole, under « Consigne applicable si… »."""
+    out = [{**u} for u in text_units(e) if u["field"] != "Désignation" and is_stop_instruction(u["text"])
+           and not all(_covered(s, situation) for s in _SENTENCE.split(u["text"]) if is_stop_instruction(s))]
     if situation is not None and situation.nature == "alerte_consigne_immediate":
         for c in situation.consignes:
             if c.action:
@@ -291,11 +361,13 @@ def urgent_passages(e: NoticeEntry, situation: Optional["Situation"] = None) -> 
 def red_offer(variants: list[NoticeEntry], findings: Mapping[str, EntryFinding],
               situations: Optional[Mapping[str, "Situation"]] = None) -> bool:
     """An ambiguous group keeps the red/uncertain screen on offer (a button,
-    never automatic) only when a variant documents an urgent instruction.
-    Never from ambiguity or colour alone."""
+    never automatic) only when a variant documents an urgent instruction
+    (a validated stop item, or an urgent passage). Never from ambiguity or
+    colour alone, nor from a conditional instruction shown apart."""
     situations = situations or {}
-    return any(stop_cited(v, findings.get(v.entry_id)) or urgent_passages(v, situations.get(v.entry_id))
-               for v in variants)
+    return any((findings.get(v.entry_id) is not None
+                and findings[v.entry_id].stop_vehicle_engine_off.basis.value == "documented")
+               or urgent_passages(v, situations.get(v.entry_id)) for v in variants)
 
 
 _MESSAGE_WORD = re.compile(r"\bmessages?\b", re.I)
@@ -341,7 +413,9 @@ class Anchor:
 class Consigne:
     anchor: Anchor
     condition: Optional[Anchor]
-    action: bool = False  # part of a documented restart procedure
+    action: bool = False  # restart procedure, or presented as an expected action
+    conditional: bool = False  # conditional stop instruction, not an immediate alert
+    full: str = ""  # the whole sentence(s) of the instruction, verbatim
 
 
 @dataclass(frozen=True)
@@ -392,23 +466,35 @@ def load_situations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tup
             nature = d.get("nature")
             if nature not in NATURES:
                 raise ContentRejected("unknown nature")
-            consignes = tuple(Consigne(_anchor(e, c), _anchor(e, c["condition"]) if c.get("condition") else None,
-                                       consigne_is_action(e, c.get("source_phrase") or ""))
-                              for c in d.get("consignes") or [])
+            consignes = []
+            for c in d.get("consignes") or []:
+                anchor = _anchor(e, c)
+                cond = _anchor(e, c["condition"]) if c.get("condition") else None
+                full = full_text(e, anchor.source_phrase)
+                restart = consigne_is_action(e, anchor.source_phrase)
+                if c.get("presentation") not in (None, "action_attendue"):
+                    raise ContentRejected("unknown presentation")
+                if c.get("presentation") == "action_attendue" and is_stop_instruction(full) and not restart:
+                    raise ContentRejected("a stop instruction is never presented as a plain action")
+                consignes.append(Consigne(anchor, cond, restart or c.get("presentation") == "action_attendue",
+                                          (cond is not None and is_stop_instruction(full) and not restart
+                                           and nature != "alerte_consigne_immediate"), full))
+            consignes = tuple(consignes)
             if nature == "alerte_consigne_immediate" and not consignes:
                 raise ContentRejected("an immediate alert needs its exact instruction")
-            if nature in ("fonctionnement_normal", "information_a_prendre_en_compte", "action_conducteur") and stop_cited(e):
-                # A passage citing a stop is never presented as a plain indication.
-                raise ContentRejected("stop cited: not an operating indication")
             just = _anchor(e, d.get("justification"))
+            probe = Situation(nature, just, consignes, (), None, draft)
+            if nature in ("fonctionnement_normal", "information_a_prendre_en_compte", "action_conducteur",
+                          "anomalie_defaut") and uncovered_stops(e, probe):
+                # A stop instruction is never left out: only a conditional one, shown apart under its exact
+                # condition, or a restart procedure, leaves the type free.
+                raise ContentRejected("stop instruction not shown under its condition")
             if nature == "information_a_prendre_en_compte" and failure_term(just.source_phrase):
                 raise ContentRejected("failure term: not an information to take into account")
             if nature == "anomalie_defaut":
                 # Reserved to a defect the passage itself names, without a stop instruction.
                 if just.source_field == "manufacturer_designation" or not failure_term(just.source_phrase):
                     raise ContentRejected("defect needs a failure term in the entry's own passage")
-                if any(_STOP_WORD.search(c.anchor.source_phrase) for c in consignes):  # restart procedure included
-                    raise ContentRejected("stop instruction: never classified as a plain defect")
             title = d.get("intitule")
             if title is not None and (not isinstance(title, str) or not title.strip()
                                       or any(f in title.lower() for f in FORBIDDEN)):
@@ -432,9 +518,11 @@ def present_situation(st: Optional[Situation]) -> Optional[dict]:
         "mention": SITUATION_LABELS["draft"] if st.draft else None,
         "validation": "brouillon" if st.draft else "validé",
         "justification": a(st.justification),
-        "consignes": [{"consigne": a(c.anchor), "condition": a(c.condition) if c.condition else None,
-                       "label": SITUATION_LABELS["action"] if c.action else SITUATION_LABELS["consigne"],
-                       "action": c.action} for c in st.consignes],
+        "consignes": [{"consigne": {**a(c.anchor), "text": c.full} if c.conditional else a(c.anchor),
+                       "condition": a(c.condition) if c.condition else None,
+                       "label": (SITUATION_LABELS["action"] if c.action else SITUATION_LABELS["conditional"]
+                                 if c.conditional else SITUATION_LABELS["consigne"]),
+                       "action": c.action, "conditional": c.conditional} for c in st.consignes],
         "conditions": [a(c) for c in st.conditions],
         "no_consigne": None if st.consignes else SITUATION_LABELS["no_consigne"],
     }
@@ -496,6 +584,30 @@ def load_explanations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> t
     return out, rejected, status
 
 
+# Defect wording of the prepared explanations.
+DEFECT_OPENING = "Le système signale un défaut"
+_FR_FAILURE = re.compile(r"\b(d[ée]fauts?|pannes?|d[ée]faillan\w*|dysfonctionn\w*)\b", re.I)
+
+
+def defect_wording_rejections(explanations: Mapping[str, "Explanation"], situations: Mapping[str, "Situation"],
+                              catalogue: NoticeCatalogue) -> dict[str, str]:
+    """Where the notice names a defect in the entry's own situation, the
+    explanation opens with « Le système signale un défaut… »; where the
+    entry's own passage uses no failure term, no failure word is added.
+    (The visit to a workshop is an action, never what defines a defect.)"""
+    out = {}
+    for x, ex in explanations.items():
+        e, st = catalogue.entry(x), situations.get(x)
+        first = ex.parts["indique"][0].text if ex.parts.get("indique") else ""
+        own = " ".join([e.documented_meaning, e.documented_instruction or ""] + [w.text for w in e.linked_warnings])
+        if (st is not None and st.justification.source_field != "manufacturer_designation"
+                and failure_term(st.justification.source_phrase) and not first.startswith(DEFECT_OPENING)):
+            out[x] = f"defect named by the notice: the explanation opens with « {DEFECT_OPENING}… »"
+        elif not failure_term(own) and any(_FR_FAILURE.search(s.text) for part in ex.parts.values() for s in part):
+            out[x] = "no failure term in the notice: no failure word added"
+    return out
+
+
 # --- V1 presentation of the Premier Constat -----------------------------------
 
 def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
@@ -507,7 +619,7 @@ def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
         return LABELS["unverified"]
     if item in ("stop", "operability"):
         texts = [e.designation, e.documented_meaning, e.documented_instruction or "", e.displayed_message or ""]
-        if any(_STOP_WORD.search(t) for t in texts):
+        if any(is_stop_instruction(t) for t in texts):
             return LABELS["unverified"]
     return LABELS["absent"]
 

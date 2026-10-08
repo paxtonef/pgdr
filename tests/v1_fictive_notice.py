@@ -74,6 +74,13 @@ STEER_INSTRUCTION = STEER_CONDITION + " " + STEER_PROCEDURE
 STEER_MIXED = ("If the fictive steering light flashes, stop the fictive vehicle at once. "
                "Otherwise stop the fictive motor for about 20 seconds and then restart it.")
 STEER_B = "The fictive steering light shows a fictive steering setup to do."
+LAMP_FAULT = "The fictive lamp symbol shows a fault on the fictive stop lights."
+TYRE_LOW = "The fictive tyre symbol shows that the fictive tyre pressure is lower than the recommended value."
+TYRE_ACTION = "In this case restore the fictive tyre pressure."
+TYRE_FAULT = "The fictive tyre symbol flashes to indicate that the fictive tyre system is temporarily deactivated or faulty."
+TYRE_CONDITION = "The fictive system cannot indicate a sudden fictive tyre burst."
+TYRE_STOP = "In this case, stop the fictive car, braking with caution and avoiding abrupt steering."
+TYRE_WARNING = TYRE_CONDITION + " " + TYRE_STOP + " Low pressure reduces the fictive tyre life."
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -95,7 +102,8 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/mode.png": png((0, 0, 200), 8), "images/alarm.png": png((210, 10, 10), 8),
         "images/code.png": png((220, 160, 0), 8),
         "images/pressure.png": png((225, 155, 0), 8), "images/frost.png": png((0, 130, 200), 8),
-        "images/steer.png": png((190, 0, 0), 8),
+        "images/steer.png": png((190, 0, 0), 8), "images/lamp.png": png((228, 150, 0), 8),
+        "images/tyre.png": png((232, 158, 0), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -161,6 +169,17 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
                   linked_warnings=[{"number": "3)", "text": STEER_MIXED, "printed_page": "F-14", "pdf_page": 14,
                                     "inline_pictograms": []}]),
             entry("fx_red_steer_b", "FICTIVE STEERING FAILURE", "red", "images/steer.png", STEER_B, 13, state=None),
+            # « stop lights » is never a stop instruction.
+            entry("fx_amber_lamp_fault", "FICTIVE LAMP FAULT", "amber", "images/lamp.png", LAMP_FAULT, 15),
+            # Identical file: an under-inflation state (expected action) and a system fault, both with
+            # the same CONDITIONAL stop instruction (warning 5), shown apart from the type.
+            entry("fx_amber_tyre_low", "FICTIVE TYRES", "amber", "images/tyre.png", TYRE_LOW + " " + TYRE_ACTION, 16,
+                  state=None, documented_instruction=TYRE_ACTION,
+                  linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
+                                    "inline_pictograms": []}]),
+            entry("fx_amber_tyre_fault", "FICTIVE TYRES", "amber", "images/tyre.png", TYRE_FAULT, 16, state=None,
+                  linked_warnings=[{"number": "5)", "text": TYRE_WARNING, "printed_page": "F-17", "pdf_page": 17,
+                                    "inline_pictograms": []}]),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
@@ -278,11 +297,12 @@ def build_explanations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", 
 
 def situation(nature: str, phrase: str, field: str = "documented_meaning", *, consignes=(), conditions=(),
               intitule: str | None = None) -> dict:
-    """consignes: (phrase, field, condition_phrase_or_None, condition_field) tuples."""
+    """consignes: (phrase, field, condition_phrase_or_None, condition_field[, presentation]) tuples."""
     d = {"nature": nature, "justification": {"source_field": field, "source_phrase": phrase},
-         "consignes": [{"source_field": f, "source_phrase": ph,
-                        **({"condition": {"source_field": cf, "source_phrase": cp}} if cp else {})}
-                       for ph, f, cp, cf in consignes],
+         "consignes": [{"source_field": c[1], "source_phrase": c[0],
+                        **({"condition": {"source_field": c[3], "source_phrase": c[2]}} if c[2] else {}),
+                        **({"presentation": c[4]} if len(c) > 4 else {})}
+                       for c in consignes],
          "conditions": [{"source_field": f, "source_phrase": ph} for ph, f in conditions]}
     if intitule:
         d["intitule"] = intitule
@@ -314,6 +334,14 @@ SITUATIONS = {
                                            ("stop the fictive vehicle at once", "linked_warnings",
                                             "If the fictive steering light flashes", "linked_warnings")],
                                 intitule="Assistance fictive peut-être réduite"),
+    "fx_amber_lamp_fault": situation("anomalie_defaut", "a fault on the fictive stop lights", intitule="Défaut d'un feu fictif"),
+    "fx_amber_tyre_low": situation("information_a_prendre_en_compte", "the fictive tyre pressure is lower than the recommended value",
+                                   consignes=[("restore the fictive tyre pressure", "documented_instruction", None, None, "action_attendue"),
+                                              ("stop the fictive car", "linked_warnings", TYRE_CONDITION, "linked_warnings")],
+                                   intitule="Pression fictive des pneus basse"),
+    "fx_amber_tyre_fault": situation("anomalie_defaut", "temporarily deactivated or faulty",
+                                     consignes=[(TYRE_STOP, "linked_warnings", TYRE_CONDITION, "linked_warnings")],
+                                     intitule="Système fictif des pneus désactivé ou en défaut"),
     "fx_red_steer_b": situation("action_conducteur", "a fictive steering setup to do", intitule="Réglage fictif à faire"),
     "fx_amber_code_b": situation("situation_non_determinee", "to report a fictive intrusion attempt",
                                  conditions=[("comes on with a dedicated message", "documented_meaning")],

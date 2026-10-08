@@ -104,7 +104,7 @@ class TestMixedGroup:
         assert a_["entry"]["situation"]["consignes"] == [{
             "consigne": {"text": fx.ALARM_STOP_PHRASE, "printed_page": "F-10", "pdf_page": 10},
             "condition": {"text": "If the fictive alarm light comes on while driving", "printed_page": "F-10", "pdf_page": 10},
-            "label": "Consigne du constructeur", "action": False}]
+            "label": "Consigne du constructeur", "action": False, "conditional": False}]
         # Never transferred to variant B.
         assert b_["entry"]["situation"]["consignes"] == [] and b_["entry"]["manufacturer_text"]["linked_warnings"] == []
         assert fx.ALARM_STOP not in json.dumps(b_, ensure_ascii=False)
@@ -192,11 +192,11 @@ class TestInformationToTakeIntoAccount:
         assert not w.situations_rejected
         r = confirm(client, ["fx_amber_pressure"])
         st = entry(r, "fx_amber_pressure")["situation"]
-        assert st["nature"] == "information_a_prendre_en_compte" and st["label"] == "À prendre en compte"
+        assert st["nature"] == "information_a_prendre_en_compte" and st["label"] == "Signalement du véhicule"
         # The instruction stays shown, with its exact citation and its condition.
         assert st["consignes"] == [{"consigne": {"text": fx.PRESSURE_CONSIGNE, "printed_page": "F-12", "pdf_page": 12},
                                     "condition": {"text": "In this case", "printed_page": "F-12", "pdf_page": 12},
-                                    "label": "Consigne du constructeur", "action": False}]
+                                    "label": "Consigne du constructeur", "action": False, "conditional": False}]
         assert st["no_consigne"] is None
         # Never a permission to drive.
         text = json.dumps(r["premier_constat"]["presentation"], ensure_ascii=False).lower()
@@ -250,18 +250,124 @@ class TestStopNeverLowered:
         r = confirm(client, ["fx_red_steer_a"])
         (b,) = ambiguous(r)
         assert b["action_title"] == "Action attendue de votre part"
-        assert b["actions"] == [{"only_for": "Indiqué seulement pour : FICTIVE STEERING FAILURE — Assistance fictive peut-être réduite",
-                                 "entry_id": "fx_red_steer_a", "passages": [{
-                                     "field": "Consigne", "text": fx.STEER_PROCEDURE, "printed_page": "F-13", "pdf_page": 13,
-                                     "condition": {"text": fx.STEER_CONDITION, "printed_page": "F-13", "pdf_page": 13}}]}]
-        # The procedure is no longer an urgent instruction; the other stop (same variant) stays urgent, whole.
-        assert [(u["entry_id"], [p["text"] for p in u["passages"]]) for u in b["urgent"]] == [("fx_red_steer_a", [fx.STEER_MIXED])]
-        assert fx.STEER_PROCEDURE not in json.dumps(b["urgent"], ensure_ascii=False)
+        (act,) = b["actions"]
+        assert (act["only_for"], act["entry_id"]) == (
+            "Indiqué seulement pour : FICTIVE STEERING FAILURE — Assistance fictive peut-être réduite", "fx_red_steer_a")
+        assert act["passages"][0] == {"field": "Consigne", "text": fx.STEER_PROCEDURE, "printed_page": "F-13", "pdf_page": 13,
+                                      "condition": {"text": fx.STEER_CONDITION, "printed_page": "F-13", "pdf_page": 13}}
+        # The procedure is no longer an urgent instruction; the conditional stop of the same variant is shown
+        # apart, under its exact condition, whole; the restart sentence of the mixed warning is an action too.
+        assert b["urgent"] == []
+        assert [p["text"] for p in b["actions"][0]["passages"][1:]] == [
+            "Otherwise stop the fictive motor for about 20 seconds and then restart it."]
+        assert b["conditionals"] == [{"only_for": b["actions"][0]["only_for"], "entry_id": "fx_red_steer_a", "passages": [{
+            "condition": {"text": "If the fictive steering light flashes", "printed_page": "F-14", "pdf_page": 14},
+            "text": "If the fictive steering light flashes, stop the fictive vehicle at once.",
+            "printed_page": "F-14", "pdf_page": 14}]}]
         st = b["variants"][0]["entry"]["situation"]
         assert [(c["label"], c["action"]) for c in st["consignes"]] == [
-            ("Action attendue de votre part", True), ("Consigne du constructeur", False)]
-        # Internal level computed exactly as before; red screen still on offer, never automatic.
+            ("Action attendue de votre part", True), ("Consigne applicable si…", False)]
+        # Internal level computed exactly as before (presentation only).
         triage = r["premier_constat"]["triage"]
         assert (triage["level"], triage["engine_level"]) == (before["level"], before["engine_level"])
-        assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]
+        assert b["red_offer"] is None
         assert not vc.is_restart_procedure(fx.STEER_MIXED) and vc.is_restart_procedure(fx.STEER_PROCEDURE)
+
+
+class TestStopDetection:
+    def test_stop_lights_never_a_stop(self, monkeypatch, grouped, client):
+        c = ManifestNoticeRepository(grouped).catalogue
+        e = c.entry("fx_amber_lamp_fault")
+        assert not vc.is_stop_instruction(fx.LAMP_FAULT) and not vc.stop_cited(e) and vc.urgent_passages(e) == []
+        assert not vc.is_stop_instruction("taking the fictive device to the STOP position")
+        w = with_situations(monkeypatch, grouped)
+        assert "fx_amber_lamp_fault" not in w.situations_rejected
+        st = entry(confirm(client, ["fx_amber_lamp_fault"]), "fx_amber_lamp_fault")["situation"]
+        assert st["nature"] == "anomalie_defaut" and st["consignes"] == [] and st["no_consigne"]
+
+    def test_real_stop_instruction_detected(self, grouped):
+        for t in ("stop the fictive vehicle immediately", "Stop the fictive car, avoiding sharp braking.",
+                  "stop the motor for about 20 seconds", "Stop to pause while driving", fx.TYRE_STOP):
+            assert vc.is_stop_instruction(t), t
+        c = ManifestNoticeRepository(grouped).catalogue
+        assert vc.stop_cited(c.entry("fx_red_fluid")) and vc.stop_cited(c.entry("fx_amber_tyre_low"))
+
+
+class TestConditionalStopApart:
+    def test_action_and_conditional_stop_not_confused(self, monkeypatch, grouped, client):
+        w = with_situations(monkeypatch, grouped)
+        assert not w.situations_rejected
+        r = confirm(client, ["fx_amber_tyre_low"])
+        (b,) = ambiguous(r)
+        # The described state comes first, with its own type (never made urgent by the conditional stop).
+        assert [(x["entry_id"], x["situation"]["label"]) for x in b["situations"]] == [
+            ("fx_amber_tyre_low", "Signalement du véhicule"), ("fx_amber_tyre_fault", "Défaut signalé par la notice")]
+        assert [p["text"] for a in b["actions"] for p in a["passages"]] == ["restore the fictive tyre pressure"]
+        assert b["conditional_title"] == "Consigne applicable si…"
+        whole = {"condition": {"text": fx.TYRE_CONDITION, "printed_page": "F-17", "pdf_page": 17},
+                 "text": fx.TYRE_STOP, "printed_page": "F-17", "pdf_page": 17}
+        assert [(x["entry_id"], x["passages"]) for x in b["conditionals"]] == [
+            ("fx_amber_tyre_low", [whole]), ("fx_amber_tyre_fault", [whole])]
+        # No urgent title, no red button, the whole warning still visible.
+        assert b["urgent"] == [] and b["red_offer"] is None and r["premier_constat"]["presentation"]["red_screen"] is None
+        assert all(v["entry"]["manufacturer_text"]["linked_warnings"][0]["text"] == fx.TYRE_WARNING for v in b["variants"])
+        low = b["variants"][0]["entry"]["situation"]["consignes"]
+        assert [(c["label"], c["action"], c["conditional"]) for c in low] == [
+            ("Action attendue de votre part", True, False), ("Consigne applicable si…", False, True)]
+        assert low[1]["consigne"]["text"] == fx.TYRE_STOP  # widened to the whole sentence, never shortened
+        text = json.dumps(r["premier_constat"]["presentation"], ensure_ascii=False).lower()
+        assert not [f for f in vc.FORBIDDEN if f in text]
+
+    def test_level_unchanged_by_presentation(self, monkeypatch, grouped, client):
+        for ids in (["fx_amber_tyre_low"], ["fx_red_steer_a"], ["fx_red_alarm_a"]):
+            wire(monkeypatch, grouped)
+            before = confirm(client, ids)["premier_constat"]["triage"]
+            with_situations(monkeypatch, grouped)
+            after = confirm(client, ids)["premier_constat"]["triage"]
+            assert {k: after[k] for k in ("level", "engine_level", "triggered_rules")} == {
+                k: before[k] for k in ("level", "engine_level", "triggered_rules")}, ids
+
+    def test_immediate_alert_stop_unchanged(self, monkeypatch, grouped, client):
+        # Like a brake warning: an immediate alert keeps its stop urgent, with the red button.
+        with_situations(monkeypatch, grouped)
+        (b,) = ambiguous(confirm(client, ["fx_red_alarm_a"]))
+        assert [p["text"] for u in b["urgent"] for p in u["passages"]] == [fx.ALARM_STOP]
+        assert b["conditionals"] == [] and b["red_offer"] == vc.DRAFT_LABELS["red_offer"]
+
+    def test_stop_never_presented_as_plain_action(self, grouped):
+        c = ManifestNoticeRepository(grouped).catalogue
+        sit, rejected, _ = vc.load_situations(fx.build_situations(grouped, entries={
+            "fx_amber_tyre_low": fx.situation("information_a_prendre_en_compte",
+                                              "the fictive tyre pressure is lower than the recommended value",
+                                              consignes=[("stop the fictive car", "linked_warnings", None, None, "action_attendue")]),
+            # an unconditional stop left out of a neutral type
+            "fx_amber_tyre_fault": fx.situation("anomalie_defaut", "temporarily deactivated or faulty")}), c, dev_trial=True)
+        assert sit == {} and set(rejected) == {"fx_amber_tyre_low", "fx_amber_tyre_fault"}
+
+
+DEFECT_EXPL = {
+    "indique": [{"texte": "Le système signale un défaut : le symbole fictif indique un défaut de code fictif.",
+                 "source_field": "documented_meaning", "source_phrase": "a fictive code fault"}],
+    "maintenant": [{"texte": "La notice fictive demande de contacter un atelier fictif.",
+                    "source_field": "documented_instruction", "source_phrase": fx.CODE_A_INSTRUCTION}],
+    "inconnu": [{"texte": "Rien d'autre n'est précisé.", "source_field": "documented_meaning", "source_phrase": "a fictive code fault"}],
+}
+
+
+class TestDefectWording:
+    def test_failure_term_opens_with_defect_sentence(self, monkeypatch, grouped):
+        lamps = {k: list(v) for k, v in fx.EXPLANATION_GREEN.items()}
+        lamps["indique"] = [dict(lamps["indique"][0], texte="Ce voyant fictif signale un défaut des feux fictifs.")]
+        w = with_situations(monkeypatch, grouped, explanations_path=fx.build_explanations(grouped, entries={
+            "fx_amber_code_a": DEFECT_EXPL, "fx_green_lamps": lamps}))
+        assert "fx_amber_code_a" in w.explanations and w.explanations["fx_amber_code_a"].parts["indique"][0].text.startswith(
+            "Le système signale un défaut")
+        # Without a failure term in the notice, a failure word is never added.
+        assert w.explanations_rejected["fx_green_lamps"] == "no failure term in the notice: no failure word added"
+
+    def test_defect_without_opening_rejected(self, monkeypatch, grouped):
+        bad = {k: list(v) for k, v in DEFECT_EXPL.items()}
+        bad["indique"] = [dict(DEFECT_EXPL["indique"][0], texte="Le symbole fictif indique un code fictif en défaut.")]
+        w = with_situations(monkeypatch, grouped, explanations_path=fx.build_explanations(grouped, entries={"fx_amber_code_a": bad}))
+        assert "fx_amber_code_a" not in w.explanations
+        assert w.explanations_rejected["fx_amber_code_a"].startswith("defect named by the notice")

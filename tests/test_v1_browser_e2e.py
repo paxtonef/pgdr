@@ -413,8 +413,9 @@ def test_v1_operating_group_mixed_group_and_message_question(page: Page, live_se
 
 def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, live_server):
     """A documented temporary stop + wait + restart is shown as « Action attendue de votre part »,
-    with its condition and page; another stop of the same variant stays urgent. « À prendre en
-    compte » keeps the caution sentence when no instruction is cited."""
+    with its condition and page; a conditional stop of the same variant is shown apart, whole, under
+    « Consigne applicable si… », without urgent title nor red button. « Signalement du véhicule »
+    keeps the caution sentence when no instruction is cited."""
     _restitution_for(page, live_server, ["fx_red_steer_a"])
     expect(page.locator("#screen-restitution")).to_be_visible()
     block = page.locator("#premier-constat .ambiguous")
@@ -422,11 +423,14 @@ def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, 
     expect(action.locator("h3")).to_have_text("Action attendue de votre part")
     expect(action.locator(".action-variant")).to_have_count(1)
     expect(action.locator(".action-condition")).to_contain_text(fx.STEER_CONDITION)
-    expect(action.locator(".action-quote")).to_contain_text(fx.STEER_PROCEDURE)
-    expect(action.locator(".action-quote")).to_contain_text("page de la notice F-13 (page PDF 13)")
-    urgent = block.locator(".urgent")
-    expect(urgent).to_contain_text(fx.STEER_MIXED)
-    expect(urgent).not_to_contain_text(fx.STEER_PROCEDURE)
+    expect(action.locator(".action-quote").first).to_contain_text(fx.STEER_PROCEDURE)
+    expect(action.locator(".action-quote").first).to_contain_text("page de la notice F-13 (page PDF 13)")
+    expect(block.locator(".urgent")).to_have_count(0)
+    cond = block.locator(".conditional")
+    expect(cond.locator("h3")).to_have_text("Consigne applicable si…")
+    expect(cond.locator(".conditional-condition")).to_contain_text("If the fictive steering light flashes")
+    expect(cond.locator(".conditional-quote")).to_contain_text("If the fictive steering light flashes, stop the fictive vehicle at once.")
+    expect(block.locator("button.red-offer")).to_have_count(0)
     expect(block.locator('.variant[data-entry-id="fx_red_steer_a"] .action-label')).to_have_text("Action attendue de votre part :")
     _no_english_ui(page)
 
@@ -436,7 +440,7 @@ def test_v1_restart_procedure_expected_action_and_take_into_account(page: Page, 
     page.click("#selection-continue")
     page.click("#confirm")
     sit = page.locator('#premier-constat .finding-entry[data-entry-id="fx_blue_frost"] .situation')
-    expect(sit.locator("h3")).to_have_text("Type de situation : À prendre en compte")
+    expect(sit.locator("h3")).to_have_text("Type de situation : Signalement du véhicule")
     expect(sit.locator(".no-consigne")).to_have_text(
         "Aucune consigne n'est citée dans ce passage ; cela ne prouve pas l'absence de risque.")
     expect(page.locator("#screen-restitution")).not_to_contain_text("Vous pouvez rouler")
