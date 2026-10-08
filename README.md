@@ -116,7 +116,7 @@ anchors may cite a linked warning with `source_field: linked_warnings`).
 In V1 a structured point shows only the cited phrase (never an approved
 label that adds an action); derived values (R-1/R-2) are never displayed and
 only feed the internal R-5 level. Unstructured points read « Point pas encore
-vérifié par PGDR… »; « La notice n'indique pas ce point. » needs a VALIDATED
+vérifié par PGDR… »; « Cette information n'est pas établie dans les données disponibles. » needs a VALIDATED
 classification covering the entry (`covered_entry_ids`) and is never used
 when the entry has linked warnings.
 
@@ -133,8 +133,10 @@ its source; a choice resolves the group. Otherwise (« Je ne sais pas »,
 « Aucun de ceux-ci », or nothing distinctive) the group is shown as ambiguous:
 the limit, the texts identical word for word in every variant (with pages),
 then each variant's own complete passage under « Indiqué seulement pour ».
-The red/uncertain screen stays on offer when a variant is red or cites a
-stop. The internal level is the highest of the variants and its origin
+When a variant is red or cites a stop, the validated red/uncertain screen
+text is shown in the result itself, right after the limit and above the
+variants, with no click (the button stays); never for a wholly informative
+group. The internal level is the highest of the variants and its origin
 (PGDR rule or documented passage) is recorded, never displayed. New French
 texts of this display are drafts and marked as such.
 

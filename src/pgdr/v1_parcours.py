@@ -760,6 +760,8 @@ V1_HTML = """<!DOCTYPE html>
  .limit { font-weight: 700; }
  .variant { border-left: 4px solid #b26a00; padding-left: 10px; }
  .condition { font-weight: 600; }
+ .red-inline { border: 2px solid #b00020; border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
+ .red-inline h1 { font-size: 1.15em; margin: 4px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
  [hidden] { display: none !important; }
@@ -989,6 +991,13 @@ function renderAmbiguous(b, root, redScreen) {
     if (b.group_draft) box.append(make("p", b.group_draft, "draft-mention group-draft"));
     box.append(make("p", b.draft_texts, "draft-mention"));
     box.append(make("p", b.limit, "limit"));
+    // A red variant or a cited stop: the validated red / uncertain screen is shown here, no click needed.
+    if (b.red_offer) {
+      const rs = make("div", null, "fallback red-inline"); rs.dataset.screen = redScreen.key;
+      rs.append(make("h1", redScreen.heading));
+      for (const p of redScreen.paragraphs) rs.append(make("p", p));
+      box.append(rs);
+    }
     const cs = sec(box, b.common_title, "common");
     if (b.no_common) cs.append(make("p", b.no_common, "no-common"));
     for (const c of b.common) {

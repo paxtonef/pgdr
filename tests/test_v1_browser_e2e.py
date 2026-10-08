@@ -277,7 +277,7 @@ def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_
         expect(red.locator(".point-operability .point-label")).to_have_text(
             "Point pas encore vérifié par PGDR. Lisez la consigne du constructeur ci-dessous.")
         green = page.locator('#premier-constat .finding-entry[data-entry-id="fx_green_lamps"]')
-        expect(green.locator(".point-stop .point-label")).to_have_text("La notice n'indique pas ce point.")
+        expect(green.locator(".point-stop .point-label")).to_have_text("Cette information n'est pas établie dans les données disponibles.")
         body = page.locator("#premier-constat").inner_text().lower()
         for added in ("coupez le contact", "dépann", "reprenez pas la route", "ne roulez pas"):
             assert added not in body
@@ -316,6 +316,17 @@ def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, liv
     expect(block.locator(".variant").nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE BELT")
     expect(block.locator(".variant").nth(1).locator(".meaning")).to_have_text(fx.BELT_MEANING_FLASHING)
     expect(block.locator(".draft-mention").first).to_be_visible()
+    # Red variant: the validated red / uncertain screen is in the result itself, no click,
+    # right after the limit and above the variants.
+    red = _french_screens()["red_or_uncertain"]
+    inline = block.locator(".red-inline")
+    expect(inline).to_have_count(1)
+    expect(inline).to_be_visible()
+    expect(inline.locator("h1")).to_have_text(red["heading"])
+    expect(inline.locator("p")).to_have_text([" ".join(x.split()) for x in red["paragraphs"]])
+    assert block.evaluate("""b => { const l = b.querySelector('.limit'), r = b.querySelector('.red-inline'),
+        v = b.querySelector('.variant'); return l.nextElementSibling === r
+        && !!(r.compareDocumentPosition(v) & Node.DOCUMENT_POSITION_FOLLOWING); }""")
     _no_english_ui(page)
     block.locator("button.red-offer").click()
     expect(page.locator("#fallback-content h1")).to_have_text(_french_screens()["red_or_uncertain"]["heading"])
@@ -340,6 +351,7 @@ def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, liv
     block = page.locator("#premier-constat .ambiguous")
     expect(block.locator(".no-common")).to_have_text("Aucune information commune n'est citée par la notice pour ces voyants.")
     expect(block.locator("button.red-offer")).to_have_count(0)
+    expect(page.locator("#premier-constat .red-inline")).to_have_count(0)
 
 
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):

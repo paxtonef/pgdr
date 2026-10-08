@@ -124,6 +124,11 @@ class TestStopWithoutAddedAction:
 
 
 class TestTwoLabels:
+    def test_exact_wording(self):
+        assert vc.LABELS["absent"] == "Cette information n'est pas établie dans les données disponibles."
+        assert vc.LABELS["unverified"] == ("Point pas encore vérifié par PGDR. "
+                                           "Lisez la consigne du constructeur ci-dessous.")
+
     def test_absent_only_when_validated_and_covered_without_warnings(self, monkeypatch, notice, client):
         wire(monkeypatch, notice, findings_path=fx.build_findings(notice))
         r = confirm(client, ["fx_amber_sensor", "fx_green_lamps"])

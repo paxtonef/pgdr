@@ -32,7 +32,7 @@ from pgdr.models import EntryFinding
 
 LABELS = {
     "selected": "Voyant sélectionné par vous",
-    "absent": "La notice n'indique pas ce point.",
+    "absent": "Cette information n'est pas établie dans les données disponibles.",
     "unverified": "Point pas encore vérifié par PGDR. Lisez la consigne du constructeur ci-dessous.",
     "draft_explanation": "Explication en brouillon, non validée",
 }
@@ -264,7 +264,7 @@ def load_explanations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> t
 # --- V1 presentation of the Premier Constat -----------------------------------
 
 def _ne_label(e: NoticeEntry, item: str, covered: bool) -> str:
-    """« La notice n'indique pas ce point » only when a VALIDATED
+    """« Cette information n'est pas établie dans les données disponibles. » only when a VALIDATED
     classification covers the entry AND nothing in the passage could hold
     that point unseen: never when the entry has linked warnings, and for the
     stop / vehicle-use points never when the passage mentions a stop."""
