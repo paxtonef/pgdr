@@ -16,7 +16,9 @@ Boundaries, all deliberate:
     outils/preparation_v1/config/fallback_screens.fr.yaml; named validation
     recorded in the file). An unvalidated file is refused.
   * Interface texts are French; manufacturer texts are shown as stored, in
-    the notice language, never translated. Curation notes are not shown.
+    the notice language. A prepared French translation (PGDR_V1_TRANSLATIONS)
+    is only ever shown BESIDE the exact notice text, never instead of it.
+    Curation notes are not shown.
   * DEV TRIAL (PGDR_V1_DEV_TRIAL=1) is the only mode in which a notice whose
     applicability to the vehicle is not established may be shown, and then
     with a permanent banner on every screen.
@@ -34,6 +36,9 @@ Configuration (environment):
   PGDR_V1_SITUATIONS    optional: situation classification per entry
                         (nature, exact justification, instructions,
                         conditions). Draft = development trial only, marked.
+  PGDR_V1_TRANSLATIONS  optional: prepared French translations of notice
+                        sentences (anchored word for word). Draft = development
+                        trial only, marked « Traduction préparée, non validée ».
   PGDR_V1_FINDINGS      optional: VALIDATED structured classification of the
                         notice entries (Part 1 mapping format, header status
                         VALIDE, bound to the catalogue content fingerprint).
@@ -146,10 +151,14 @@ class V1Wiring:
     situations: dict = field(default_factory=dict)
     situations_rejected: dict = field(default_factory=dict)
     situations_status: str = "absent"
+    translations: dict = field(default_factory=dict)  # exact notice text -> prepared French
+    translations_rejected: dict = field(default_factory=dict)
+    translations_status: str = "absent"
 
 
 def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
-                 findings_path=None, groups_path=None, explanations_path=None, situations_path=None) -> V1Wiring:
+                 findings_path=None, groups_path=None, explanations_path=None, situations_path=None,
+                 translations_path=None) -> V1Wiring:
     """All notice content is loaded and verified ONCE here and then shared by
     every parcours of this process (no re-read, no external fetch)."""
     w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error)
@@ -186,6 +195,12 @@ def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, d
                 situations_path, c, dev_trial=dev_trial)
         except vc.ContentRejected as exc:
             w.situations_status = f"refused: {exc}"
+    if translations_path:
+        try:
+            w.translations, w.translations_rejected, w.translations_status = vc.load_translations(
+                translations_path, c, dev_trial=dev_trial)
+        except vc.ContentRejected as exc:
+            w.translations_status = f"refused: {exc}"
     # Defect wording follows the notice: an explanation that does not, is not shown.
     for x, reason in vc.defect_wording_rejections(w.explanations, w.situations, c).items():
         w.explanations.pop(x, None)
@@ -244,7 +259,8 @@ def get_wiring() -> V1Wiring:
                                findings_path=os.environ.get("PGDR_V1_FINDINGS"),
                                groups_path=os.environ.get("PGDR_V1_GROUPS"),
                                explanations_path=os.environ.get("PGDR_V1_EXPLANATIONS"),
-                               situations_path=os.environ.get("PGDR_V1_SITUATIONS"))
+                               situations_path=os.environ.get("PGDR_V1_SITUATIONS"),
+                               translations_path=os.environ.get("PGDR_V1_TRANSLATIONS"))
     return _wiring
 
 
@@ -336,10 +352,13 @@ def _section(pid: str, e: NoticeEntry) -> dict:
 
 
 def _document(c: NoticeCatalogue) -> dict:
-    d = c.document
+    d, w = c.document, get_wiring()
     return {"document_id": d.document_id, "title": d.document_title, "edition": d.edition,
             "language": c.language, "language_note": LANGUAGE_NOTE.get(c.language),
-            "content_sha256": c.content_sha256}
+            "content_sha256": c.content_sha256,
+            # Prepared French beside the exact notice text (never instead of it).
+            "translations": dict(w.translations),
+            "translation_mention": vc.TRANSLATION_MENTION if w.translations_status == "draft_dev_trial" else None}
 
 
 def _state(pid: str, p: Parcours) -> dict:
@@ -967,6 +986,9 @@ V1_HTML = """<!DOCTYPE html>
  article.restitution > img { max-width: 120px; }
  .exact { white-space: pre-wrap; background: #fbfbf4; border-left: 4px solid #999; padding: 8px 12px; margin: 6px 0; }
  .exact img { height: 1.4em; vertical-align: middle; margin: 0 2px; }
+ .translation { display: block; margin: 2px 0 6px; padding: 2px 12px; color: #1f3b57; }
+ span.translation { display: inline; padding: 0 4px; }
+ .translation-mention { margin-left: 6px; font-size: .8em; color: #555; font-style: italic; }
  span.exact { display: inline; border-left: none; padding: 0 4px; margin: 0; }
  .label { font-weight: 600; }
  .tag { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 8px; margin-right: 6px; }
@@ -1152,7 +1174,7 @@ function updateCount() {
 }
 async function openCatalogue() {
   const c = await call("/catalogue");
-  noticeLang = c.document.language || "en";
+  noticeLang = c.document.language || "en"; setTranslations(c.document);
   selected = new Set(c.selection);
   const grid = el("catalogue-grid"); grid.replaceChildren();
   for (const e of c.entries) {
@@ -1207,6 +1229,21 @@ function onlyFor(x) {
   return p;
 }
 function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
+// Prepared French beside each exact notice text it translates word for word (server map); the notice
+// text stays. Citations under a prepared explanation are not doubled.
+let translations = {}, translationMention = null;
+function setTranslations(doc) { translations = doc.translations || {}; translationMention = doc.translation_mention || null; }
+function translateAll(root) {
+  for (const n of root.querySelectorAll("[lang]")) {
+    if (n.tagName === "IMG" || n.lang !== noticeLang || n.classList.contains("citation") || n.dataset.translated) continue;
+    const key = n.textContent.trim().replace(/^«\\s*/, "").replace(/\\s*»$/, "");
+    const fr = translations[key]; if (!fr) continue;
+    n.dataset.translated = "1";
+    const t = make(n.tagName === "SPAN" ? "span" : "div", fr, "translation"); t.lang = "fr";
+    if (translationMention) t.append(make("span", translationMention, "translation-mention"));
+    n.after(t);
+  }
+}
 function renderEntry(e, block, headingLabel) {
     const h = make("p", null, "selected"); h.append(make("strong", headingLabel));
     const d = make("span", e.designation); d.lang = noticeLang; h.append(d); block.append(h);
@@ -1422,6 +1459,7 @@ function renderQuestions(s) {
     const nn = make("button", "Aucun de ceux-ci"); nn.className = "none-variant"; nn.onclick = () => clarify(q.group, "none");
     box.append(dk, nn); root.append(box);
   }
+  translateAll(root);
   show("screen-clarification");
 }
 async function clarify(group, answer, message) {
@@ -1471,12 +1509,13 @@ function buildArticle(x) {
       return a;
 }
 function renderRestitution(s) {
-    noticeLang = s.document.language || "en";
+    noticeLang = s.document.language || "en"; setTranslations(s.document);
     const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
     const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
     renderConstat(s.premier_constat);
     const root = el("restitution"); root.replaceChildren();
     for (const x of s.sections) root.append(buildArticle(x));
+    translateAll(document.body);
     show("screen-restitution");
 }
 async function noMatch(reason) {

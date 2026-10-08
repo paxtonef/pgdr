@@ -7,6 +7,7 @@
 #           outils/essai_dev_v1/lancer.sh /chemin/hors/depot/manifest.yaml [port]
 # Facultatif (hors dépôt) : PGDR_V1_EXPLANATIONS (brouillon affiché en essai, marqué),
 # PGDR_V1_GROUPS et PGDR_V1_FINDINGS (utilisés seulement s'ils sont VALIDÉS).
+# PGDR_V1_TRANSLATIONS : traductions françaises préparées, affichées à côté du texte exact (brouillon : essai seulement, marqué).
 set -euo pipefail
 here="$(cd "$(dirname "$0")/../.." && pwd)"
 manifest="${1:?chemin du manifest.yaml de la notice requis}"

@@ -832,6 +832,61 @@ def load_explanations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> t
     return out, rejected, status
 
 
+# Prepared French translations of manufacturer sentences. Shown BESIDE the exact
+# notice text, never instead of it; a draft is marked with TRANSLATION_MENTION.
+TRANSLATION_MENTION = "Traduction préparée, non validée"
+TRANSLATION_FIELDS = ANCHOR_FIELDS + ("audible_signal", "documented_startup_check", "field_sources")
+
+
+def translation_texts(e: NoticeEntry, field: str) -> list[str]:
+    if field == "audible_signal":
+        return [e.audible_signal] if e.audible_signal else []
+    if field == "documented_startup_check":
+        return [e.documented_startup_check] if e.documented_startup_check else []
+    if field == "field_sources":
+        return [s.text for s in e.field_sources or ()]
+    return entry_texts(e, field)
+
+
+def load_translations(path, catalogue: NoticeCatalogue, *, dev_trial: bool) -> tuple[dict[str, str], dict[int, str], str]:
+    """Returns (French by exact notice text, rejected record index -> reason,
+    status). A draft is usable only in the development trial; a validated
+    file needs a named validation bound to this catalogue. Each record is
+    checked alone: its notice text must be verbatim in its entry's field. A
+    notice text whose records disagree, or whose French carries a forbidden
+    wording, gets no translation at all (the notice text is shown alone)."""
+    raw = _read(path)
+    header = _header(raw, catalogue)
+    if _validated(header):
+        status = "validated"
+    elif header.get("status") == "BROUILLON_NON_VALIDE" and dev_trial:
+        status = "draft_dev_trial"
+    else:
+        raise ContentRejected("translations not validated")
+    found: dict[str, set] = {}
+    refused: set = set()
+    rejected: dict[int, str] = {}
+    for i, rec in enumerate(raw.get("entries") or []):
+        try:
+            if not isinstance(rec, dict):
+                raise ContentRejected("invalid record")
+            e = catalogue.entry(rec.get("entry_id"))
+            text, field, phrase = rec.get("texte"), rec.get("source_field"), rec.get("source_phrase")
+            if e is None:
+                raise ContentRejected("unknown entry")
+            if not isinstance(text, str) or not text.strip() or field not in TRANSLATION_FIELDS:
+                raise ContentRejected("invalid translation")
+            if not isinstance(phrase, str) or not phrase or not any(phrase in t for t in translation_texts(e, field)):
+                raise ContentRejected(f"anchor not verbatim in {field}: {phrase!r}")
+            if any(f in text.lower() for f in FORBIDDEN):
+                refused.add(phrase)
+                raise ContentRejected("forbidden wording")
+            found.setdefault(phrase, set()).add(text)
+        except ContentRejected as exc:
+            rejected[i] = str(exc)
+    return {k: next(iter(v)) for k, v in found.items() if len(v) == 1 and k not in refused}, rejected, status
+
+
 # Defect wording of the prepared explanations.
 DEFECT_OPENING = "Le système signale un défaut"
 _FR_FAILURE = re.compile(r"\b(d[ée]fauts?|pannes?|d[ée]faillan\w*|dysfonctionn\w*)\b", re.I)
