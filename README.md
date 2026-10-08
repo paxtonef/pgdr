@@ -15,6 +15,8 @@ this version, capability by capability. The `docs/architecture/`
 directory holds each phase's (P0-P8) own findings and freeze documents;
 `docs/release/` holds the v2 release-freeze documents that supersede
 nothing but consolidate everything.
+Requirement « Langue de la notice — parcours francophone » (not implemented):
+`docs/exigences/LANGUE_NOTICE_PARCOURS_FRANCOPHONE.md`.
 
 ## Quick start (CLI)
 
