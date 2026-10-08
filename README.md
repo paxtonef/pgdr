@@ -120,11 +120,23 @@ vérifié par PGDR… »; « La notice n'indique pas ce point. » needs a VALIDA
 classification covering the entry (`covered_entry_ids`) and is never used
 when the entry has linked warnings.
 
-Variant groups (`pgdr.v1_contenu`): identical image files are grouped
-automatically; look-alike files only via a VALIDATED `PGDR_V1_GROUPS`. The
-driver is asked only the documented distinguishing elements (displayed
-message, fixed/flashing), each choice with its source; « Je ne sais pas » /
-« Aucun de ceux-ci », or nothing distinctive documented → colour fallback.
+Title (V1 T2): « Premier Constat Constructeur — à partir des voyants
+sélectionnés par vous dans le catalogue. Aucune reconnaissance sur photo. »
+The photo parcours keeps its own T2.
+
+Ambiguous pictograms (`pgdr.v1_contenu`): identical image files are grouped
+automatically; look-alike candidate groups come from `PGDR_V1_GROUPS`
+(validated: everywhere; draft: development trial only, marked « Groupe en
+brouillon, non validé »). The driver is asked only the documented
+distinguishing elements (displayed message, fixed/flashing), each choice with
+its source; a choice resolves the group. Otherwise (« Je ne sais pas »,
+« Aucun de ceux-ci », or nothing distinctive) the group is shown as ambiguous:
+the limit, the texts identical word for word in every variant (with pages),
+then each variant's own complete passage under « Indiqué seulement pour ».
+The red/uncertain screen stays on offer when a variant is red or cites a
+stop. The internal level is the highest of the variants and its origin
+(PGDR rule or documented passage) is recorded, never displayed. New French
+texts of this display are drafts and marked as such.
 
 Explanations (`PGDR_V1_EXPLANATIONS`): prepared in advance, three parts, every
 sentence anchored verbatim (invalid anchor → that entry's explanation is

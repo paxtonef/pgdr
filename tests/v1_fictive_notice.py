@@ -50,8 +50,15 @@ def _picto(text: str, pos: int, image: str, digest: str, ids: list[str]) -> dict
 
 BELT_MEANING_FIXED = "The fictive belt light stays on while the fictive belt is open."
 BELT_MEANING_FLASHING = "The fictive belt light flashes while the fictive vehicle moves with the belt open."
-TWIN_A = "The fictive twin symbol shows a fictive fault A."
-TWIN_B = "The fictive twin symbol shows a fictive fault B."
+TWIN_COMMON = "Contact a fictive workshop when convenient."
+TWIN_A = "The fictive twin symbol shows a fictive fault A. " + TWIN_COMMON
+TWIN_B = "The fictive twin symbol shows a fictive fault B. " + TWIN_COMMON
+MODE_X = "The fictive mode X is selected."
+MODE_Y = "The fictive mode Y is active on the fictive display."
+ALARM_A = "The fictive alarm light shows a fictive pressure loss."
+ALARM_B = "The fictive alarm light shows a fictive service reminder."
+ALARM_STOP = "If the fictive alarm light comes on while driving, stop the fictive vehicle immediately."
+ALARM_STOP_PHRASE = "stop the fictive vehicle immediately"
 LOOK_A = "The fictive look-alike symbol shows fictive message A."
 LOOK_B = "The fictive look-alike symbol shows fictive message B."
 
@@ -70,6 +77,7 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
         "images/picto.png": png((0, 0, 0), 4),
         "images/belt.png": png((180, 0, 0), 8), "images/twin.png": png((200, 140, 0), 8),
         "images/look_a.png": png((0, 120, 0), 8), "images/look_b.png": png((0, 121, 0), 8),
+        "images/mode.png": png((0, 0, 200), 8), "images/alarm.png": png((210, 10, 10), 8),
     }
     for name, data in files.items():
         (root / name).write_bytes(data)
@@ -112,6 +120,14 @@ def build(root: Path, *, applicability_established: bool = False, approve: bool 
                   displayed_message="LOOK A"),
             entry("fx_green_look_b", "FICTIVE LOOK", "green", "images/look_b.png", LOOK_B, 6, state=None,
                   displayed_message="LOOK B"),
+            # Identical file, nothing distinctive, NO common text (designations differ too); informative.
+            entry("fx_blue_mode_x", "FICTIVE MODE X", "blue", "images/mode.png", MODE_X, 7, state=None),
+            entry("fx_blue_mode_y", "FICTIVE MODE Y", "blue", "images/mode.png", MODE_Y, 8, state=None),
+            # Identical file, red, nothing distinctive; only variant A carries a stop instruction (warning 9).
+            entry("fx_red_alarm_a", "FICTIVE ALARM", "red", "images/alarm.png", ALARM_A, 9, state="flashing",
+                  linked_warnings=[{"number": "9)", "text": ALARM_STOP, "printed_page": "F-10", "pdf_page": 10,
+                                    "inline_pictograms": []}]),
+            entry("fx_red_alarm_b", "FICTIVE ALARM", "red", "images/alarm.png", ALARM_B, 9, state="flashing"),
         ]
     d = {"schema_version": 2, "document_id": "FICTIVE-NOTICE-001", "title": "FICTIVE OWNER HANDBOOK",
          "edition": "Fictive edition 1", "source_authority": "manufacturer_official",
@@ -153,23 +169,30 @@ def build_findings(manifest: Path, *, status: str = "VALIDE", approved_by: str =
     (every structured field « non établi »)."""
     repo = ManifestNoticeRepository(manifest)
     live = {e.entry_id: e for e in repo.entries_for_document("FICTIVE-NOTICE-001")}
+    records = [{
+        "document_id": "FICTIVE-NOTICE-001", "entry_id": "fx_red_fluid",
+        "fingerprint": entry_fingerprint(live["fx_red_fluid"]),
+        "items": {
+            "stop_vehicle_engine_off": {"value": "required", "basis": "documented",
+                                        "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
+            "professional_attention": {"value": "required", "basis": "documented",
+                                       "source_field": "linked_warnings", "source_phrase": CONTACT_PHRASE},
+            "documented_suitability": {"value": "a fictive workshop", "basis": "documented",
+                                       "source_field": "linked_warnings", "source_phrase": "a fictive workshop"},
+        },
+    }]
+    if "fx_red_alarm_a" in live:
+        records.append({"document_id": "FICTIVE-NOTICE-001", "entry_id": "fx_red_alarm_a",
+                        "fingerprint": entry_fingerprint(live["fx_red_alarm_a"]),
+                        "items": {"stop_vehicle_engine_off": {"value": "required", "basis": "documented",
+                                                              "source_field": "linked_warnings",
+                                                              "source_phrase": ALARM_STOP_PHRASE}}})
     doc = {
         "header": {"status": status, "approved_by": approved_by, "approval_date": "2026-10-07",
                    "nature": "FICTIVE derivation layer for tests", "catalogue_content_sha256": repo.catalogue.content_sha256,
                    "covered_entry_ids": [e.entry_id for e in repo.catalogue.entries]},
         "rules": {r: "fictive" for r in ("R-1", "R-2", "R-3", "R-4", "R-5")},
-        "entries": [{
-            "document_id": "FICTIVE-NOTICE-001", "entry_id": "fx_red_fluid",
-            "fingerprint": entry_fingerprint(live["fx_red_fluid"]),
-            "items": {
-                "stop_vehicle_engine_off": {"value": "required", "basis": "documented",
-                                            "source_field": "linked_warnings", "source_phrase": STOP_PHRASE},
-                "professional_attention": {"value": "required", "basis": "documented",
-                                           "source_field": "linked_warnings", "source_phrase": CONTACT_PHRASE},
-                "documented_suitability": {"value": "a fictive workshop", "basis": "documented",
-                                           "source_field": "linked_warnings", "source_phrase": "a fictive workshop"},
-            },
-        }],
+        "entries": records,
     }
     path = manifest.parent / "classement.yaml"
     path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")

@@ -28,6 +28,8 @@ from pgdr.enums import TriageLevel
 from pgdr.errors import ConfigurationError
 
 TOKEN = "v1-constat-token"
+T2_V1 = ("Premier Constat Constructeur — à partir des voyants sélectionnés par vous dans le catalogue. "
+         "Aucune reconnaissance sur photo.")
 ADDED_ACTIONS = ("coupez le contact", "dépann", "reprenez pas la route", "ne roulez pas", "ne pas rouler",
                  "laissez le véhicule à l'arrêt", "switch off")
 
@@ -85,7 +87,7 @@ class TestStopWithoutAddedAction:
         wire(monkeypatch, notice)
         r = confirm(client, ["fx_red_fluid"])
         p = r["premier_constat"]["presentation"]
-        assert p["title"] == APPROVED_BANNERS["T2"][0] and p["end"] == APPROVED_BANNERS["T8"][0]
+        assert p["title"] == T2_V1 and p["end"] == APPROVED_BANNERS["T8"][0]
         e = entry(r, "fx_red_fluid")
         assert e["selected_label"] == "Voyant sélectionné par vous"
         assert all(pt["label"] == vc.LABELS["unverified"] and pt["quotes"] == [] for pt in e["points"])
@@ -155,10 +157,38 @@ class TestTwoLabels:
             v1.load_v1_findings(fx.build_findings(notice, status="BROUILLON_NON_VALIDE"), ManifestNoticeRepository(notice))
 
 
+def ambiguous(r) -> list[dict]:
+    return r["premier_constat"]["presentation"]["ambiguous"]
+
+
+class TestT2:
+    def test_v1_title_exact(self, monkeypatch, notice, client):
+        wire(monkeypatch, notice)
+        assert confirm(client, ["fx_green_lamps"])["premier_constat"]["presentation"]["title"] == T2_V1
+        assert vc.T2_V1 == T2_V1
+
+    def test_photo_parcours_t2_unchanged(self, tmp_path):
+        original = ("Premier Constat Constructeur",
+                    "Ce constat reprend ce que la notice du constructeur indique pour le voyant identifié sur votre photo. "
+                    "Lorsque la notice donne une consigne — par exemple arrêter le véhicule ou couper le contact — cette "
+                    "consigne s'applique : suivez-la.",
+                    "Ce constat ne recherche pas la cause mécanique de la panne et ne remplace pas l'examen du véhicule "
+                    "par un professionnel.")
+        assert APPROVED_BANNERS["T2"] == original
+        # The photo parcours presenter renders exactly that original T2, never the V1 title.
+        from pgdr.application.part1_first_finding import build_manufacturer_first_finding
+        repo = ManifestNoticeRepository(fx.build(tmp_path / "n"))
+        e = repo.entries_for_document("FICTIVE-NOTICE-001")[0]
+        finding = build_manufacturer_first_finding([(e, "visual_provider_match")], mapping={})
+        assert web.present_first_finding(finding)["banner"] == list(original)
+        assert T2_V1 not in web._PHOTO_HTML and T2_V1 not in json.dumps(web.present_first_finding(finding), ensure_ascii=False)
+
+
 class TestVariantGroups:
     def test_identical_files_grouped_automatically(self, grouped):
         c = ManifestNoticeRepository(grouped).catalogue
-        assert vc.auto_groups(c) == [("fx_red_belt_fixed", "fx_red_belt_flashing"), ("fx_amber_twin_a", "fx_amber_twin_b")]
+        assert vc.auto_groups(c) == [("fx_red_belt_fixed", "fx_red_belt_flashing"), ("fx_amber_twin_a", "fx_amber_twin_b"),
+                                     ("fx_blue_mode_x", "fx_blue_mode_y"), ("fx_red_alarm_a", "fx_red_alarm_b")]
 
     def test_question_with_documented_elements_and_sources(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
@@ -167,21 +197,107 @@ class TestVariantGroups:
         (q,) = r["questions"]
         assert [(c["entry_id"], [e["value"] for e in c["elements"]]) for c in q["choices"]] == [
             ("fx_red_belt_fixed", ["fixe"]), ("fx_red_belt_flashing", ["clignotant"])]
-        assert q["choices"][0]["source"]["text"] == fx.BELT_MEANING_FIXED
         assert q["choices"][1]["source"] == {"designation": "FICTIVE BELT", "page_reference": "F-4", "pdf_page": 4,
                                              "text": "The fictive belt light flashes."}
         out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": q["group"], "answer": "fx_red_belt_flashing"}).json()
-        assert out["phase"] == "restitution"
+        # A choice resolves the group: only that variant is restituted.
+        assert out["phase"] == "restitution" and ambiguous(out) == []
         assert [s["entry_id"] for s in out["sections"]] == ["fx_red_belt_flashing"]
+        assert [e["entry_id"] for e in out["premier_constat"]["presentation"]["entries"]] == ["fx_red_belt_flashing"]
 
-    def test_dont_know_or_none_goes_to_existing_fallback(self, monkeypatch, grouped, client):
+    def test_dont_know_or_none_shows_the_ambiguity_never_a_choice(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
         for answer in ("dont_know", "none"):
             r = confirm(client, ["fx_red_belt_flashing"])
             out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": r["questions"][0]["group"], "answer": answer}).json()
-            assert out["phase"] == "colour" and "premier_constat" not in out
-            s = client.post(f"/api/v1/parcours/{r['pid']}/colour", json={"colour": "rouge"}).json()
-            assert s["screen"]["key"] == "red_or_uncertain"
+            assert out["phase"] == "restitution" and out["premier_constat"]["presentation"]["entries"] == []
+            (b,) = ambiguous(out)
+            assert [v["entry"]["entry_id"] for v in b["variants"]] == ["fx_red_belt_fixed", "fx_red_belt_flashing"]
+            assert b["red_offer"] == vc.DRAFT_LABELS["red_offer"]  # red variants
+
+    def test_indistinguishable_with_common_information(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped)
+        r = confirm(client, ["fx_amber_twin_b"])
+        assert r["phase"] == "restitution" and "questions" not in r
+        (b,) = ambiguous(r)
+        assert b["limit"] == vc.DRAFT_LABELS["limit"] and b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
+        assert [c["text"] for c in b["common"]] == ["FICTIVE TWIN", fx.TWIN_COMMON] and b["no_common"] is None
+        assert b["common"][1]["sources"] == [
+            {"entry_id": "fx_amber_twin_a", "manual_order": 6, "field": "Texte de la notice", "printed_page": "F-5", "pdf_page": 5},
+            {"entry_id": "fx_amber_twin_b", "manual_order": 7, "field": "Texte de la notice", "printed_page": "F-5", "pdf_page": 5}]
+        # Each variant: its own complete passage, under « Indiqué seulement pour ».
+        a_, b_ = b["variants"]
+        assert a_["only_for"] == "Indiqué seulement pour : FICTIVE TWIN"
+        assert a_["entry"]["manufacturer_text"]["documented_meaning"] == fx.TWIN_A
+        assert b_["entry"]["manufacturer_text"]["documented_meaning"] == fx.TWIN_B
+        assert a_["condition"]["state"] == vc.DRAFT_LABELS["not_documented"]
+
+    def test_indistinguishable_without_common_information(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped)
+        (b,) = ambiguous(confirm(client, ["fx_blue_mode_x"]))
+        assert b["common"] == [] and b["no_common"] == "Aucune information commune n'est citée par la notice pour ces voyants."
+
+    def test_entirely_informative_group_no_stop_no_fallback(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped)
+        for ids in (["fx_blue_mode_y"], ["fx_amber_twin_a"]):
+            r = confirm(client, ids)
+            assert r["phase"] == "restitution"
+            (b,) = ambiguous(r)
+            assert b["red_offer"] is None and r["premier_constat"]["presentation"]["red_screen"] is None
+            assert r["premier_constat"]["triage"]["level"] != "emergency_stop"
+            assert not [rr for rr in r["premier_constat"]["triage"]["r5_rows"]]
+
+    def test_variant_with_stop_kept_under_its_condition_red_offered_highest_level(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped, findings_path=fx.build_findings(grouped))
+        r = confirm(client, ["fx_red_alarm_b"])
+        (b,) = ambiguous(r)
+        a_, b_ = b["variants"]
+        assert a_["entry"]["manufacturer_text"]["linked_warnings"] == [{"number": "9)", "text": fx.ALARM_STOP}]
+        assert next(pt for pt in a_["entry"]["points"] if pt["key"] == "stop")["quotes"] == [fx.ALARM_STOP_PHRASE]
+        assert b_["entry"]["manufacturer_text"]["linked_warnings"] == []
+        assert fx.ALARM_STOP not in [c["text"] for c in b["common"]]  # never presented as valid for all
+        assert b["red_offer"] and r["premier_constat"]["presentation"]["red_screen"]["key"] == "red_or_uncertain"
+        t = r["premier_constat"]["triage"]
+        # Highest of its variants (alarm A's cited stop), even though B was the image clicked.
+        assert t["level"] == "emergency_stop" and t["r5_rows"] == ["R-5:stop_vehicle_engine_off:fx_red_alarm_a"]
+        text = json.dumps(r["premier_constat"]["presentation"], ensure_ascii=False).lower()
+        assert not [a for a in ADDED_ACTIONS if a in text]
+
+    def test_level_never_comes_from_ambiguity_alone(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped)
+        t_group = confirm(client, ["fx_blue_mode_x"])["premier_constat"]["triage"]
+        t_alone = v1.premier_constat(v1.Parcours(vehicle={}), ["fx_blue_mode_x", "fx_blue_mode_y"])["triage"]
+        assert t_group["level"] == t_alone["level"] and t_group["triggered_rules"] == t_alone["triggered_rules"]
+
+    def test_resolved_light_keeps_its_constat_beside_an_ambiguous_group(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped, explanations_path=fx.build_explanations(grouped))
+        r = confirm(client, ["fx_red_fluid", "fx_amber_twin_a"])
+        p = r["premier_constat"]["presentation"]
+        assert [e["entry_id"] for e in p["entries"]] == ["fx_red_fluid"]
+        assert p["entries"][0]["explanation"]["mention"] == "Explication en brouillon, non validée"
+        assert [s["entry_id"] for s in r["sections"]] == ["fx_red_fluid"]
+        (b,) = ambiguous(r)
+        assert [v["entry"]["entry_id"] for v in b["variants"]] == ["fx_amber_twin_a", "fx_amber_twin_b"]
+
+    def test_candidate_group_draft_only_in_dev_trial_and_marked(self, monkeypatch, grouped, client):
+        w = wire(monkeypatch, grouped, groups_path=fx.build_groups(grouped, status="BROUILLON_NON_VALIDE"))
+        assert w.groups_status == "draft_dev_trial"
+        r = confirm(client, ["fx_green_look_a"])
+        assert r["phase"] == "clarification"
+        out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": r["questions"][0]["group"], "answer": "dont_know"}).json()
+        assert ambiguous(out)[0]["group_draft"] == "Groupe en brouillon, non validé"
+        # Outside the development trial a draft group is not used at all.
+        m = fx.build(grouped.parent / "prod", with_groups=True, applicability_established=True)
+        w = wire(monkeypatch, m, dev_trial=False, groups_path=fx.build_groups(m, status="BROUILLON_NON_VALIDE"))
+        assert w.groups_status.startswith("refused")
+        assert confirm(client, ["fx_green_look_a"])["phase"] == "restitution"
+
+    def test_validated_candidate_group_unmarked(self, monkeypatch, grouped, client):
+        wire(monkeypatch, grouped, groups_path=fx.build_groups(grouped))
+        r = confirm(client, ["fx_green_look_a"])
+        assert [[e["value"] for e in c["elements"]] for c in r["questions"][0]["choices"]] == [["LOOK A"], ["LOOK B"]]
+        out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": r["questions"][0]["group"], "answer": "none"}).json()
+        assert ambiguous(out)[0]["group_draft"] is None
 
     def test_never_chosen_for_the_driver(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
@@ -190,24 +306,39 @@ class TestVariantGroups:
         assert client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": g, "answer": "fx_green_lamps"}).status_code == 400
         assert client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": g + 99, "answer": "none"}).status_code == 409
 
-    def test_no_distinctive_element_fallback_without_question(self, monkeypatch, grouped, client):
-        wire(monkeypatch, grouped)
-        r = confirm(client, ["fx_amber_twin_b"])
-        assert r["phase"] == "colour" and r["reason"] == "group_without_distinction" and "questions" not in r
-
-    def test_lookalike_group_only_when_validated(self, monkeypatch, grouped, client):
-        wire(monkeypatch, grouped, groups_path=fx.build_groups(grouped, status="BROUILLON_NON_VALIDE"))
-        assert confirm(client, ["fx_green_look_a"])["phase"] == "restitution"
-        wire(monkeypatch, grouped, groups_path=fx.build_groups(grouped))
-        r = confirm(client, ["fx_green_look_a"])
-        assert r["phase"] == "clarification"
-        assert [[e["value"] for e in c["elements"]] for c in r["questions"][0]["choices"]] == [["LOOK A"], ["LOOK B"]]
-
     def test_return_resets_clarification_keeps_selection(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped)
         r = confirm(client, ["fx_red_belt_fixed", "fx_green_lamps"])
         back = client.post(f"/api/v1/parcours/{r['pid']}/return").json()
         assert back["phase"] == "catalogue" and back["selection"] == ["fx_green_lamps", "fx_red_belt_fixed"]
+
+
+class TestLevelOrigin:
+    def test_documented_passage_sets_the_level(self, monkeypatch, notice, client):
+        wire(monkeypatch, notice, findings_path=fx.build_findings(notice))
+        o = confirm(client, ["fx_red_fluid"])["premier_constat"]["triage"]["origin"]
+        assert {"origin": "passage documenté", "rule": "R-5:stop_vehicle_engine_off:fx_red_fluid",
+                "entry_id": "fx_red_fluid", "citation": fx.STOP_PHRASE, "sets_level": True} in o
+
+    def test_pgdr_rule_sets_the_level(self, monkeypatch, tmp_path, client):
+        m = fx.build(tmp_path / "n")
+        d = fx.load(m)
+        d["entries"][0]["manufacturer_designation"] = "FICTIVE LOW BRAKE FLUID"
+        fx.approve_manifest(d)
+        fx.save(m, d)
+        wire(monkeypatch, m)
+        o = confirm(client, ["fx_red_fluid"])["premier_constat"]["triage"]["origin"]
+        assert o == [{"origin": "règle PGDR déclenchée", "rule": "PGDR-SAF-012", "name": "Voyant frein rouge", "sets_level": True}]
+
+    def test_default_rule_when_nothing_fires(self, monkeypatch, notice, client):
+        wire(monkeypatch, notice)
+        o = confirm(client, ["fx_green_lamps"])["premier_constat"]["triage"]["origin"]
+        assert o == [{"origin": "règle PGDR par défaut (aucun signal)", "rule": "default", "name": None, "sets_level": True}]
+
+    def test_level_and_origin_never_in_the_page(self):
+        js = v1.V1_HTML
+        for word in ("triage", "origin", "engine_level", "r5_rows"):
+            assert word not in js
 
 
 class TestExplanations:

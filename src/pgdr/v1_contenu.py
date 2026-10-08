@@ -36,6 +36,22 @@ LABELS = {
     "unverified": "Point pas encore vérifié par PGDR. Lisez la consigne du constructeur ci-dessous.",
     "draft_explanation": "Explication en brouillon, non validée",
 }
+# V1 title, owner wording (2026-10-08), exact. The photo parcours keeps its own T2.
+T2_V1 = ("Premier Constat Constructeur — à partir des voyants sélectionnés par vous dans le catalogue. "
+         "Aucune reconnaissance sur photo.")
+# New French texts for ambiguous pictograms: DRAFT, shown with DRAFT_LABELS["draft_texts"].
+DRAFT_LABELS = {
+    "limit": ("Ce pictogramme correspond à plusieurs voyants de la notice, et rien dans la notice ne permet de "
+              "les distinguer ici. PGDR ne choisit pas à votre place."),
+    "common": "Indiqué par la notice pour tous ces voyants",
+    "no_common": "Aucune information commune n'est citée par la notice pour ces voyants.",
+    "only_for": "Indiqué seulement pour : ",
+    "condition": "Condition",
+    "not_documented": "non documenté",
+    "red_offer": "Voir l'écran prévu pour un voyant rouge ou incertain",
+    "draft_texts": "Textes de cette section en brouillon, non validés",
+    "group_draft": "Groupe en brouillon, non validé",
+}
 EXPLANATION_PARTS = (("indique", "Ce que la notice indique"), ("maintenant", "Quoi faire maintenant"),
                      ("inconnu", "Ce qui reste inconnu"))
 ANCHOR_FIELDS = ("manufacturer_designation", "documented_meaning", "documented_instruction", "displayed_message",
@@ -86,12 +102,17 @@ def auto_groups(catalogue: NoticeCatalogue) -> list[tuple[str, ...]]:
     return [tuple(ids) for ids in by_image.values() if len(ids) > 1]
 
 
-def load_groups(path, catalogue: NoticeCatalogue) -> list[tuple[str, ...]]:
-    """Groups of visually identical images with different files: used only
-    when VALIDATED by name and bound to this catalogue."""
+def load_groups(path, catalogue: NoticeCatalogue, *, dev_trial: bool = False) -> tuple[list[tuple[str, ...]], bool]:
+    """Candidate groups of visually identical images with different files.
+    Returns (groups, draft). VALIDATED by name and bound to this catalogue:
+    used everywhere. Draft: used ONLY in the development trial (marked)."""
     raw = _read(path)
     header = _header(raw, catalogue)
-    if not _validated(header):
+    if _validated(header):
+        draft = False
+    elif header.get("status") == "BROUILLON_NON_VALIDE" and dev_trial:
+        draft = True
+    else:
         raise ContentRejected("groups not validated")
     known = {e.entry_id for e in catalogue.entries}
     groups = []
@@ -100,7 +121,7 @@ def load_groups(path, catalogue: NoticeCatalogue) -> list[tuple[str, ...]]:
         if len(ids) < 2 or len(set(ids)) != len(ids) or any(x not in known for x in ids):
             raise ContentRejected("invalid group")
         groups.append(ids)
-    return groups
+    return groups, draft
 
 
 def merge_groups(catalogue: NoticeCatalogue, *group_lists) -> list[tuple[str, ...]]:
@@ -131,6 +152,57 @@ def distinguishing_fields(variants: list[NoticeEntry]) -> list[str]:
               if all(getattr(v, f) not in (None, "unknown") for v in variants)]
     keys = [tuple(getattr(v, f) for f in fields) for v in variants]
     return fields if fields and len(set(keys)) == len(keys) else []
+
+
+_SENTENCE = re.compile(r"(?<=[.!?])\s+")
+
+
+def text_units(e: NoticeEntry) -> list[dict]:
+    """Every manufacturer text of an entry, verbatim, as the units compared
+    across variants: designation, each sentence of the meaning / instruction,
+    displayed message, start-up sentence, each linked warning. With page."""
+    page = {"printed_page": e.page_reference, "pdf_page": e.pdf_page}
+    units = [{"field": "Désignation", "text": e.designation, **page}]
+    for label, text in (("Texte de la notice", e.documented_meaning), ("Consigne", e.documented_instruction)):
+        units += [{"field": label, "text": s, **page} for s in _SENTENCE.split(text or "") if s.strip()]
+    if e.displayed_message:
+        units.append({"field": "Message affiché", "text": e.displayed_message, **page})
+    if e.documented_startup_check:
+        units.append({"field": "Au démarrage", "text": e.documented_startup_check, **page})
+    units += [{"field": f"Avertissement {w.number}", "text": w.text, "printed_page": w.printed_page,
+               "pdf_page": w.pdf_page} for w in e.linked_warnings]
+    return units
+
+
+def common_texts(variants: list[NoticeEntry]) -> list[dict]:
+    """Only the texts identical word for word in EVERY variant, with each
+    variant's field and page. No synthesis, no generalisation."""
+    per_variant = [{u["text"]: u for u in reversed(text_units(v))} for v in variants]
+    out, seen = [], set()
+    for u in text_units(variants[0]):
+        t = u["text"]
+        if t in seen or not all(t in pv for pv in per_variant):
+            continue
+        seen.add(t)
+        out.append({"text": t, "sources": [{"entry_id": v.entry_id, "manual_order": v.manual_order, **{
+            k: pv[t][k] for k in ("field", "printed_page", "pdf_page")}} for v, pv in zip(variants, per_variant)]})
+    return out
+
+
+def stop_cited(e: NoticeEntry, finding: Optional[EntryFinding] = None) -> bool:
+    """A stop instruction is cited for this entry: a documented stop item of
+    a validated classification, or the word « stop » in its passage or its
+    linked warnings (conservative: may over-detect, never under-detect)."""
+    if finding is not None and finding.stop_vehicle_engine_off.basis.value == "documented":
+        return True
+    texts = [e.documented_meaning, e.documented_instruction or ""] + [w.text for w in e.linked_warnings]
+    return any(_STOP_WORD.search(t) for t in texts)
+
+
+def red_offer(variants: list[NoticeEntry], findings: Mapping[str, EntryFinding]) -> bool:
+    """An ambiguous group keeps the red/uncertain screen on offer when at
+    least one variant is red or cites a stop. Never from ambiguity alone."""
+    return any(v.colour == "red" or stop_cited(v, findings.get(v.entry_id)) for v in variants)
 
 
 # --- explanations ---------------------------------------------------------------

@@ -233,7 +233,11 @@ def test_v1_complete_parcours_two_images_one_red(page: Page, live_server):
 
     # Premier Constat, separated from and above the exact passage, then T3/T8.
     pc = page.locator("#premier-constat")
-    expect(pc.locator("h1")).to_have_text(APPROVED_BANNERS["T2"][0])
+    expect(pc.locator("h1")).to_have_text(
+        "Premier Constat Constructeur — à partir des voyants sélectionnés par vous dans le catalogue. "
+        "Aucune reconnaissance sur photo.")
+    for hidden in ("PGDR-SAF", "emergency_stop", "do_not_drive", "monitor_and_document", "passage documenté"):
+        assert hidden not in page.locator("body").inner_text()
     expect(pc.locator(".finding-entry")).to_have_count(2)
     red_pc = pc.locator('.finding-entry[data-entry-id="fx_red_fluid"]')
     expect(red_pc.locator(".selected")).to_contain_text("Voyant sélectionné par vous")
@@ -284,9 +288,10 @@ def test_v1_premier_constat_with_validated_stop_classification(page: Page, live_
         w.findings, w.findings_status, w.findings_covered = saved
 
 
-def test_v1_variant_group_question_then_dont_know_fallback(page: Page, live_server):
-    """Same image, two passages told apart by fixed/flashing: the driver answers; « Je ne sais
-    pas » -> existing colour fallback. A group with nothing distinctive -> fallback, no question."""
+def test_v1_variant_group_question_then_ambiguity_with_red_offer(page: Page, live_server):
+    """Same image, two passages told apart by fixed/flashing: the driver answers. « Je ne sais
+    pas » -> the ambiguity is shown (both variants, complete), the red screen stays on offer.
+    An informative group with nothing distinctive -> ambiguity shown, no red offer."""
     _open(page, live_server)
     _to_catalogue(page, None)
     page.click('.tile[data-entry-id="fx_red_belt_fixed"]')
@@ -301,27 +306,40 @@ def test_v1_variant_group_question_then_dont_know_fallback(page: Page, live_serv
     expect(choices.nth(1)).to_contain_text("page de la notice F-4 (page PDF 4)")
     _no_english_ui(page)
     page.click("#clarification-questions button.dont-know-variant")
-    expect(page.locator("#screen-colour")).to_be_visible()
-    page.click('#colour-choices button[data-colour="rouge"]')
+    expect(page.locator("#screen-restitution")).to_be_visible()
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block).to_have_count(1)
+    expect(block.locator(".limit")).to_have_text(
+        "Ce pictogramme correspond à plusieurs voyants de la notice, et rien dans la notice ne permet de les "
+        "distinguer ici. PGDR ne choisit pas à votre place.")
+    expect(block.locator(".variant")).to_have_count(2)
+    expect(block.locator(".variant").nth(0)).to_contain_text("Indiqué seulement pour : FICTIVE BELT")
+    expect(block.locator(".variant").nth(1).locator(".meaning")).to_have_text(fx.BELT_MEANING_FLASHING)
+    expect(block.locator(".draft-mention").first).to_be_visible()
+    _no_english_ui(page)
+    block.locator("button.red-offer").click()
     expect(page.locator("#fallback-content h1")).to_have_text(_french_screens()["red_or_uncertain"]["heading"])
 
-    # Back to images, answer this time: the driver's own choice is restituted.
+    # Back to images, answer this time: only the driver's own choice is restituted.
     page.click("#screen-fallback button.return")
     expect(page.locator("#screen-catalogue")).to_be_visible()
     page.click("#selection-continue")
     page.click("#confirm")
     page.click('#clarification-questions button.choice[data-entry-id="fx_red_belt_flashing"]')
     expect(page.locator("article.restitution")).to_have_count(1)
-    assert page.locator("article.restitution").get_attribute("data-entry-id") == "fx_red_belt_flashing"
+    assert page.locator("#restitution article.restitution").get_attribute("data-entry-id") == "fx_red_belt_flashing"
+    expect(page.locator("#premier-constat .ambiguous")).to_have_count(0)
 
-    # Nothing distinctive documented: straight to the colour fallback.
+    # Informative group, nothing distinctive, no common text: ambiguity shown, no red offer.
     page.click("#screen-restitution button.return")
     page.click('.tile[data-entry-id="fx_red_belt_fixed"]')
-    page.click('.tile[data-entry-id="fx_amber_twin_a"]')
+    page.click('.tile[data-entry-id="fx_blue_mode_x"]')
     page.click("#selection-continue")
     page.click("#confirm")
-    expect(page.locator("#screen-colour")).to_be_visible()
-    expect(page.locator("#screen-clarification")).to_be_hidden()
+    expect(page.locator("#screen-restitution")).to_be_visible()
+    block = page.locator("#premier-constat .ambiguous")
+    expect(block.locator(".no-common")).to_have_text("Aucune information commune n'est citée par la notice pour ces voyants.")
+    expect(block.locator("button.red-offer")).to_have_count(0)
 
 
 def test_v1_fallback_red_then_other_colour_with_return(page: Page, live_server):

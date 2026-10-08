@@ -61,8 +61,9 @@ from pydantic import BaseModel, Field
 
 from pgdr.application.part1_first_finding import (
     APPROVED_BANNERS, Part1Mapping, banner, build_manufacturer_first_finding, compose_triage, load_part1_mapping,
-    raised_instructions,
+    raised_instructions, severity_rank,
 )
+from pgdr.config_loader import load_safety_rules
 from pgdr.application.photo_first import warning_indicator_from_entry
 from pgdr.errors import ConfigurationError
 from pgdr.models import Consent, DiagnosticSession, InitialComplaint, PreGarageDiagnosticRequest
@@ -130,7 +131,8 @@ class V1Wiring:
     findings: Part1Mapping = field(default_factory=dict)
     findings_status: str = "absent"
     findings_covered: frozenset = frozenset()   # entries a VALIDATED classification reviewed
-    groups: list = field(default_factory=list)  # merged: identical files + validated groups
+    groups: list = field(default_factory=list)  # merged: identical files + candidate groups
+    group_draft: list = field(default_factory=list)  # aligned with groups: True = uses a DRAFT candidate
     groups_status: str = "absent"
     explanations: dict = field(default_factory=dict)
     explanations_rejected: dict = field(default_factory=dict)
@@ -153,14 +155,16 @@ def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, d
             w.findings_covered = frozenset(header.get("covered_entry_ids") or [])
         except ConfigurationError as exc:
             w.findings_status = f"refused: {exc}"
-    validated_groups = []
+    candidates, candidates_draft = [], False
     if groups_path:
         try:
-            validated_groups = vc.load_groups(groups_path, c)
-            w.groups_status = "validated"
+            candidates, candidates_draft = vc.load_groups(groups_path, c, dev_trial=dev_trial)
+            w.groups_status = "draft_dev_trial" if candidates_draft else "validated"
         except vc.ContentRejected as exc:
             w.groups_status = f"refused: {exc}"
-    w.groups = vc.merge_groups(c, vc.auto_groups(c), validated_groups)
+    auto = vc.auto_groups(c)
+    w.groups = vc.merge_groups(c, auto, candidates)
+    w.group_draft = [candidates_draft and g not in auto for g in w.groups]
     if explanations_path:
         try:
             w.explanations, w.explanations_rejected, w.explanations_status = vc.load_explanations(
@@ -476,16 +480,42 @@ def selection(pid: str, req: SelectionRequest):
 _safety_engine: Optional[SafetyEngine] = None
 
 
-def premier_constat(p: Parcours, entry_ids: list[str]) -> dict:
-    """The existing Part 1 chain on the driver's confirmed (and, for a
-    variant group, clarified) selection, presented with the V1 labels."""
+def _level_origin(engine, triage, rows, finding) -> list[dict]:
+    """Where the INTERNAL level comes from: a PGDR rule that fired, or a
+    documented passage (R-5 row on a cited phrase). Never displayed, never
+    used to soften an instruction."""
+    names = {r["id"]: r.get("name") for r in load_safety_rules().get("rules", [])}
+    out = [{"origin": "règle PGDR déclenchée", "rule": rid, "name": names.get(rid)} for rid in engine.triggered_rules]
+    if not engine.triggered_rules:
+        out.append({"origin": "règle PGDR par défaut (aucun signal)", "rule": "default", "name": None})
+    items = {f.provenance.entry_id: f for f in finding.entries}
+    for row in rows:
+        _, kind, entry_id = row.split(":", 2)
+        item = {"stop_vehicle_engine_off": "stop_vehicle_engine_off", "operability_do_not_drive": "operability",
+                "professional_without_delay": "professional_attention"}[kind]
+        out.append({"origin": "passage documenté", "rule": row, "entry_id": entry_id,
+                    "citation": getattr(items[entry_id], item).source_phrase})
+    raised = severity_rank(triage.level) > severity_rank(engine.level)
+    for o in out:
+        o["sets_level"] = (o["origin"] == "passage documenté") == raised
+    return out
+
+
+def premier_constat(p: Parcours, entry_ids: list[str], ambiguous: list[int] = (), pid: str = "") -> dict:
+    """The existing Part 1 chain on the driver's confirmed selection.
+    `entry_ids`: resolved entries (Premier Constat + explanation each).
+    `ambiguous`: groups left indistinguishable; ALL their variants count for
+    the internal level (the highest; R-5 never lowers), none is chosen."""
     global _safety_engine
     if _safety_engine is None:
         _safety_engine = SafetyEngine()
     w = get_wiring()
     c = _catalogue()
     live = {e.entry_id: e for e in w.repository.entries_for_document(c.document.document_id)}
-    chosen = [live[x] for x in entry_ids]
+    groups = w.groups
+    variant_ids = {x for i in ambiguous for x in groups[i]}
+    eval_ids = [e.entry_id for e in c.entries if e.entry_id in set(entry_ids) | variant_ids]
+    chosen = [live[x] for x in eval_ids]
     session = DiagnosticSession(request=PreGarageDiagnosticRequest(
         request_id=f"PGDR-V1-{uuid.uuid4().hex[:12]}",
         vehicle_identity_context=VehicleIdentityContext(
@@ -498,23 +528,49 @@ def premier_constat(p: Parcours, entry_ids: list[str]) -> dict:
     engine = _safety_engine.evaluate(session)
     finding = build_manufacturer_first_finding(
         [(e, "user_selection") for e in chosen], mapping=w.findings,
-        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in entry_ids},
+        linked_warnings={x: [lw.text for lw in c.entry(x).linked_warnings] for x in eval_ids},
     )
     # R-5: may raise the SafetyEngine level, never lower it. Its wording is
     # not displayed in V1 (internal level only).
     triage, rows = compose_triage(engine, finding, raised_instruction=raised_instructions(finding))
-    entries = [vc.present_entry(f, c.entry(f.provenance.entry_id), covered=f.provenance.entry_id in w.findings_covered,
-                                explanation=w.explanations.get(f.provenance.entry_id),
-                                t5_label=APPROVED_BANNERS["T5"][0]) for f in finding.entries]
+    by_id = {f.provenance.entry_id: f for f in finding.entries}
+
+    def present(x):
+        return vc.present_entry(by_id[x], c.entry(x), covered=x in w.findings_covered,
+                                explanation=w.explanations.get(x), t5_label=APPROVED_BANNERS["T5"][0])
+
+    blocks = []
+    for i in ambiguous:
+        variants = [c.entry(x) for x in groups[i]]
+        common = vc.common_texts(variants)
+        blocks.append({
+            "group": i, "image": _asset_url(pid, variants[0].image_sha256),
+            "group_draft": vc.DRAFT_LABELS["group_draft"] if w.group_draft[i] else None,
+            "draft_texts": vc.DRAFT_LABELS["draft_texts"], "limit": vc.DRAFT_LABELS["limit"],
+            "common_title": vc.DRAFT_LABELS["common"], "common": common,
+            "no_common": None if common else vc.DRAFT_LABELS["no_common"],
+            "variants": [{
+                "only_for": vc.DRAFT_LABELS["only_for"] + v.designation,
+                "only_for_label": vc.DRAFT_LABELS["only_for"],
+                "condition": {"label": vc.DRAFT_LABELS["condition"],
+                              "state": STATE_LABELS.get(v.state, v.state) if v.state else vc.DRAFT_LABELS["not_documented"],
+                              "displayed_message": v.displayed_message or vc.DRAFT_LABELS["not_documented"]},
+                "entry": present(v.entry_id), "section": _section(pid, v)} for v in variants],
+            "red_offer": vc.DRAFT_LABELS["red_offer"] if vc.red_offer(variants, by_id) else None,
+        })
+    red_screen = None
+    if any(b["red_offer"] for b in blocks):
+        s = load_fallback_screens()["screens"]["red_or_uncertain"]
+        red_screen = {"key": "red_or_uncertain", "lang": "fr", "heading": s["heading"], "paragraphs": list(s["paragraphs"])}
     return {
         "presentation": {
-            "title": APPROVED_BANNERS["T2"][0], "entries": entries,
+            "title": vc.T2_V1, "entries": [present(x) for x in entry_ids], "ambiguous": blocks, "red_screen": red_screen,
             "sources": list(banner("T3", document_title=c.document.document_title, document_id=c.document.document_id)),
             "end": APPROVED_BANNERS["T8"][0],
         },
         "triage": {"level": triage.level.value, "driving_assessment": triage.driving_assessment.value,
                    "engine_level": engine.level.value, "triggered_rules": list(triage.triggered_rules),
-                   "r5_rows": rows},
+                   "r5_rows": rows, "origin": _level_origin(engine, triage, rows, finding)},
         "classification_status": w.findings_status,
         "explanations_status": w.explanations_status,
     }
@@ -555,23 +611,33 @@ def _question(pid: str, i: int) -> dict:
 def _after_confirmation(pid: str, p: Parcours) -> dict:
     c = _catalogue()
     pending = [i for i in _hit_groups(p) if i not in p.resolved]
-    for i in pending:
+    for i in list(pending):
         if not vc.distinguishing_fields([c.entry(x) for x in get_wiring().groups[i]]):
-            # The notice documents nothing that tells these passages apart: fallback, no question.
-            p.phase = "colour"
-            return {**_state(pid, p), "reason": "group_without_distinction"}
+            # Nothing documented tells these passages apart: no question, shown as ambiguous.
+            p.resolved[i] = AMBIGUOUS
+            pending.remove(i)
     if pending:
         p.phase = "clarification"
         return {**_state(pid, p), "questions": [_question(pid, i) for i in pending]}
     groups = get_wiring().groups
-    chosen = set()
+    chosen, ambiguous = set(), []
     for x in p.selection:
         gi = next((i for i, g in enumerate(groups) if x in g), None)
-        chosen.add(p.resolved[gi] if gi is not None else x)
+        if gi is None:
+            chosen.add(x)
+        elif p.resolved[gi] == AMBIGUOUS:
+            if gi not in ambiguous:
+                ambiguous.append(gi)
+        else:
+            chosen.add(p.resolved[gi])
     resolved_ids = [e.entry_id for e in c.entries if e.entry_id in chosen]  # manual order
     p.phase = "restitution"
-    return {**_state(pid, p), "document": _document(c), "premier_constat": premier_constat(p, resolved_ids),
+    return {**_state(pid, p), "document": _document(c),
+            "premier_constat": premier_constat(p, resolved_ids, sorted(ambiguous), pid),
             "sections": [_section(pid, c.entry(x)) for x in resolved_ids]}
+
+
+AMBIGUOUS = "__ambiguous__"
 
 
 class ClarifyRequest(BaseModel):
@@ -587,8 +653,9 @@ def clarify(pid: str, req: ClarifyRequest):
     if p.phase != "clarification" or req.group not in _hit_groups(p) or req.group in p.resolved:
         raise HTTPException(status_code=409, detail="Aucune précision n'est attendue pour ce groupe.")
     if req.answer in ("dont_know", "none"):
-        p.phase = "colour"  # existing fallback, by the colour the driver declares
-        return {**_state(pid, p), "reason": req.answer}
+        # Never chosen for the driver: the group is shown as ambiguous.
+        p.resolved[req.group] = AMBIGUOUS
+        return _after_confirmation(pid, p)
     if req.answer not in groups[req.group]:
         raise HTTPException(status_code=400, detail="Choix invalide.")
     p.resolved[req.group] = req.answer
@@ -688,6 +755,12 @@ V1_HTML = """<!DOCTYPE html>
  .question img { max-width: 96px; display: block; }
  .question button.choice { display: block; text-align: left; width: 100%; }
  .choice-source { display: block; font-size: .85em; color: #444; }
+ .ambiguous { border: 3px dashed #b26a00; border-radius: 8px; padding: 12px; margin: 14px 0; }
+ .ambiguous > img { max-width: 96px; }
+ .limit { font-weight: 700; }
+ .variant { border-left: 4px solid #b26a00; padding-left: 10px; }
+ .condition { font-weight: 600; }
+ button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
  [hidden] { display: none !important; }
 </style>
@@ -880,12 +953,8 @@ function manufacturer(article, label, value) {   // manufacturer text: notice la
 // labels, or verbatim manufacturer text); nothing is composed here.
 function sec(parent, title, cls) { const s = make("div", null, cls); s.append(make("h3", title)); parent.append(s); return s; }
 function quote(parent, text) { const q = make("blockquote", text); q.lang = noticeLang; parent.append(q); }
-function renderConstat(pc) {
-  const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
-  root.append(make("h1", p.title));
-  for (const e of p.entries) {
-    const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
-    const h = make("p", null, "selected"); h.append(make("strong", e.selected_label + " : "));
+function renderEntry(e, block, headingLabel) {
+    const h = make("p", null, "selected"); h.append(make("strong", headingLabel));
     const d = make("span", e.designation); d.lang = noticeLang; h.append(d); block.append(h);
     if (e.explanation) {
       const ex = make("div", null, "explanation");
@@ -913,7 +982,41 @@ function renderConstat(pc) {
       const q = make("blockquote", null, "linked-warning"); q.append(make("strong", "Avertissement " + w.number + " "));
       const s = make("span", w.text); s.lang = noticeLang; q.append(s); mt.append(q);
     }
+}
+function renderAmbiguous(b, root, redScreen) {
+    const box = make("div", null, "ambiguous"); box.dataset.group = b.group; root.append(box);
+    const img = make("img"); img.src = b.image; img.alt = ""; box.append(img);
+    if (b.group_draft) box.append(make("p", b.group_draft, "draft-mention group-draft"));
+    box.append(make("p", b.draft_texts, "draft-mention"));
+    box.append(make("p", b.limit, "limit"));
+    const cs = sec(box, b.common_title, "common");
+    if (b.no_common) cs.append(make("p", b.no_common, "no-common"));
+    for (const c of b.common) {
+      quote(cs, c.text);
+      cs.append(make("p", c.sources.map(s => "n° " + (s.manual_order + 1) + " — " + s.field + ", page de la notice "
+                                        + s.printed_page + " (page PDF " + s.pdf_page + ")").join(" ; "), "page"));
+    }
+    for (const v of b.variants) {
+      const vb = make("div", null, "variant finding-entry"); vb.dataset.entryId = v.entry.entry_id; box.append(vb);
+      const cond = make("p", v.condition.label + " : état du voyant « " + v.condition.state + " » · message affiché « "
+                        + v.condition.displayed_message + " »", "condition");
+      renderEntry(v.entry, vb, v.only_for_label);
+      vb.insertBefore(cond, vb.children[1] || null);
+      vb.append(buildArticle(v.section));
+    }
+    if (b.red_offer) {
+      const btn = make("button", b.red_offer, "red-offer");
+      btn.onclick = () => showScreen(redScreen); box.append(btn);
+    }
+}
+function renderConstat(pc) {
+  const p = pc.presentation, root = el("premier-constat"); root.replaceChildren();
+  root.append(make("h1", p.title));
+  for (const e of p.entries) {
+    const block = make("div", null, "finding-entry"); block.dataset.entryId = e.entry_id; root.append(block);
+    renderEntry(e, block, e.selected_label + " : ");
   }
+  for (const b of p.ambiguous) renderAmbiguous(b, root, p.red_screen);
   const src = el("part1-sources"); src.replaceChildren();
   if (p.sources.length) { const s = sec(src, "Source", "source"); for (const line of p.sources) s.append(make("p", line)); }
   el("part1-t8").textContent = p.end;
@@ -953,13 +1056,7 @@ function outcome(s) {
 el("confirm").onclick = async () => {
   try { outcome(await call("/confirm", {entry_ids: state.selection, confirmed: true})); } catch (e) { fail(e); }
 };
-function renderRestitution(s) {
-    noticeLang = s.document.language || "en";
-    const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
-    const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
-    renderConstat(s.premier_constat);
-    const root = el("restitution"); root.replaceChildren();
-    for (const x of s.sections) {
+function buildArticle(x) {
       const a = make("article", null, "restitution"); a.dataset.entryId = x.entry_id;
       const img = make("img"); img.src = x.image; img.alt = x.designation; a.append(img);
       const h = make("h2", x.designation); h.lang = noticeLang; a.append(h);
@@ -986,8 +1083,15 @@ function renderRestitution(s) {
           a.append(wd);
         }
       }
-      root.append(a);
-    }
+      return a;
+}
+function renderRestitution(s) {
+    noticeLang = s.document.language || "en";
+    const doc = el("restitution-document"); doc.textContent = s.document.title + " — " + s.document.edition; doc.lang = noticeLang;
+    const ln = el("language-note"); ln.textContent = s.document.language_note || ""; ln.hidden = !s.document.language_note;
+    renderConstat(s.premier_constat);
+    const root = el("restitution"); root.replaceChildren();
+    for (const x of s.sections) root.append(buildArticle(x));
     show("screen-restitution");
 }
 async function noMatch(reason) {
@@ -998,6 +1102,12 @@ async function noMatch(reason) {
 }
 el("none-match").onclick = () => noMatch("none_match");
 el("dont-know").onclick = () => noMatch("dont_know");
+function showScreen(screen) {
+    const box = el("fallback-content"); box.replaceChildren(make("h1", screen.heading));
+    box.dataset.screen = screen.key;
+    for (const p of screen.paragraphs) box.append(make("p", p));
+    show("screen-fallback");
+}
 async function chooseColour(key) {
   try {
     const s = await call("/colour", {colour: key}); applyState(s);
