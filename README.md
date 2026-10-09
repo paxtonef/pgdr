@@ -17,6 +17,8 @@ directory holds each phase's (P0-P8) own findings and freeze documents;
 nothing but consolidate everything.
 Requirement « Langue de la notice — parcours francophone » (not implemented):
 `docs/exigences/LANGUE_NOTICE_PARCOURS_FRANCOPHONE.md`.
+VIR → PGDR handoff contract (proposal, not validated):
+`docs/exigences/CONTRAT_VIR_PGDR.md`.
 
 ## Quick start (CLI)
 
