@@ -1263,6 +1263,8 @@ V1_HTML = """<!DOCTYPE html>
  details.details { margin: 8px 0; padding: 4px 10px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; }
  details.details > summary { cursor: pointer; color: #1f4e79; font-weight: 600; }
  .end { margin-top: 16px; padding: 12px; background: #f0f0f0; border-radius: 6px; font-weight: 600; }
+ #product-record { margin-top: 16px; padding: 12px; border-radius: 6px; border: 2px solid #1f4e79; }
+ #product-record[data-status="not_recorded"] { border-color: #a40000; background: #fff4f4; }
  [hidden] { display: none !important; }
 </style>
 </head>
@@ -1350,6 +1352,7 @@ V1_HTML = """<!DOCTYPE html>
   <div id="restitution"></div>
   <div id="part1-sources"></div>
   <div id="part1-t8" class="end"></div>
+  <div id="product-record" hidden></div>
   <button class="return">Revenir aux images de la notice</button>
  </section>
 
@@ -1851,7 +1854,27 @@ function renderRestitution(s) {
     const root = el("restitution"); root.replaceChildren();
     for (const x of s.sections) root.append(buildArticle(x));
     translateAll(document.body);
+    renderProductRecord(s.product_record);
     show("screen-restitution");
+}
+// Served by the product, the restitution may carry the product's own record status (texts given by the product,
+// only once its record is written or refused). Served by PGDR alone: nothing is said about any record.
+function renderProductRecord(r) {
+  const box = el("product-record"); box.replaceChildren();
+  if (!r || !r.message) { box.hidden = true; box.removeAttribute("data-status"); box.removeAttribute("role"); return; }
+  box.dataset.status = r.status;
+  box.setAttribute("role", r.status === "not_recorded" ? "alert" : "status");
+  box.append(make("p", r.message));
+  if (r.retry && r.retry_label) {
+    const b = make("button", r.retry_label); b.id = "record-retry";
+    b.onclick = async () => {
+      b.disabled = true;
+      try { renderProductRecord((await call("/record", {})).product_record); }
+      catch (e) { b.disabled = false; box.querySelector("p").textContent = r.message + " (" + e.message + ")"; }
+    };
+    box.append(b);
+  }
+  box.hidden = false;
 }
 async function noMatch(reason) {
   try {

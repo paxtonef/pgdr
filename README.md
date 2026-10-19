@@ -107,6 +107,23 @@ whose applicability to the vehicle is not established is refused, except in
 the local development trial (`outils/essai_dev_v1/lancer.sh`, which sets
 `PGDR_V1_DEV_TRIAL=1`, a SIMULATED VIR identity, and shows a permanent banner).
 
+Market of the notice (bloc 3B): neither the notice format (manifest, review)
+nor the identity VIR hands over carries a market, so whether the notice was
+written for the vehicle's market is **not verifiable** and is never presented
+as met; it is not inferred from the registration country. No existing rule of
+PGDR makes the market a condition of opening (the conditions are the identity
+keys, the notice's vehicle and period, and the review's
+`applicability_established`): this uncertainty therefore does not block
+opening under the current rules. Making it a condition is an owner's decision
+(a market in the notice review and in VIR's identity); no rule is added here.
+
+Record of a confirmed result (bloc 3B): PGDR keeps nothing. Served by the
+product, the restitution may carry `product_record` (the product's own status
+and texts, given only once the product has written its record or failed to);
+the page then shows it under the restitution and, when the product offers it,
+a retry that posts `/record` to the product alone. Served by PGDR alone, the
+page says nothing about a record.
+
 After confirmation the parcours shows the existing **Premier Constat
 Constructeur** (Part 1): the unmodified SafetyEngine on the selected entries,
 `build_manufacturer_first_finding` with origin `user_selection` (the driver's
