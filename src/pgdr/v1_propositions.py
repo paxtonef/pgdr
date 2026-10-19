@@ -27,7 +27,9 @@ Boundaries, all deliberate:
 
 Configuration (environment, read once by pgdr.v1_parcours.get_wiring):
   PGDR_V1_TRI        absent or empty: no proposals. "faux": the fake
-                     transport below. Any other value is refused (no real
+                     transport below, for a signalled trial only
+                     (PGDR_V1_ESSAI_TRI=1, permanent banner on every screen);
+                     refused otherwise. Any other value is refused (no real
                      component is authorised).
   PGDR_V1_TRI_FAUX   with "faux": JSON file {"nature": FAUX_NATURE,
                      "destinataire": "<name shown in the consent>",
@@ -295,12 +297,18 @@ def proposer(photo: bytes, candidats: list[Candidat], transport: Optional[Transp
     return Resultat(propositions=tuple(x for x in ordre if x in ids))
 
 
-def charger_transport(mode: Optional[str], faux_path: Optional[str]) -> tuple[Optional[TransportTri], str]:
-    """(transport, status). Only the fake exists; any other mode is refused."""
+def charger_transport(mode: Optional[str], faux_path: Optional[str],
+                      essai: bool = False) -> tuple[Optional[TransportTri], str]:
+    """(transport, status). Only the fake exists; any other mode is refused.
+    The fake is a verification tool, never a production component: from the
+    configuration it is accepted only for a signalled trial (`essai`,
+    PGDR_V1_ESSAI_TRI=1), whose screens then carry a permanent banner."""
     if not mode:
         return None, "absent"
     if mode != "faux":
         return None, "refused: composant réel non autorisé"
+    if not essai:
+        return None, "refused: faux transport hors essai signalé (PGDR_V1_ESSAI_TRI=1)"
     if not faux_path:
         return None, "refused: PGDR_V1_TRI_FAUX requis"
     try:

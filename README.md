@@ -195,9 +195,12 @@ complete catalogue in the notice order, with the reason (this fallback says
 nothing about the sorting quality). The only transport is
 `PGDR_V1_TRI=faux` (`PGDR_V1_TRI_FAUX`: JSON with `nature` « faux transport
 d'essai », `destinataire`, canned answers keyed by the SHA-256 of the
-stripped photo, `defaut`), marked as such on the screen; any other value is
-refused — no real component is authorised, and the real sorting quality is
-not demonstrated. The new interface texts are draft labels
+stripped photo, `defaut`), marked as such on the screen. It is a verification
+tool, never a production component: it is accepted only for a signalled trial
+(`PGDR_V1_ESSAI_TRI=1`), whose screens all carry a permanent banner; without
+that declaration it is refused and the complete catalogue is shown with its
+explanation (bloc 3A). Any other value is refused — no real component is
+authorised, and the real sorting quality is not demonstrated. The new interface texts are draft labels
 (`propositions.*`), validatable through `PGDR_V1_LABELS`.
 
 Tests: `tests/test_v1_parcours.py`, `tests/test_v1_premier_constat.py`,

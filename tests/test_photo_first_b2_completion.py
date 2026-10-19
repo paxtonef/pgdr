@@ -258,13 +258,16 @@ class TestRealBytesThroughRealPipeline:
         assert state.safety_state.triage.level == TriageLevel.MONITOR_AND_DOCUMENT
         assert len(web._media_store) == 0
 
-    def test_a_provider_that_ignores_the_bytes_is_detectable(self, env):
+    def test_a_provider_that_ignores_the_bytes_is_detectable(self, env, caplog):
         """The deterministic provider is keyed on the bytes: unscripted bytes
-        fail loudly, so a wiring that lost the image could not silently pass."""
+        fail loudly, so a wiring that lost the image could not silently pass.
+        Since bloc 3A the failure is a plain 500 and one log line naming the
+        exception class (pgdr.access_log), never the request data."""
         client, provider = env
         sid = _intake(client)
-        with pytest.raises(AssertionError):
-            _upload(client, sid, sup.png_bytes(99))
+        r = _upload(client, sid, sup.png_bytes(99))
+        assert r.status_code == 500
+        assert "POST /api/photo/{session_id}/media exception AssertionError" in caplog.text
 
 
 # ------------------------------------------------------------------ MATCH ---

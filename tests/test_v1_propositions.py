@@ -225,19 +225,19 @@ class TestConfiguration:
         {"nature": vp.FAUX_NATURE, "destinataire": RECIPIENT, "reponses": {}, "defaut": {"panne": False}},
     ])
     def test_invalid_fake_refused(self, obj, tmp_path):
-        t, status = vp.charger_transport("faux", self.write(tmp_path, obj))
+        t, status = vp.charger_transport("faux", self.write(tmp_path, obj), essai=True)
         assert t is None and status.startswith("refused: ")
 
     def test_fake_needs_its_file(self, tmp_path):
-        assert vp.charger_transport("faux", None) == (None, "refused: PGDR_V1_TRI_FAUX requis")
-        t, status = vp.charger_transport("faux", str(tmp_path / "missing.json"))
+        assert vp.charger_transport("faux", None, essai=True) == (None, "refused: PGDR_V1_TRI_FAUX requis")
+        t, status = vp.charger_transport("faux", str(tmp_path / "missing.json"), essai=True)
         assert t is None and status.startswith("refused: ")
 
     def test_fake_keyed_by_stripped_photo_digest(self, tmp_path):
         clean = fx.png((10, 20, 30), 8)
         t, status = vp.charger_transport("faux", self.write(tmp_path, {
             "nature": vp.FAUX_NATURE, "destinataire": RECIPIENT,
-            "reponses": {hashlib.sha256(clean).hexdigest(): {"texte": answer(["fx_green_lamps"])}}}))
+            "reponses": {hashlib.sha256(clean).hexdigest(): {"texte": answer(["fx_green_lamps"])}}}), essai=True)
         assert status == "faux" and t.faux is True and t.destinataire == RECIPIENT
         assert t.proposer(vp.DemandeTri(clean, "image/png", ())) == answer(["fx_green_lamps"])
         with pytest.raises(ConnectionError):  # unknown photo, no default: failure
@@ -248,6 +248,7 @@ class TestConfiguration:
         monkeypatch.setattr(v1, "_wiring", None)
         monkeypatch.setenv("PGDR_V1_TRI", "faux")
         monkeypatch.setenv("PGDR_V1_TRI_FAUX", path)
+        monkeypatch.setenv("PGDR_V1_ESSAI_TRI", "1")   # signalled trial (bloc 3A)
         monkeypatch.delenv("PGDR_V1_MANIFEST", raising=False)
         w = v1.get_wiring()
         assert w.tri_status == "faux" and w.tri.destinataire == RECIPIENT

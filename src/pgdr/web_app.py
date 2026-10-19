@@ -33,6 +33,7 @@ from pgdr.models import (
     Answer, Consent, DiagnosticSession, InitialComplaint,
     PreGarageDiagnosticRequest, UserContext, VehicleIdentityContext,
 )
+from pgdr.access_log import AccessLogMiddleware
 from pgdr.adapters.peugeot_dashboard_knowledge import PeugeotDashboardKnowledgeAdapter
 from pgdr.application.interpretation_validation import InterpretationValidationError
 from pgdr.application.part1_first_finding import (
@@ -83,6 +84,8 @@ app = FastAPI(
     description="Outil d'aide à la structuration d'un problème véhicule avant le garage",
     version="2.0.0",
 )
+# Route templates only, never a path, a query or a body (pgdr.access_log): launch with --no-access-log.
+app.add_middleware(AccessLogMiddleware)
 
 
 # --- Health/Readiness endpoint ---
@@ -1445,4 +1448,4 @@ app.include_router(_v1_router)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+    uvicorn.run(app, host="127.0.0.1", port=8000, access_log=False)

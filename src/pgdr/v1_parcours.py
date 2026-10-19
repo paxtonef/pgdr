@@ -57,7 +57,9 @@ Configuration (environment):
                         structured field is « non établi ».
   PGDR_V1_TRI, PGDR_V1_TRI_FAUX  optional: the sorting transport for the
                         proposed images (pgdr.v1_propositions). Absent: no
-                        proposals, the catalogue is shown directly.
+                        proposals, the catalogue is shown directly. The only
+                        transport, a fake, needs PGDR_V1_ESSAI_TRI=1 (signalled
+                        trial, permanent banner); never in production.
 
 Premier Constat (after explicit confirmation): the EXISTING Part 1 pieces,
 unmodified in behaviour -- unmodified SafetyEngine on the selected entries,
@@ -90,6 +92,7 @@ from pgdr.application.part1_first_finding import (
 )
 from pgdr.config_loader import load_safety_rules
 from pgdr.application.photo_first import warning_indicator_from_entry
+from pgdr.application.vehicle_applicability import applicability_identity_gaps
 from pgdr.errors import ConfigurationError
 from pgdr.models import (
     ConditionalStop, ConditionStatus, Consent, DiagnosticSession, FindingBasis, InitialComplaint,
@@ -105,6 +108,8 @@ from pgdr.domain.dashboard_knowledge import VehicleApplicabilityContext
 from pgdr.models import VehicleIdentityContext
 
 DEV_TRIAL_BANNER = "Essai de développement — Applicabilité de cette notice au véhicule non confirmée"
+# Signalled trial of the fake sorting transport (PGDR_V1_ESSAI_TRI=1): on every screen, never a production component.
+TRI_TRIAL_BANNER = "Essai signalé — Images proposées par un faux composant de tri : aucune analyse de votre photo"
 
 CONSENT_TEXT = (
     "Ce parcours affiche les images de voyants de la notice du constructeur de votre véhicule. "
@@ -298,7 +303,8 @@ def get_wiring() -> V1Wiring:
                 repo = ManifestNoticeRepository(path)
             except NoticeRejected as exc:
                 error = str(exc)
-        tri, tri_status = vp.charger_transport(os.environ.get("PGDR_V1_TRI"), os.environ.get("PGDR_V1_TRI_FAUX"))
+        tri, tri_status = vp.charger_transport(os.environ.get("PGDR_V1_TRI"), os.environ.get("PGDR_V1_TRI_FAUX"),
+                                               essai=os.environ.get("PGDR_V1_ESSAI_TRI") == "1")
         _wiring = build_wiring(repo, dev_trial=dev, dev_vehicle=vehicle, error=error,
                                findings_path=os.environ.get("PGDR_V1_FINDINGS"),
                                groups_path=os.environ.get("PGDR_V1_GROUPS"),
@@ -415,6 +421,7 @@ def _state(pid: str, p: Parcours) -> dict:
     return {
         "parcours_id": pid, "phase": p.phase,
         "dev_trial_banner": DEV_TRIAL_BANNER if w.dev_trial else None,
+        "tri_trial_banner": TRI_TRIAL_BANNER if w.tri is not None and w.tri.faux else None,
         "vehicle": {k: p.vehicle.get(k) for k in ("manufacturer", "model", "generation")},
         # With a sorting transport, the photo may leave the device (on request only): the consent says so.
         "consent_text": list(CONSENT_TEXT) if w.tri is None else
@@ -475,17 +482,57 @@ def draft_texts(keys, drafted: bool = False) -> Optional[str]:
     return vc.DRAFT_LABELS["draft_texts"] if drafted or not set(keys) <= w.labels_validated else None
 
 
+# VIR statuses carrying one identity; the others (several candidates, too little data, contradictions) carry
+# none that could be taken without a default choice.
+_SINGLE_IDENTITY_STATUSES = frozenset({"resolved", "provisionally_resolved"})
+
+
+def _year(value) -> Optional[int]:
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and len(value) >= 4 and value[:4].isdigit():
+        return int(value[:4])
+    return None
+
+
+def _period_shortfall(identity: VehicleIdentityContext, vehicle: VehicleApplicabilityContext,
+                      period) -> Optional[str]:
+    """None when the notice declares no period, or when the vehicle's production, established by VIR, falls
+    within it; "unknown" when it is not established; "outside" otherwise. Compared by year."""
+    start, end = _year(period.start_date), _year(period.end_date)
+    if start is None and end is None:
+        return None
+    doubtful = set(identity.unresolved_fields) | set(identity.contradictions)
+    years = [y for path, y in (("production.year", vehicle.production_year),
+                               ("production.start_date", _year(vehicle.production_start_date)))
+             if y is not None and path not in doubtful and "production" not in doubtful]
+    if not years:
+        return "unknown"
+    return None if all((start is None or y >= start) and (end is None or y <= end) for y in years) else "outside"
+
+
 def _open_parcours(identity: VehicleIdentityContext) -> dict:
+    """Opened only on the applicability criteria the notice and the identity carry -- the identity keys the
+    notice is resolved on, each established by VIR (present, neither unresolved nor contradictory), the
+    notice's vehicle and its period when it declares one -- never on VIR's global status alone, and never by
+    a default choice."""
     w = get_wiring()
     if w.repository is None:
         return {"status": "notice_unavailable",
                 "message": "La notice de ce véhicule n'est pas disponible (revue absente ou obsolète, ou fichier non conforme)."}
-    if identity.resolution_status.value != "resolved":
-        return {"status": "vehicle_identity_insufficient",
-                "message": "L'identité du véhicule n'est pas établie par VIR."}
+    insufficient = {"status": "vehicle_identity_insufficient",
+                    "message": "L'identité du véhicule n'est pas établie par VIR."}
+    if identity.resolution_status.value not in _SINGLE_IDENTITY_STATUSES or applicability_identity_gaps(identity):
+        return insufficient
     vehicle = VehicleApplicabilityContext.from_pgdr_vehicle_identity_dict(identity.vehicle_identity)
+    not_supported = {"status": "vehicle_not_supported", "message": "Aucune notice disponible pour ce véhicule."}
     if not w.repository.matches(vehicle):
-        return {"status": "vehicle_not_supported", "message": "Aucune notice disponible pour ce véhicule."}
+        return not_supported
+    period = _period_shortfall(identity, vehicle, w.repository.catalogue.document.applicability_period)
+    if period == "unknown":
+        return insufficient
+    if period == "outside":
+        return not_supported
     if not w.repository.catalogue.applicability_established and not w.dev_trial:
         return {"status": "applicability_not_confirmed",
                 "message": "L'applicabilité de la notice à ce véhicule n'est pas confirmée."}
@@ -1326,8 +1373,13 @@ let state = null, selected = new Set(), photoUrl = null, noticeLang = "en";
 function el(id) { return document.getElementById(id); }
 function make(tag, text, cls) { const n = document.createElement(tag); if (text != null) n.textContent = text; if (cls) n.className = cls; return n; }
 function show(id) { document.querySelectorAll("section.screen").forEach(s => s.hidden = (s.id !== id)); window.scrollTo(0, 0); }
+// Served by the product, the page carries the product's session-bound CSRF token; it goes with every write.
+const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+const csrf = csrfMeta ? csrfMeta.getAttribute("content") : null;
 async function call(path, body) {
-  const r = await fetch(api + path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const headers = {"Content-Type": "application/json"};
+  if (csrf) headers["X-CSRF-Token"] = csrf;
+  const r = await fetch(api + path, body === undefined ? {} : {method: "POST", headers: headers, body: JSON.stringify(body)});
   if (!r.ok) { let d = ""; try { d = (await r.json()).detail; } catch (e) {} throw new Error(d || ("Erreur " + r.status)); }
   return r.json();
 }
@@ -1335,7 +1387,8 @@ function fail(e) { el("error-text").textContent = e.message; show("screen-error"
 function applyState(s) {
   state = s;
   const b = el("dev-banner");
-  if (s.dev_trial_banner) { b.textContent = s.dev_trial_banner; b.hidden = false; } else { b.hidden = true; }
+  const banners = [s.dev_trial_banner, s.tri_trial_banner].filter(Boolean);
+  if (banners.length) { b.textContent = banners.join(" — "); b.hidden = false; } else { b.hidden = true; }
 }
 function dropPhoto() {
   if (photoUrl) { URL.revokeObjectURL(photoUrl); photoUrl = null; }
