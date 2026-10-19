@@ -17,13 +17,29 @@ requirements:
   evidence_refs:
   - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
 - id: PGDR-V1-02
-  required_result: Afficher toutes les images de la notice applicable avec tri facultatif.
+  required_result: Afficher toutes les images de la notice applicable ; de 1 à 3 images
+    proposées à partir de la photo sont autorisées comme aide à la sélection (décision
+    du propriétaire du 2026-10-19).
+  decision: 'Décision du propriétaire du 2026-10-19 : prévaut sur la version précédente
+    de PGDR-V1-02 (« le modèle trie seulement, sans repérage, filtre, masque ou affirmation »)
+    pour ce point ; 1 à 3 images proposées sont autorisées comme aide à la sélection.
+    L’ancien chantier vision (clos le 2026-09-30) reste clos.'
   constraints:
-  - Le modèle trie seulement, sans repérage, filtre, masque ou affirmation.
-  - 'Sans modèle ou tri invalide : ordre de la notice.'
-  - Bouton voir toutes les images toujours visible.
+  - 'Propositions issues uniquement du catalogue applicable : 1 à 3 identifiants, sans
+    score, classement, libellé ni affirmation ; présentées dans l’ordre de la notice.'
+  - Une proposition est une aide, jamais une identification établie ; aucune sélection
+    automatique ni recommandation avant la confirmation du conducteur.
+  - 'Tri non configuré, en panne, réponse invalide ou sans proposition : catalogue complet
+    dans l’ordre de la notice, avec explication (ce repli ne valide pas la qualité du tri).'
+  - Catalogue complet accessible à tout moment (bouton voir toutes les images toujours visible).
+  - 'Contexte du tri : la photo sans ses métadonnées et les images du catalogue applicable ;
+    aucune plaque, aucun VIN ni donnée de carte grise.'
+  - Photo transmise seulement à la demande du conducteur, après un accord nommant le
+    destinataire ; non conservée.
   evidence_refs:
-  - Consigne V1 du propriétaire ; raccordement applicatif à réaliser
+  - Consigne V1 du propriétaire ; décision du propriétaire du 2026-10-19
+  - 'Raccordement : pgdr.v1_propositions (faux transport de tri uniquement, aucun composant
+    réel autorisé ; qualité réelle non démontrée)'
 - id: PGDR-V1-03
   required_result: Permettre la sélection humaine multiple et restituer exactement
     les passages et pages.

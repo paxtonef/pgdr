@@ -63,6 +63,13 @@ Une modification du manifeste, de l’ordre, des textes, des avertissements lié
 
 ## Tri : essai nécessaire, désactivé par défaut
 
+> **Décision du propriétaire du 2026-10-19** (PGDR-V1-02 mise à jour) : dans le parcours web /v1, 1 à 3 images
+> proposées sont autorisées comme aide à la sélection ; le catalogue complet reste accessible à tout moment. Le
+> parcours n'utilise pas ce script : il a son propre contrat strict (`{"proposed_entry_ids": [...]}`, 0 à 3
+> identifiants du catalogue applicable, sans score ni libellé), dans `pgdr.v1_propositions`, avec un faux transport
+> de tri uniquement. Aucun composant réel n'est autorisé ; la qualité réelle du tri n'est pas démontrée. Le script
+> ci-dessous (ordre complet, sans filtre) est inchangé et n'est raccordé à rien.
+
 Sans modèle :
 
 ```bash

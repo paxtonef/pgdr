@@ -1,14 +1,22 @@
-"""V1 parcours (web): VIR -> consent -> optional photo -> complete manual
-catalogue -> driver's own selection -> explicit confirmation -> exact
-restitution of the manufacturer notice, with a colour fallback.
+"""V1 parcours (web): VIR -> consent -> optional photo -> [1 to 3 proposed
+images] -> complete manual catalogue -> driver's own selection -> explicit
+confirmation -> exact restitution of the manufacturer notice, with a colour
+fallback.
 
 Boundaries, all deliberate:
   * The catalogue comes from a read-only ManifestNoticeRepository (verified
     review fingerprint and file digests). Nothing is written anywhere.
-  * The photo never leaves the browser: no upload endpoint exists. It is not
-    analysed, not transmitted and not kept (object URL revoked in the page).
-  * No model / vision provider is called. The selection is the driver's own,
-    by stable entry_id.
+  * Without a sorting transport (PGDR_V1_TRI, see pgdr.v1_propositions) the
+    photo never leaves the browser. With one, it is sent only when the driver
+    asks for proposed images, after a separate consent naming the recipient,
+    with its metadata removed; it is held for that request only and never
+    kept. Owner decision of 2026-10-19 (supersedes PGDR-V1-02 on this point):
+    1 to 3 proposed images are an aid to the selection, never an
+    identification -- nothing is selected, ranked or scored for the driver,
+    and the complete catalogue stays reachable at every moment.
+  * No real model / vision provider is called: the only sorting transport is
+    a fake for verification. The selection is the driver's own, by stable
+    entry_id.
   * Restitution is exact: one section per chosen image, texts as stored, no
     merging, deduplication or rewording.
   * Fallback screens use the VALIDATED French translation only
@@ -47,6 +55,9 @@ Configuration (environment):
                         VALIDE, bound to the catalogue content fingerprint).
                         Absent, draft or mismatching = not used: every
                         structured field is « non établi ».
+  PGDR_V1_TRI, PGDR_V1_TRI_FAUX  optional: the sorting transport for the
+                        proposed images (pgdr.v1_propositions). Absent: no
+                        proposals, the catalogue is shown directly.
 
 Premier Constat (after explicit confirmation): the EXISTING Part 1 pieces,
 unmodified in behaviour -- unmodified SafetyEngine on the selected entries,
@@ -58,6 +69,8 @@ is asked afterwards (decisions C1/C2): the parcours ends with T8.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import dataclasses
 import json
 import os
@@ -84,6 +97,7 @@ from pgdr.models import (
 )
 from pgdr.safety_engine import SafetyEngine
 from pgdr import v1_contenu as vc
+from pgdr import v1_propositions as vp
 from pgdr.adapters.manifest_notice_repository import (
     ManifestNoticeRepository, NoticeCatalogue, NoticeEntry, NoticeRejected, Pictogram,
 )
@@ -164,14 +178,19 @@ class V1Wiring:
     # Entries whose validated « action attendue » presentation is refused because another VALIDATED
     # classification (Part 1, stop_vehicle_engine_off REQUIRED) makes them an immediate stop.
     action_refused: dict = field(default_factory=dict)
+    # Sorting transport for the proposed images (pgdr.v1_propositions): None = no proposals.
+    tri: Optional[vp.TransportTri] = None
+    tri_status: str = "absent"
 
 
 def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
                  findings_path=None, groups_path=None, explanations_path=None, situations_path=None,
-                 translations_path=None, labels_path=None) -> V1Wiring:
+                 translations_path=None, labels_path=None, tri=None, tri_status=None) -> V1Wiring:
     """All notice content is loaded and verified ONCE here and then shared by
     every parcours of this process (no re-read, no external fetch)."""
-    w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error)
+    w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error,
+                 tri=tri, tri_status=tri_status or ("faux" if tri is not None and tri.faux else
+                                                    "configured" if tri is not None else "absent"))
     if repo is None:
         return w
     c = repo.catalogue
@@ -279,13 +298,15 @@ def get_wiring() -> V1Wiring:
                 repo = ManifestNoticeRepository(path)
             except NoticeRejected as exc:
                 error = str(exc)
+        tri, tri_status = vp.charger_transport(os.environ.get("PGDR_V1_TRI"), os.environ.get("PGDR_V1_TRI_FAUX"))
         _wiring = build_wiring(repo, dev_trial=dev, dev_vehicle=vehicle, error=error,
                                findings_path=os.environ.get("PGDR_V1_FINDINGS"),
                                groups_path=os.environ.get("PGDR_V1_GROUPS"),
                                explanations_path=os.environ.get("PGDR_V1_EXPLANATIONS"),
                                situations_path=os.environ.get("PGDR_V1_SITUATIONS"),
                                translations_path=os.environ.get("PGDR_V1_TRANSLATIONS"),
-                               labels_path=os.environ.get("PGDR_V1_LABELS"))
+                               labels_path=os.environ.get("PGDR_V1_LABELS"),
+                               tri=tri, tri_status=tri_status)
     return _wiring
 
 
@@ -299,7 +320,10 @@ class Parcours:
     resolved: dict = field(default_factory=dict)  # group index -> entry_id chosen by the driver
     messages: dict = field(default_factory=dict)  # group index -> message typed by the driver, verbatim
     conditions: dict = field(default_factory=dict)  # consigne key -> confirmed / excluded / unknown (driver's answer)
-    phase: str = "vir"  # vir -> consent -> catalogue -> confirmation -> restitution | colour -> fallback
+    propositions: list[str] = field(default_factory=list)  # proposed entry_ids, notice order; never a selection
+    repli: Optional[str] = None  # why the catalogue was shown without proposals (vp.REPLIS)
+    # vir -> consent -> [propositions] -> catalogue -> confirmation -> restitution | colour -> fallback
+    phase: str = "vir"
 
 
 _parcours: Dict[str, Parcours] = {}
@@ -392,11 +416,45 @@ def _state(pid: str, p: Parcours) -> dict:
         "parcours_id": pid, "phase": p.phase,
         "dev_trial_banner": DEV_TRIAL_BANNER if w.dev_trial else None,
         "vehicle": {k: p.vehicle.get(k) for k in ("manufacturer", "model", "generation")},
-        "consent_text": list(CONSENT_TEXT), "consent": p.consent,
+        # With a sorting transport, the photo may leave the device (on request only): the consent says so.
+        "consent_text": list(CONSENT_TEXT) if w.tri is None else
+        [CONSENT_TEXT[0], vc.DRAFT_LABELS["propositions.consentement_general"]],
+        "consent": p.consent,
         "selection": list(p.selection), "confirmed": p.confirmed, "colour": p.colour,
         "colours": [{"key": k, "label": v} for k, v in COLOURS],
         "return_label": load_fallback_screens()["shared"]["return_button"],
+        "propositions": _propositions_offer(),
     }
+
+
+# Interface texts of the proposed-images screens (DRAFT_LABELS keys).
+PROPOSITION_LABEL_KEYS = ("propositions.consentement_general", "propositions.photo_note", "propositions.consentement",
+                          "propositions.demander", "propositions.titre", "propositions.aide", "propositions.ordre",
+                          "propositions.faux", "propositions.valider", "propositions.catalogue")
+
+
+def _propositions_offer() -> dict:
+    """Whether proposed images can be asked for, and the texts of that offer.
+    The recipient named in the consent is the transport's own name, verbatim."""
+    w = get_wiring()
+    if w.tri is None:
+        return {"available": False}
+    t = {k.partition(".")[2]: vc.DRAFT_LABELS[k] for k in PROPOSITION_LABEL_KEYS}
+    t["consentement"] = t["consentement"].replace("{destinataire}", w.tri.destinataire)
+    return {"available": True, "recipient": w.tri.destinataire, "fake": bool(w.tri.faux), "texts": t,
+            "draft_texts": draft_texts(PROPOSITION_LABEL_KEYS)}
+
+
+def _repli(key: Optional[str]) -> Optional[dict]:
+    if key is None:
+        return None
+    label = "propositions.repli." + key
+    return {"key": key, "explanation": vc.DRAFT_LABELS[label], "draft_texts": draft_texts((label,))}
+
+
+def _tiles(pid: str, c: NoticeCatalogue, entry_ids) -> list[dict]:
+    return [{"entry_id": x, "manual_order": c.entry(x).manual_order, "image": _asset_url(pid, c.entry(x).image_sha256),
+             "alt": c.entry(x).designation} for x in entry_ids]
 
 
 # Interface texts of each section (DRAFT_LABELS keys). « Textes de cette section en brouillon » is shown
@@ -523,7 +581,64 @@ def catalogue(pid: str):
         "entries": [{"entry_id": e.entry_id, "manual_order": e.manual_order,
                      "image": _asset_url(pid, e.image_sha256), "alt": e.designation} for e in c.entries],
         "selection": list(p.selection), "colour": p.colour,
+        # Why no proposed images came before this catalogue (never a statement about the warning light).
+        "repli": _repli(p.repli or ("non_configure" if get_wiring().tri is None else None)),
     }
+
+
+class PropositionsRequest(BaseModel):
+    recipient_consent: str = Field(max_length=300)  # the recipient's name, exactly as shown in the consent
+    photo_base64: str = Field(max_length=21_000_000)
+
+
+def _propositions_view(pid: str, p: Parcours) -> dict:
+    offer = _propositions_offer()
+    return {"entries": _tiles(pid, _catalogue(), p.propositions), "texts": offer["texts"], "fake": offer["fake"],
+            "draft_texts": offer["draft_texts"]}
+
+
+@router.post("/api/v1/parcours/{pid}/propositions")
+def propositions(pid: str, req: PropositionsRequest):
+    """1 to 3 proposed images from the driver's photo, or the catalogue with
+    the reason why not. Nothing is selected: the selection stays the
+    driver's, through /selection and /confirm. The photo is used for this
+    request only and is never kept."""
+    p = _get(pid)
+    _require_consent(p)
+    c, w = _catalogue(), get_wiring()
+    if w.tri is None:
+        # Not configured: the photo is not even decoded.
+        p.propositions, p.repli, p.confirmed, p.phase = [], "non_configure", False, "catalogue"
+        return {**_state(pid, p), "proposed": None, "repli": _repli(p.repli)}
+    if req.recipient_consent != w.tri.destinataire:
+        # No byte of the photo is read before a consent naming the recipient.
+        raise HTTPException(status_code=403, detail="Accord nommant le destinataire de la photo requis.")
+    try:
+        photo = base64.b64decode(req.photo_base64, validate=True)
+    except (binascii.Error, ValueError):
+        photo = b""
+    candidats = []
+    for e in c.entries:
+        image = w.repository.asset(e.image_sha256)
+        candidats.append(vp.Candidat(entry_id=e.entry_id, image=image, media_type=vp.media_type(image) or ""))
+    result = vp.proposer(photo, candidats, w.tri)
+    del photo
+    p.propositions, p.repli = list(result.propositions), result.repli
+    p.confirmed = False
+    if result.propositions:
+        p.phase = "propositions"
+        return {**_state(pid, p), "proposed": _propositions_view(pid, p), "repli": None}
+    p.phase = "catalogue"
+    return {**_state(pid, p), "proposed": None, "repli": _repli(result.repli)}
+
+
+@router.get("/api/v1/parcours/{pid}/propositions")
+def get_propositions(pid: str):
+    p = _get(pid)
+    _require_consent(p)
+    if not p.propositions or get_wiring().tri is None:
+        raise HTTPException(status_code=409, detail="Aucune image proposée pour ce parcours.")
+    return {**_state(pid, p), "proposed": _propositions_view(pid, p)}
 
 
 @router.get("/api/v1/parcours/{pid}/asset/{sha}")
@@ -1125,15 +1240,35 @@ V1_HTML = """<!DOCTYPE html>
 
  <section class="screen" id="screen-photo" hidden>
   <h1>Photo du tableau de bord (facultative)</h1>
-  <p>Elle reste sur votre appareil pour que vous puissiez comparer. Elle n'est ni analysée, ni envoyée, ni conservée.</p>
+  <p id="photo-note">Elle reste sur votre appareil pour que vous puissiez comparer. Elle n'est ni analysée, ni envoyée, ni conservée.</p>
   <input type="file" id="photo-input" accept="image/*" capture="environment">
   <img id="photo-preview" alt="Votre photo (sur cet appareil uniquement)" hidden>
   <button id="photo-remove" hidden>Retirer la photo</button><br>
+  <div id="propose-offer" hidden>
+   <p class="draft-mention" hidden></p>
+   <label><input type="checkbox" id="propose-consent"> <span id="propose-consent-text"></span></label><br>
+   <button class="primary" id="photo-propose" disabled></button>
+  </div>
   <button class="primary" id="photo-continue">Voir les images de la notice</button>
+ </section>
+
+ <section class="screen" id="screen-propositions" hidden>
+  <p class="draft-mention" hidden></p>
+  <h1 id="propositions-title"></h1>
+  <p id="propositions-help"></p>
+  <p id="propositions-fake" class="draft-mention" hidden></p>
+  <p id="propositions-order" class="muted"></p>
+  <img id="photo-compare-proposed" alt="Votre photo" hidden style="max-width:200px">
+  <div class="grid" id="propositions-grid"></div>
+  <div class="actions">
+   <button class="primary" id="propositions-continue" disabled></button>
+   <button id="propositions-catalogue"></button>
+  </div>
  </section>
 
  <section class="screen" id="screen-catalogue" hidden>
   <h1>Images de la notice</h1>
+  <div id="catalogue-repli" hidden><p class="draft-mention" hidden></p><p class="repli-text"></p></div>
   <p class="muted">Toutes les images de la notice, dans l'ordre de la notice. Touchez celle ou celles qui correspondent à ce que vous voyez.</p>
   <img id="photo-compare" alt="Votre photo (sur cet appareil uniquement)" hidden style="max-width:200px">
   <div class="grid" id="catalogue-grid"></div>
@@ -1204,10 +1339,11 @@ function applyState(s) {
 }
 function dropPhoto() {
   if (photoUrl) { URL.revokeObjectURL(photoUrl); photoUrl = null; }
-  for (const id of ["photo-preview", "photo-compare"]) { el(id).removeAttribute("src"); el(id).hidden = true; }
-  el("photo-input").value = ""; el("photo-remove").hidden = true;
+  for (const id of ["photo-preview", "photo-compare", "photo-compare-proposed"]) { el(id).removeAttribute("src"); el(id).hidden = true; }
+  el("photo-input").value = ""; el("photo-remove").hidden = true; updatePropose();
 }
 window.addEventListener("pagehide", dropPhoto);
+function draftMention(box, text) { const m = box.querySelector(".draft-mention"); m.textContent = text || ""; m.hidden = !text; }
 
 async function start() {
   if (!pid) { fail(new Error("Ouvrez ce parcours depuis le lien reçu après l'identification de votre véhicule.")); return; }
@@ -1218,6 +1354,7 @@ async function start() {
   selected = new Set(state.selection);
   if (state.phase === "vir") show("screen-vir");
   else if (!state.consent) show("screen-consent");
+  else if (state.phase === "propositions") { try { showPropositions(await call("/propositions")); } catch (e) { await openCatalogue(); } }
   else await openCatalogue();
 }
 
@@ -1227,18 +1364,84 @@ el("consent-continue").onclick = async () => {
     const s = await call("/consent", {accepted: el("consent-box").checked});
     applyState(s);
     if (!s.consent) { el("consent-message").textContent = s.message; return; }
-    show("screen-photo");
+    setupPhoto(); show("screen-photo");
   } catch (e) { fail(e); }
 };
+// Proposed images: offered only when PGDR has a sorting transport. The photo is sent only on the
+// driver's request, after the separate consent naming the recipient, re-encoded first (metadata dropped).
+function setupPhoto() {
+  const o = state.propositions;
+  el("propose-offer").hidden = !o.available;
+  if (!o.available) return;
+  el("photo-note").textContent = o.texts.photo_note;
+  draftMention(el("propose-offer"), o.draft_texts);
+  el("propose-consent-text").textContent = o.texts.consentement;
+  el("photo-propose").textContent = o.texts.demander;
+  updatePropose();
+}
+function updatePropose() { el("photo-propose").disabled = !(photoUrl && el("propose-consent").checked); }
+el("propose-consent").onchange = updatePropose;
 el("photo-input").onchange = () => {
   const f = el("photo-input").files[0];
   if (photoUrl) URL.revokeObjectURL(photoUrl);
-  photoUrl = f ? URL.createObjectURL(f) : null;   // local object URL: the file is never sent
-  for (const id of ["photo-preview", "photo-compare"]) { if (photoUrl) el(id).src = photoUrl; el(id).hidden = !photoUrl; }
-  el("photo-remove").hidden = !photoUrl;
+  photoUrl = f ? URL.createObjectURL(f) : null;   // local object URL: sent only on request (proposed images)
+  for (const id of ["photo-preview", "photo-compare", "photo-compare-proposed"]) { if (photoUrl) el(id).src = photoUrl; el(id).hidden = !photoUrl; }
+  el("photo-remove").hidden = !photoUrl; updatePropose();
 };
 el("photo-remove").onclick = dropPhoto;
 el("photo-continue").onclick = () => openCatalogue().catch(fail);
+function reencoded() {   // pixels only: a canvas re-encoding carries no EXIF/XMP/GPS metadata
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const cv = document.createElement("canvas"); cv.width = img.naturalWidth; cv.height = img.naturalHeight;
+        cv.getContext("2d").drawImage(img, 0, 0);
+        cv.toBlob(b => {
+          if (!b) return resolve("");
+          const r = new FileReader(); r.onload = () => resolve(String(r.result).split(",")[1] || ""); r.onerror = () => resolve(""); r.readAsDataURL(b);
+        }, "image/jpeg", 0.92);
+      } catch (e) { resolve(""); }
+    };
+    img.onerror = () => resolve("");   // unreadable here: nothing is sent, PGDR answers with the catalogue
+    img.src = photoUrl;
+  });
+}
+el("photo-propose").onclick = async () => {
+  if (!photoUrl || !el("propose-consent").checked) return;
+  el("photo-propose").disabled = true;
+  try {
+    const s = await call("/propositions", {recipient_consent: state.propositions.recipient, photo_base64: await reencoded()});
+    applyState(s);
+    if (s.proposed) showPropositions(s); else await openCatalogue();
+  } catch (e) { fail(e); }
+};
+let proposedSel = new Set();
+function showPropositions(s) {
+  const v = s.proposed, t = v.texts;
+  draftMention(el("screen-propositions"), v.draft_texts);
+  el("propositions-title").textContent = t.titre; el("propositions-help").textContent = t.aide;
+  el("propositions-order").textContent = t.ordre;
+  el("propositions-fake").textContent = v.fake ? t.faux : ""; el("propositions-fake").hidden = !v.fake;
+  el("propositions-catalogue").textContent = t.catalogue;
+  proposedSel = new Set();   // nothing is ever selected for the driver
+  const grid = el("propositions-grid"); grid.replaceChildren();
+  const count = () => { el("propositions-continue").textContent = t.valider + " (" + proposedSel.size + ")"; el("propositions-continue").disabled = proposedSel.size === 0; };
+  for (const e of v.entries) {
+    const b = make("button", null, "tile"); b.type = "button"; b.dataset.entryId = e.entry_id; b.setAttribute("aria-pressed", "false");
+    const img = make("img"); img.src = e.image; img.alt = e.alt; img.lang = noticeLang; b.append(img, make("span", "n° " + (e.manual_order + 1), "n"));
+    b.onclick = () => {
+      if (proposedSel.has(e.entry_id)) proposedSel.delete(e.entry_id); else proposedSel.add(e.entry_id);
+      b.setAttribute("aria-pressed", proposedSel.has(e.entry_id) ? "true" : "false"); count();
+    };
+    grid.append(b);
+  }
+  count(); show("screen-propositions");
+}
+el("propositions-continue").onclick = () => submitSelection([...proposedSel]);
+el("propositions-catalogue").onclick = async () => {
+  try { applyState(await call("/return", {})); await openCatalogue(); } catch (e) { fail(e); }
+};
 
 function updateCount() {
   el("selection-count").textContent = String(selected.size);
@@ -1247,6 +1450,9 @@ function updateCount() {
 async function openCatalogue() {
   const c = await call("/catalogue");
   noticeLang = c.document.language || "en"; setTranslations(c.document);
+  const rp = el("catalogue-repli"); rp.hidden = !c.repli;
+  draftMention(rp, c.repli && c.repli.draft_texts); rp.querySelector(".repli-text").textContent = c.repli ? c.repli.explanation : "";
+  rp.dataset.repli = c.repli ? c.repli.key : "";
   selected = new Set(c.selection);
   const grid = el("catalogue-grid"); grid.replaceChildren();
   for (const e of c.entries) {
@@ -1262,14 +1468,15 @@ async function openCatalogue() {
   }
   updateCount(); show("screen-catalogue");
 }
-el("selection-continue").onclick = async () => {
+el("selection-continue").onclick = () => submitSelection([...selected]);
+async function submitSelection(entryIds) {
   try {
-    const s = await call("/selection", {entry_ids: [...selected]}); applyState(s);
+    const s = await call("/selection", {entry_ids: entryIds}); applyState(s);
     const g = el("confirmation-grid"); g.replaceChildren();
     for (const c of s.chosen) { const d = make("div", null, "tile"); d.dataset.entryId = c.entry_id; const i = make("img"); i.src = c.image; i.alt = c.alt; i.lang = noticeLang; d.append(i); g.append(d); }
     show("screen-confirmation");
   } catch (e) { fail(e); }
-};
+}
 function exact(segments, tag) {
   const n = make(tag || "div", null, "exact");
   for (const s of segments) {

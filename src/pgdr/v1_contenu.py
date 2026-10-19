@@ -74,6 +74,39 @@ DRAFT_LABELS = {
     "message_none": "Aucun message / Je ne sais pas",
     "message_given": "Message renseigné par vous : ",
     "details": "Détails",
+    # Proposed images (owner decision of 2026-10-19): an aid to the driver's selection, never an identification.
+    "propositions.consentement_general": (
+        "Vous pouvez photographier votre tableau de bord pour comparer vous-même. Cette photo reste sur votre "
+        "appareil, sauf si vous demandez des images proposées : elle est alors transmise sans ses métadonnées, "
+        "avec votre accord séparé, et n'est pas conservée."),
+    "propositions.photo_note": ("Elle reste sur votre appareil pour que vous puissiez comparer. Elle n'est transmise "
+                                "que si vous demandez des images proposées ci-dessous."),
+    "propositions.consentement": (
+        "J'accepte que cette photo, sans ses métadonnées, soit transmise à PGDR puis au composant de tri "
+        "« {destinataire} » pour me proposer de 1 à 3 images de la notice. Elle n'est pas conservée. Les métadonnées "
+        "sont retirées, pas ce qui est visible sur l'image : cadrez seulement le tableau de bord."),
+    "propositions.demander": "Proposer des images à partir de ma photo",
+    "propositions.titre": "Images proposées",
+    "propositions.aide": (
+        "Ces images de la notice vous sont proposées pour vous aider à comparer avec votre photo. Ce n'est pas une "
+        "identification de votre voyant : c'est vous qui décidez si l'une d'elles correspond à ce que vous voyez, "
+        "puis vous confirmez."),
+    "propositions.ordre": "Images présentées dans l'ordre de la notice, sans classement.",
+    "propositions.faux": ("Essai : ces images viennent d'un faux transport de tri ; votre photo n'a fait l'objet "
+                          "d'aucune analyse réelle."),
+    "propositions.valider": "Valider ma sélection",
+    "propositions.catalogue": "Aucune ne correspond : voir toutes les images de la notice",
+    "propositions.repli.non_configure": ("Aucune image proposée n'est disponible pour ce parcours : toutes les images "
+                                         "de la notice sont affichées, dans l'ordre de la notice."),
+    "propositions.repli.photo_refusee": (
+        "Votre photo n'a pas pu servir à proposer des images (format non pris en charge ou fichier illisible) : "
+        "toutes les images de la notice sont affichées, dans l'ordre de la notice."),
+    "propositions.repli.panne": ("Les images proposées sont indisponibles pour le moment : toutes les images de la "
+                                 "notice sont affichées, dans l'ordre de la notice."),
+    "propositions.repli.reponse_invalide": ("Les images proposées n'ont pas pu être utilisées : toutes les images de "
+                                            "la notice sont affichées, dans l'ordre de la notice."),
+    "propositions.repli.aucune_proposition": ("Aucune image n'a pu vous être proposée à partir de votre photo : toutes "
+                                              "les images de la notice sont affichées, dans l'ordre de la notice."),
 }
 # Situation classification: the situation DESCRIBED by the passage, never the
 # pictogram or its colour alone. Labels are DRAFT texts.

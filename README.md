@@ -171,11 +171,40 @@ non validée »; elsewhere only with a named validation bound to the catalogue.
 Persistence: the notice files are read from disk once per process and kept
 verified in memory, shared by all parcours (content only); parcours state
 (selection, answers, colour) is per parcours, in process memory, lost on
-restart; nothing is stored in a database; the photo never leaves the browser.
+restart; nothing is stored in a database. Without a sorting transport the
+photo never leaves the browser.
 
-Tests: `tests/test_v1_parcours.py`, `tests/test_v1_premier_constat.py` (unit +
-integration) and `tests/test_v1_browser_e2e.py` (Playwright), on a FICTIVE
-notice (and fictive classification) built at test time.
+Proposed images (`pgdr.v1_propositions`; owner decision of 2026-10-19, which
+supersedes PGDR-V1-02 on this point): with a sorting transport configured
+(`PGDR_V1_TRI`), the photo screen offers « Proposer des images à partir de ma
+photo ». On the driver's request only, after a separate consent naming the
+recipient, the page re-encodes the photo (pixels only) and PGDR strips any
+remaining metadata before the transport; the photo is used for that request
+and never kept (pixels may still show identifiers: the driver is told to
+frame the dashboard only). The sorting context is the photo and the
+applicable catalogue images with their entry_ids — no vehicle identity, plate,
+VIN or registration data. The answer must be exactly
+`{"proposed_entry_ids": [...]}` with 0 to 3 distinct applicable entry_ids;
+anything else (scores, labels, extra keys, unknown entries, more than 3) is
+refused as a whole. 1 to 3 proposed images are shown in the notice order,
+none selected, with « Aucune ne correspond : voir toutes les images de la
+notice »; the driver selects and confirms through the existing steps, so the
+notice restitution and the Premier Constat are unchanged. No transport,
+transport failure, invalid answer, empty answer or unreadable photo: the
+complete catalogue in the notice order, with the reason (this fallback says
+nothing about the sorting quality). The only transport is
+`PGDR_V1_TRI=faux` (`PGDR_V1_TRI_FAUX`: JSON with `nature` « faux transport
+d'essai », `destinataire`, canned answers keyed by the SHA-256 of the
+stripped photo, `defaut`), marked as such on the screen; any other value is
+refused — no real component is authorised, and the real sorting quality is
+not demonstrated. The new interface texts are draft labels
+(`propositions.*`), validatable through `PGDR_V1_LABELS`.
+
+Tests: `tests/test_v1_parcours.py`, `tests/test_v1_premier_constat.py`,
+`tests/test_v1_propositions.py` (unit + integration) and
+`tests/test_v1_browser_e2e.py`, `tests/test_v1_propositions_e2e.py`
+(Playwright), on a FICTIVE notice (and fictive classification) built at test
+time, with the fake sorting transport only.
 
 ### Preparation package tests (`outils/preparation_v1/`)
 
