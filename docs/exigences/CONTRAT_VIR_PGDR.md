@@ -1,7 +1,10 @@
 # Contrat de transfert VIR → PGDR
 
 **Statut : Proposition, non validée.** Aucune décision du propriétaire n'est
-enregistrée dans ce document. Rien ici n'est implémenté.
+enregistrée dans ce document. Rien ici n'est implémenté, sauf la provenance
+par champ et la décision d'applicabilité, décrites dans
+`PROVENANCE_ET_APPLICABILITE_V1.md` (implémentées, passe identité, provenance
+et applicabilité).
 
 Sans contenu constructeur : aucun identifiant, titre ni citation de notice réelle,
 aucun VIN ni numéro d'immatriculation.

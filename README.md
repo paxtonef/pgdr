@@ -107,6 +107,23 @@ whose applicability to the vehicle is not established is refused, except in
 the local development trial (`outils/essai_dev_v1/lancer.sh`, which sets
 `PGDR_V1_DEV_TRIAL=1`, a SIMULATED VIR identity, and shows a permanent banner).
 
+Provenance and applicability (`docs/exigences/PROVENANCE_ET_APPLICABILITE_V1.md`):
+the identity handed on carries, per field, VIR's own status
+(`field_provenance`: established, user_confirmed, provider_not_established,
+user_declared, unknown, contradictory). A value resting on a driver
+confirmation alone reaches PGDR there, never in `vehicle_identity`, and never
+makes a notice applicable by itself. `pgdr.v1_applicabilite` keeps four
+questions apart -- value and provenance, criterion justified, exact match (no
+alias, nothing deduced), decision -- and every refusal carries its reasons,
+what remains to be checked and the next action. `PGDR_V1_APPLICABILITE`
+(outside the repo) holds applicability attestations, each limited to one
+vehicle (the product's opaque `vehicle_ref`) and one notice version (content
+fingerprint); `python -m pgdr.v1_applicabilite verifier` checks them.
+`PGDR_V1_RATTACHEMENT` holds the owner's attachment of the validations of an
+earlier notice version when only applicability metadata differ
+(`pgdr.v1_rattachement`, proven by recomputing the earlier fingerprint); no
+signature is rewritten.
+
 Market of the notice (bloc 3B): neither the notice format (manifest, review)
 nor the identity VIR hands over carries a market, so whether the notice was
 written for the vehicle's market is **not verifiable** and is never presented

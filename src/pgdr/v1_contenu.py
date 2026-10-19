@@ -167,7 +167,7 @@ class ContentRejected(Exception):
 
 def _header(raw: dict, catalogue: NoticeCatalogue) -> dict:
     header = (raw or {}).get("header") or {}
-    if header.get("catalogue_content_sha256") != catalogue.content_sha256:
+    if header.get("catalogue_content_sha256") not in catalogue.accepted_content_sha256:
         raise ContentRejected("bound to another catalogue content")
     return header
 

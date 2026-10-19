@@ -30,6 +30,10 @@ Boundaries, all deliberate:
   * DEV TRIAL (PGDR_V1_DEV_TRIAL=1) is the only mode in which a notice whose
     applicability to the vehicle is not established may be shown, and then
     with a permanent banner on every screen.
+  * Applicability (pgdr.v1_applicabilite): value and provenance of each
+    identity key, justification of each criterion, exact match, decision --
+    four distinct questions. A value resting on a driver confirmation alone
+    never makes the notice applicable.
 
 Configuration (environment):
   PGDR_V1_MANIFEST      path to the notice manifest.yaml (outside the repo)
@@ -60,6 +64,13 @@ Configuration (environment):
                         proposals, the catalogue is shown directly. The only
                         transport, a fake, needs PGDR_V1_ESSAI_TRI=1 (signalled
                         trial, permanent banner); never in production.
+  PGDR_V1_APPLICABILITE optional: applicability attestations, each limited to
+                        one vehicle (the product's opaque reference) and one
+                        notice version (pgdr.v1_applicabilite). Never written
+                        by PGDR.
+  PGDR_V1_RATTACHEMENT  optional: the owner's attachment of the validations
+                        of an earlier notice version to this one, when only
+                        applicability metadata differ (pgdr.v1_rattachement).
 
 Premier Constat (after explicit confirmation): the EXISTING Part 1 pieces,
 unmodified in behaviour -- unmodified SafetyEngine on the selected entries,
@@ -92,13 +103,13 @@ from pgdr.application.part1_first_finding import (
 )
 from pgdr.config_loader import load_safety_rules
 from pgdr.application.photo_first import warning_indicator_from_entry
-from pgdr.application.vehicle_applicability import applicability_identity_gaps
 from pgdr.errors import ConfigurationError
 from pgdr.models import (
     ConditionalStop, ConditionStatus, Consent, DiagnosticSession, FindingBasis, InitialComplaint,
     ManufacturerFirstFinding, PreGarageDiagnosticRequest,
 )
 from pgdr.safety_engine import SafetyEngine
+from pgdr import v1_applicabilite as va
 from pgdr import v1_contenu as vc
 from pgdr import v1_propositions as vp
 from pgdr.adapters.manifest_notice_repository import (
@@ -186,16 +197,21 @@ class V1Wiring:
     # Sorting transport for the proposed images (pgdr.v1_propositions): None = no proposals.
     tri: Optional[vp.TransportTri] = None
     tri_status: str = "absent"
+    # Applicability attestations (each limited to one vehicle and one notice version), accepted or rejected.
+    attestations: va.Attestations = field(default_factory=va.Attestations)
 
 
 def build_wiring(repo: Optional[ManifestNoticeRepository], *, dev_trial: bool, dev_vehicle=None, error=None,
                  findings_path=None, groups_path=None, explanations_path=None, situations_path=None,
-                 translations_path=None, labels_path=None, tri=None, tri_status=None) -> V1Wiring:
+                 translations_path=None, labels_path=None, tri=None, tri_status=None,
+                 applicability_path=None) -> V1Wiring:
     """All notice content is loaded and verified ONCE here and then shared by
     every parcours of this process (no re-read, no external fetch)."""
     w = V1Wiring(repository=repo, dev_trial=dev_trial, dev_vehicle=dev_vehicle, error=error,
                  tri=tri, tri_status=tri_status or ("faux" if tri is not None and tri.faux else
                                                     "configured" if tri is not None else "absent"))
+    if applicability_path:
+        w.attestations = va.load_attestations(applicability_path)
     if repo is None:
         return w
     c = repo.catalogue
@@ -268,7 +284,7 @@ def load_v1_findings(path, repository: ManifestNoticeRepository) -> Part1Mapping
     header = (raw or {}).get("header") or {}
     if header.get("status") != "VALIDE":
         raise ConfigurationError("classification not validated")
-    if header.get("catalogue_content_sha256") != catalogue.content_sha256:
+    if header.get("catalogue_content_sha256") not in catalogue.accepted_content_sha256:
         raise ConfigurationError("classification bound to another catalogue content")
     mapping = load_part1_mapping(path)
     if any(doc != catalogue.document.document_id for doc, _ in mapping):
@@ -300,7 +316,7 @@ def get_wiring() -> V1Wiring:
         repo, error = None, None
         if path:
             try:
-                repo = ManifestNoticeRepository(path)
+                repo = ManifestNoticeRepository(path, rattachement_path=os.environ.get("PGDR_V1_RATTACHEMENT"))
             except NoticeRejected as exc:
                 error = str(exc)
         tri, tri_status = vp.charger_transport(os.environ.get("PGDR_V1_TRI"), os.environ.get("PGDR_V1_TRI_FAUX"),
@@ -312,13 +328,16 @@ def get_wiring() -> V1Wiring:
                                situations_path=os.environ.get("PGDR_V1_SITUATIONS"),
                                translations_path=os.environ.get("PGDR_V1_TRANSLATIONS"),
                                labels_path=os.environ.get("PGDR_V1_LABELS"),
-                               tri=tri, tri_status=tri_status)
+                               tri=tri, tri_status=tri_status,
+                               applicability_path=os.environ.get("PGDR_V1_APPLICABILITE"))
     return _wiring
 
 
 @dataclass
 class Parcours:
-    vehicle: dict
+    vehicle: dict   # the values admissible under the existing rules (never a value resting on a confirmation alone)
+    vehicle_shown: list = field(default_factory=list)  # each key's value, with its provenance when not established
+    applicability_basis: Optional[str] = None  # attestation | notice_established | dev_trial
     consent: bool = False
     selection: list[str] = field(default_factory=list)  # entry_ids, manual order
     confirmed: bool = False
@@ -423,6 +442,7 @@ def _state(pid: str, p: Parcours) -> dict:
         "dev_trial_banner": DEV_TRIAL_BANNER if w.dev_trial else None,
         "tri_trial_banner": TRI_TRIAL_BANNER if w.tri is not None and w.tri.faux else None,
         "vehicle": {k: p.vehicle.get(k) for k in ("manufacturer", "model", "generation")},
+        "vehicle_shown": list(p.vehicle_shown),
         # With a sorting transport, the photo may leave the device (on request only): the consent says so.
         "consent_text": list(CONSENT_TEXT) if w.tri is None else
         [CONSENT_TEXT[0], vc.DRAFT_LABELS["propositions.consentement_general"]],
@@ -512,36 +532,34 @@ def _period_shortfall(identity: VehicleIdentityContext, vehicle: VehicleApplicab
 
 
 def _open_parcours(identity: VehicleIdentityContext) -> dict:
-    """Opened only on the applicability criteria the notice and the identity carry -- the identity keys the
-    notice is resolved on, each established by VIR (present, neither unresolved nor contradictory), the
-    notice's vehicle and its period when it declares one -- never on VIR's global status alone, and never by
-    a default choice."""
+    """Opened only on the applicability decision (pgdr.v1_applicabilite): each identity key the notice is
+    resolved on handed on with a usable value and no contradiction, an exact match with the notice's vehicle
+    and its period when it declares one, then an attestation for this vehicle and this notice version, the
+    notice's own established applicability, or the development trial -- never on VIR's global status alone,
+    never by a default choice, never on a driver confirmation alone. A refusal says why, what remains to be
+    checked and the next useful action."""
     w = get_wiring()
     if w.repository is None:
-        return {"status": "notice_unavailable",
-                "message": "La notice de ce véhicule n'est pas disponible (revue absente ou obsolète, ou fichier non conforme)."}
-    insufficient = {"status": "vehicle_identity_insufficient",
-                    "message": "L'identité du véhicule n'est pas établie par VIR."}
-    if identity.resolution_status.value not in _SINGLE_IDENTITY_STATUSES or applicability_identity_gaps(identity):
-        return insufficient
-    vehicle = VehicleApplicabilityContext.from_pgdr_vehicle_identity_dict(identity.vehicle_identity)
-    not_supported = {"status": "vehicle_not_supported", "message": "Aucune notice disponible pour ce véhicule."}
-    if not w.repository.matches(vehicle):
-        return not_supported
-    period = _period_shortfall(identity, vehicle, w.repository.catalogue.document.applicability_period)
-    if period == "unknown":
-        return insufficient
-    if period == "outside":
-        return not_supported
-    if not w.repository.catalogue.applicability_established and not w.dev_trial:
-        return {"status": "applicability_not_confirmed",
-                "message": "L'applicabilité de la notice à ce véhicule n'est pas confirmée."}
+        return {"status": "notice_unavailable", "message": va.MESSAGES["notice_unavailable"], "reasons": [],
+                "to_verify": [], "next_action": None, "identity": []}
+    catalogue = w.repository.catalogue
+
+    def period() -> Optional[str]:
+        vehicle = VehicleApplicabilityContext.from_pgdr_vehicle_identity_dict(identity.vehicle_identity)
+        return _period_shortfall(identity, vehicle, catalogue.document.applicability_period)
+
+    decision = va.decide(identity, catalogue, w.attestations, dev_trial=w.dev_trial,
+                         single_identity=identity.resolution_status.value in _SINGLE_IDENTITY_STATUSES,
+                         period=period)
+    if decision.status != "applicable":
+        return decision.refusal()
     if len(_parcours) >= _MAX_PARCOURS:
         _parcours.pop(next(iter(_parcours)))
     pid = f"V1-{uuid.uuid4().hex}"
-    _parcours[pid] = Parcours(vehicle={"manufacturer": vehicle.manufacturer, "model": vehicle.model,
-                                       "generation": vehicle.generation})
-    return {"status": "opened", "parcours_id": pid, "url": f"/v1?p={pid}"}
+    admissible = identity.vehicle_identity or {}
+    _parcours[pid] = Parcours(vehicle={k: admissible.get(k) for k in ("manufacturer", "model", "generation")},
+                              vehicle_shown=va.shown_vehicle(decision.keys), applicability_basis=decision.basis)
+    return {"status": "opened", "parcours_id": pid, "url": f"/v1?p={pid}", "applicability_basis": decision.basis}
 
 
 # --- request bodies -----------------------------------------------------------------
@@ -1405,7 +1423,8 @@ async function start() {
   if (!pid) { fail(new Error("Ouvrez ce parcours depuis le lien reçu après l'identification de votre véhicule.")); return; }
   try { applyState(await call("")); } catch (e) { fail(e); return; }
   const v = state.vehicle;
-  el("vir-vehicle").textContent = [v.manufacturer, v.model, v.generation].filter(Boolean).join(" · ");
+  el("vir-vehicle").textContent = (state.vehicle_shown && state.vehicle_shown.length ? state.vehicle_shown
+    : [v.manufacturer, v.model, v.generation].filter(Boolean)).join(" · ");
   const ct = el("consent-text"); ct.replaceChildren(...state.consent_text.map(t => make("p", t)));
   selected = new Set(state.selection);
   if (state.phase === "vir") show("screen-vir");

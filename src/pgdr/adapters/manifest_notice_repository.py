@@ -14,6 +14,9 @@ Nothing is trusted from declarations alone. At load time this adapter:
     outside the package directory.
 Any failure raises NoticeRejected and no catalogue is exposed.
 
+With an attachment (pgdr.v1_rattachement), the review and the validated side files bound to the earlier
+fingerprint it names stay valid -- PGDR proves that only applicability metadata differ; nothing is re-signed.
+
 The verified image bytes are kept in memory and served from there, so what
 is shown is exactly what was hashed (no re-read after verification). The
 adapter never writes anything: no file, no database, no CPL.
@@ -119,6 +122,8 @@ class NoticeCatalogue:
     manual_sha256: str
     applicability_established: bool
     entries: tuple[NoticeEntry, ...]  # manual order
+    # Fingerprints validations may be bound to: the current one, and the earlier one of a proven attachment.
+    accepted_content_sha256: frozenset = frozenset()
 
     def entry(self, entry_id: str) -> Optional[NoticeEntry]:
         return next((e for e in self.entries if e.entry_id == entry_id), None)
@@ -145,8 +150,10 @@ def _page(v) -> int:
 class ManifestNoticeRepository:
     """KnowledgeRepositoryPort, read-only, over one notice package."""
 
-    def __init__(self, manifest_path: Path | str) -> None:
+    def __init__(self, manifest_path: Path | str, rattachement_path: Path | str | None = None) -> None:
         self._path = Path(manifest_path).expanduser()
+        self._rattachement_path = Path(rattachement_path).expanduser() if rattachement_path else None
+        self.rattachement = None   # the proven attachment, when one is configured
         self._root = self._path.parent.resolve()
         self._blobs: dict[str, bytes] = {}
         self._catalogue = self._load()
@@ -215,7 +222,18 @@ class ManifestNoticeRepository:
             actual = content_fingerprint(d)
         except (TypeError, ValueError) as exc:
             raise NoticeRejected("manifest not fingerprintable") from exc
-        if r.get("content_sha256") != actual:
+        accepted = {actual}
+        if self._rattachement_path is not None:
+            from pgdr.v1_rattachement import RattachementRejected, verify
+            try:
+                raw = yaml.safe_load(self._rattachement_path.read_text(encoding="utf-8"))
+                self.rattachement = verify(raw, d)
+            except (OSError, yaml.YAMLError) as exc:
+                raise NoticeRejected("attachment unreadable") from exc
+            except RattachementRejected as exc:
+                raise NoticeRejected(f"attachment refused: {exc}") from exc
+            accepted.add(self.rattachement.from_content_sha256)
+        if r.get("content_sha256") not in accepted:
             raise NoticeRejected("review obsolete: content fingerprint differs")
 
         # 2. Every file against its declared digest.
@@ -314,7 +332,7 @@ class ManifestNoticeRepository:
             document=document, vehicle=dict(vehicle), language=d.get("language"),
             content_sha256=actual, manual_sha256=manual_sha,
             applicability_established=isinstance(avr, dict) and avr.get("applicability_established") is True,
-            entries=tuple(entries),
+            entries=tuple(entries), accepted_content_sha256=frozenset(accepted),
         )
 
     # -- read access ---------------------------------------------------------

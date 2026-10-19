@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Optional, Union
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 from pgdr.domain.media import PrimaryDiagnosticMedia
 from pgdr.enums import (
@@ -34,14 +34,97 @@ class ConfidenceScore(BaseModel):
     level: str
 
 
+class FieldEpistemicStatus(str, Enum):
+    """VIR's own per-field status (vir.domain.driver_confirmation.epistemic_status), plus the two cases VIR
+    expresses elsewhere (no value; a field listed in the resolution's contradictions). Never computed by PGDR."""
+    ESTABLISHED = "established"                            # decode or qualified source (VIR's rules)
+    USER_CONFIRMED = "user_confirmed"                      # confirmed by the driver: never a decode
+    USER_DECLARED = "user_declared"                        # typed by the driver, not verified
+    PROVIDER_NOT_ESTABLISHED = "provider_not_established"  # a source gives it, not establishing
+    UNKNOWN = "unknown"
+    CONTRADICTORY = "contradictory"
+
+
+USER_CONFIRMATION_METHOD = "user_confirmation"   # VIR's ProvenanceMethod.USER_CONFIRMATION
+
+
+class ProvenanceSource(BaseModel):
+    """One source of a field, as VIR's SourceEvidence carries it (no reported value, no identifier)."""
+    model_config = ConfigDict(extra="forbid")
+    source_id: str
+    method: Optional[str] = None
+    role: Optional[str] = None
+    user_declared: bool = False
+    simulated: bool = False
+
+
+class FieldProvenance(BaseModel):
+    """The epistemic status of one identity field and the value it is about."""
+    model_config = ConfigDict(extra="forbid")
+    status: FieldEpistemicStatus
+    value: Any = None
+    sources: list[ProvenanceSource] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _coherent(self) -> "FieldProvenance":
+        confirmation = any(s.method == USER_CONFIRMATION_METHOD for s in self.sources)
+        if self.status == FieldEpistemicStatus.USER_CONFIRMED and (self.value is None or not confirmation):
+            raise ValueError("user_confirmed needs a value and the driver's confirmation among its sources")
+        if self.status == FieldEpistemicStatus.ESTABLISHED and self.sources and all(
+                s.method == USER_CONFIRMATION_METHOD for s in self.sources):
+            raise ValueError("a driver confirmation alone never establishes a value")
+        if self.status == FieldEpistemicStatus.UNKNOWN and self.value is not None:
+            raise ValueError("an unknown field carries no value")
+        return self
+
+
+def _dotted(d: Optional[dict], path: str):
+    node: Any = d or {}
+    for key in path.split("."):
+        if not isinstance(node, dict):
+            return None
+        node = node.get(key)
+    return node
+
+
 class VehicleIdentityContext(BaseModel):
-    """Input contract only — the PGDR never reconstructs VIR logic (PGDR-ID-001)."""
+    """Input contract only — the PGDR never reconstructs VIR logic (PGDR-ID-001).
+
+    vehicle_identity holds the values admissible under the existing rules (bloc 3A): never a value resting on
+    a driver confirmation alone, so every existing consumer reads what it read before. field_provenance
+    carries, per field, VIR's status and the value it is about: a confirmed value reaches PGDR there, marked
+    user_confirmed, and counts only for a decision that says so (pgdr.v1_applicabilite). A context without
+    field_provenance (older producers) is read as before and gains no qualification.
+
+    vehicle_ref: the product's opaque reference of the vehicle (never a VIN nor a plate), used only to find
+    an applicability attestation limited to that vehicle."""
     resolution_id: str
     resolution_status: ResolutionStatus
     confidence: Optional[ConfidenceScore] = None
     vehicle_identity: Optional[dict[str, Any]] = None
     unresolved_fields: list[str] = Field(default_factory=list)
     contradictions: list[str] = Field(default_factory=list)
+    field_provenance: dict[str, FieldProvenance] = Field(default_factory=dict)
+    vehicle_ref: Optional[str] = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def _confirmed_values_stay_apart(self) -> "VehicleIdentityContext":
+        for path, p in self.field_provenance.items():
+            if p.status == FieldEpistemicStatus.USER_CONFIRMED and _dotted(self.vehicle_identity, path) is not None:
+                raise ValueError(f"{path}: a value resting on a driver confirmation is never in vehicle_identity")
+        return self
+
+    @model_serializer(mode="wrap")
+    def _older_form_when_absent(self, handler):
+        """A context without provenance nor vehicle reference serializes exactly as before (verbatim artifacts,
+        records kept in CPL)."""
+        data = handler(self)
+        if isinstance(data, dict):
+            if not data.get("field_provenance"):
+                data.pop("field_provenance", None)
+            if data.get("vehicle_ref") is None:
+                data.pop("vehicle_ref", None)
+        return data
 
 
 # ---------------------------------------------------------------------------

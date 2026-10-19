@@ -32,6 +32,13 @@ def applicability_identity_gaps(identity: VehicleIdentityContext) -> list[str]:
     return [f for f in APPLICABILITY_IDENTITY_FIELDS if not vehicle.get(f) or f in doubtful]
 
 
+def _gap_label(identity: VehicleIdentityContext, key: str) -> str:
+    """A key resting on a driver confirmation alone is a gap here too (it never reaches vehicle_identity):
+    said so, never counted as known."""
+    p = identity.field_provenance.get(key)
+    return f"{key} (user_confirmed only)" if p is not None and p.status.value == "user_confirmed" else key
+
+
 def resolve_dashboard_reference(
     identity: VehicleIdentityContext, knowledge: VehicleDashboardKnowledgePort,
 ) -> DashboardReferenceSet:
@@ -42,6 +49,7 @@ def resolve_dashboard_reference(
             vehicle_applicability=vehicle,
             applicability_status=ApplicabilityStatus.VEHICLE_IDENTITY_INSUFFICIENT,
             provenance_note=f"VIR identity artifact {identity.resolution_id} does not establish: "
-                            f"{', '.join(gaps)}. No document applicability decision is made.",
+                            f"{', '.join(_gap_label(identity, g) for g in gaps)}. "
+                            "No document applicability decision is made.",
         )
     return knowledge.get_dashboard_reference_set(vehicle)
