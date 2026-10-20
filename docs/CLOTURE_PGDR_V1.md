@@ -13,8 +13,8 @@ cherche pas d'autre.
 
 | Composant | Révision | Remarque |
 |---|---|---|
-| PGDR | `9b83845` (`v1-cloture`, depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | code de la clôture ; ce document est ajouté par le commit suivant (documentation seule) |
-| PI | `367c065` (`pi-cloture-pgdr`, depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`) | `deploy/COMPOSITION.env` : `PGDR_COMMIT=9b83845…` |
+| PGDR | `55f76ae` (`v1-cloture` : `9b83845` code de la clôture, puis `55f76ae` textes retenus du parcours sans notice ; depuis `v1-fiat-provenance` @ `79db828`, depuis `v1-3b-reception` @ `1c5a5cc`) | ce document est mis à jour par le commit suivant (documentation seule) |
+| PI | `70a15b3` (`pi-cloture-pgdr` : `367c065`, puis `70a15b3` ; depuis `pi-fiat-provenance` @ `63fe09b`, depuis `pi-3b-conservation-purge` @ `a676809`) | `deploy/COMPOSITION.env` : `PGDR_COMMIT=55f76ae…` |
 | VIR | `a4c0172` | non modifié (clos : `docs/CLOTURE_VIR_V1.md` du dépôt VIR) |
 | CPL | `bc09253` | non modifié |
 
@@ -69,7 +69,7 @@ Aucune branche descendante de `79db828` ou de `63fe09b` n'existait au départ ; 
   `applicability_not_confirmed`, `vehicle_identity_insufficient`) laissait le conducteur sur le refus affiché dans
   le dossier, sans consignes de sécurité.
 - **Correction (PGDR `9b83845`, PI `367c065`) :** le refus reste tel quel ; PGDR ouvre à côté un **parcours sans
-  notice** : écran d'information à texte fixe (titre, message de refus de PGDR, explication), puis le choix de la
+  notice** : écran d'information à texte fixe (titre, information, suite du parcours), puis le choix de la
   couleur (boutons), puis l'écran de sécurité **validé** existant (`v1_fallback_screens.fr.yaml`, validation
   nommée du 2026-10-07) : rouge ou incertain → « Arrêtez-vous en sécurité » (règle existante), autre couleur →
   « Voyant non identifié ». Le dossier PI affiche « Voir les consignes de sécurité ». Aucun catalogue, aucune
@@ -79,10 +79,17 @@ Aucune branche descendante de `79db828` ou de `63fe09b` n'existait au départ ; 
   `test_v1_without_corresponding_notice_…` ; PI `tests/test_cloture_pgdr_v1.py::test_refusal_leads_to_…` (trois
   refus de notice, droits du propriétaire), réception de production (identité non établie ; second lancement sans
   `PGDR_V1_MANIFEST`), Playwright Q2.
-- **Textes nouveaux en brouillon :** les trois textes de l'écran sans notice (`sans_notice.*`) sont marqués
-  « Textes de cette section en brouillon, non validés » tant qu'un fichier de libellés validé ne les couvre pas.
-  Les écrans de sécurité, eux, sont validés ; leur formulation parle de « faire correspondre votre voyant à une
-  image de la notice ».
+- **Textes retenus (PGDR `55f76ae`, formulations du propriétaire du 2026-10-20, hors fichier de libellés, sans
+  mention de brouillon) :** titre « Notice indisponible pour ce véhicule » ; information « Aucune notice
+  applicable à votre véhicule n'est disponible dans ce parcours. Nous ne pouvons donc pas afficher de consignes
+  constructeur. » ; suite « Vous pouvez consulter les consignes générales de sécurité selon la couleur du
+  voyant. ». Les mêmes textes servent à « aucune notice fournie » et à « notice non correspondante » : le message
+  de refus n'est plus repris sur cet écran (il reste affiché, inchangé, dans le dossier PI).
+- **Écran de sécurité sans notice :** seule la phrase de contexte « Nous n'avons pas pu faire correspondre votre
+  voyant à une image de la notice. » est remplacée, à l'affichage et dans ce seul parcours, par « Aucune notice
+  applicable n'est disponible pour le voyant observé. ». Titres, consignes, consigne d'arrêt et règle de
+  déclenchement (rouge ou incertain → arrêt) sont ceux du fichier validé, qui n'est pas modifié ; le parcours
+  avec notice garde la phrase d'origine.
 
 ### Critère 6 — Sans dialogue texte ni questionnaire mécanique : satisfait après correction
 
@@ -125,7 +132,7 @@ client de modèle de langage ; le seul transport de tri est le faux transport d'
 | Restitution et Premier Constat | condition d'une consigne d'arrêt : « Oui », « Non », « Je ne sais pas » ; « Voir l'écran prévu pour un voyant rouge ou incertain » ; « Réessayer l'enregistrement » (produit) ; retour |
 | Couleur du voyant | 8 boutons de couleur (dont « Je ne sais pas / incertain »), retour |
 | Écran de sécurité | retour |
-| Sans notice | 8 boutons de couleur ; l'écran de sécurité s'affiche dessous |
+| Notice indisponible pour ce véhicule | 8 boutons de couleur ; l'écran de sécurité s'affiche dessous |
 
 Les choix de précision et de condition sont des commandes fermées déjà prévues, tirées de la notice ; il n'y a
 au plus qu'un choix par groupe ou par consigne, jamais une suite de questions. Côté dossier PI : « Open the
@@ -173,12 +180,12 @@ Aucun catalogue, aucune validation, recherche d'applicabilité, classification o
 
 | Suite | Résultat |
 |---|---|
-| PGDR complète (hors `packaging`, qui demande un accès réseau pour `hatchling`) | **1056 passed** (1046 au départ ; +9 `test_v1_cloture.py`, +1 navigateur) |
+| PGDR complète (hors `packaging`, qui demande un accès réseau pour `hatchling`) | **1056 passed** (1046 au départ ; +9 `test_v1_cloture.py`, +1 navigateur) ; relancée après `55f76ae` : 1056 passed |
 | PGDR navigateur (`test_v1_browser_e2e.py`) | 10 passed |
-| PI complète, avec le montage de développement des nouveaux arbres | **405 passed, 0 skipped, 0 failed** (392 au départ ; +8 `test_cloture_pgdr_v1.py`, +5 navigateur) |
+| PI complète, avec le montage de développement des nouveaux arbres | **405 passed, 0 skipped, 0 failed** (392 au départ ; +8 `test_cloture_pgdr_v1.py`, +5 navigateur) ; relancée après `70a15b3` : 405 passed |
 | PI réception navigateur, lancement de production (HTTPS, frontend construit, deux lancements) | **5 passed** (`test_cloture_navigateur.py` : A, C, E, F, G ×2, H, I, J) |
 | Frontend : `tsc -b --noEmit` / vitest / `vite build` | OK / **54 passed** / OK |
-| Playwright O1–O4 et Q1–Q2 (faux tri d'essai, sans dialogue) | 6 passed |
+| Playwright O1–O4 et Q1–Q2 (faux tri d'essai, sans dialogue) | 6 passed ; relancés après `70a15b3` : 6 passed |
 | Playwright P (tri absent ; tri en panne) | 1 passed ; 1 passed |
 | Playwright A→M (ancien dialogue, construction d'essai `VITE_PI_DIALOGUE_HISTORIQUE=1`) | 14 passed : non-régression du code conservé, hors produit |
 
@@ -222,11 +229,8 @@ Aucun catalogue, aucune validation, recherche d'applicabilité, classification o
 
 Aucun. Les critères 5 et 6 ont été corrigés dans cette passe.
 
-Restent les décisions du propriétaire :
-- valider les trois textes de l'écran sans notice ;
-- dire si la formulation des écrans de sécurité validés convient aussi sans notice ;
-- dire s'il faut un choix fermé parmi les messages documentés pour les groupes ambigus ;
-- dire si `/media` (dépôt de photo de l'ancien chemin, inutilisé par le frontend, laissé tel quel) doit rester
-  servi.
+Les textes du parcours sans notice et le contexte de son écran de sécurité sont finalisés (`55f76ae`). Il n'est
+ajouté aucun choix pour départager les groupes ambigus ; la route `/media` (dépôt de photo de l'ancien chemin,
+inutilisé par le frontend) est laissée telle quelle.
 
 L'installation et la réception finales sur le serveur sont distinctes de cette clôture.
