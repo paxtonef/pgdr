@@ -21,7 +21,7 @@ from pgdr import web_app as web
 from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
 from test_v1_premier_constat import confirm, wire
 
-ALL_KEYS = sorted(set(v1.BLOCK_LABEL_KEYS) | set(v1.STOPS_LABEL_KEYS) | set(v1.SANS_NOTICE_LABEL_KEYS))
+ALL_KEYS = sorted(set(v1.BLOCK_LABEL_KEYS) | set(v1.STOPS_LABEL_KEYS))
 
 
 def build_labels(manifest, *, status="VALIDE", keys=ALL_KEYS, override=None) -> str:

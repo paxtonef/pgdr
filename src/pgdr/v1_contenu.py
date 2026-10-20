@@ -43,6 +43,22 @@ T2_V1 = ("Premier Constat Constructeur — à partir des voyants sélectionnés 
 # Ambiguity limit, owner wording (2026-10-08), exact.
 LIMIT_V1 = ("Avec les informations renseignées, nous ne pouvons pas déterminer laquelle de ces situations "
             "correspond à votre voyant.")
+# Without a notice for the vehicle (none provided, or none corresponding -- never distinguished): fixed screen
+# before the safety instructions by colour. Never a manufacturer text. Wording retained by the owner on 2026-10-20
+# (PGDR V1 closure); not a draft, not subject to a labels file.
+SANS_NOTICE_TEXTS = {
+    "titre": "Notice indisponible pour ce véhicule",
+    "information": ("Aucune notice applicable à votre véhicule n'est disponible dans ce parcours. Nous ne pouvons "
+                    "donc pas afficher de consignes constructeur."),
+    "suite": "Vous pouvez consulter les consignes générales de sécurité selon la couleur du voyant.",
+}
+# The validated fallback screens open with a sentence about "une image de la notice"; without a notice, only this
+# context sentence is replaced by what the driver actually observes. The instructions, their trigger and the stop
+# instruction are unchanged.
+FALLBACK_NOTICE_CONTEXT = "Nous n'avons pas pu faire correspondre votre voyant à une image de la notice."
+FALLBACK_SANS_NOTICE_CONTEXT = "Aucune notice applicable n'est disponible pour le voyant observé."
+
+
 # New French texts for ambiguous pictograms: DRAFT, shown with DRAFT_LABELS["draft_texts"].
 DRAFT_LABELS = {
     "common": "Indiqué par la notice pour tous ces voyants",
@@ -74,14 +90,6 @@ DRAFT_LABELS = {
     "message_none": "Aucun message / Je ne sais pas",
     "message_given": "Message renseigné par vous : ",
     "details": "Détails",
-    # Without a notice for the vehicle (none provided, or none corresponding): fixed screen before the safety
-    # instructions by colour. Never a manufacturer text.
-    "sans_notice.titre": "Aucune notice du constructeur pour ce véhicule",
-    "sans_notice.explication": ("PGDR ne dispose d'aucune notice du constructeur qui corresponde à votre véhicule. Il "
-                                "ne peut donc vous montrer ni les images de la notice, ni la signification de votre "
-                                "voyant, ni la consigne du constructeur."),
-    "sans_notice.consignes": ("Les consignes de sécurité ci-dessous dépendent seulement de la couleur du voyant que "
-                              "vous voyez. Choisissez-la :"),
     # Proposed images (owner decision of 2026-10-19): an aid to the driver's selection, never an identification.
     "propositions.consentement_general": (
         "Vous pouvez photographier votre tableau de bord pour comparer vous-même. Cette photo reste sur votre "

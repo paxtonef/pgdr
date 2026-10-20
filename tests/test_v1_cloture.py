@@ -71,9 +71,13 @@ def test_refusal_opens_a_parcours_without_notice_fixed_screen_then_safety(monkey
     seen.append(s)
     assert s["phase"] == "sans_notice" and s["vehicle"] == {"manufacturer": None, "model": None, "generation": None}
     t = s["sans_notice"]
-    assert (t["titre"], t["explication"], t["consignes"]) == tuple(vc.DRAFT_LABELS[k] for k in v1.SANS_NOTICE_LABEL_KEYS)
-    assert t["message"] == r["message"] and t["screen"] is None
-    assert t["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]  # new texts: draft until the owner validates them
+    # The retained wording, identical for every refusal (no notice provided or none corresponding), no draft
+    # mention, and neither the refusal's message nor any mention of a notice consulted.
+    assert t == {"titre": "Notice indisponible pour ce véhicule",
+                 "information": "Aucune notice applicable à votre véhicule n'est disponible dans ce parcours. Nous ne "
+                                "pouvons donc pas afficher de consignes constructeur.",
+                 "suite": "Vous pouvez consulter les consignes générales de sécurité selon la couleur du voyant.",
+                 "screen": None}
     assert [c["key"] for c in s["colours"]] == [k for k, _ in v1.COLOURS]
 
     # Nothing of a notice is reachable: no catalogue, no image, no consent, no selection, no restitution.
@@ -98,8 +102,13 @@ def test_refusal_opens_a_parcours_without_notice_fixed_screen_then_safety(monkey
         out = client.post(f"/api/v1/parcours/{pid}/colour", json={"colour": colour})
         assert out.status_code == 200, out.text
         screen = out.json()["screen"]
-        assert screen == {"key": key, "lang": "fr", "heading": screens[key]["heading"],
-                          "paragraphs": screens[key]["paragraphs"]}
+        # The validated screen; only its context sentence about the notice's images is replaced.
+        assert screen["key"] == key and screen["heading"] == screens[key]["heading"]
+        assert screen["paragraphs"] == [x.replace(vc.FALLBACK_NOTICE_CONTEXT, vc.FALLBACK_SANS_NOTICE_CONTEXT)
+                                        for x in screens[key]["paragraphs"]]
+        changed = [x for x, y in zip(screen["paragraphs"], screens[key]["paragraphs"]) if x != y]
+        assert len(changed) == 1 and changed[0].startswith(vc.FALLBACK_SANS_NOTICE_CONTEXT)  # instructions as validated
+        assert "notice" not in " ".join(screen["paragraphs"]).replace(vc.FALLBACK_SANS_NOTICE_CONTEXT, "")
         again = client.get(f"/api/v1/parcours/{pid}").json()
         assert again["colour"] == colour and again["sans_notice"]["screen"] == screen and again["phase"] == "sans_notice"
         seen += [out.json(), again]

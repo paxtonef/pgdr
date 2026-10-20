@@ -476,21 +476,21 @@ def _state(pid: str, p: Parcours) -> dict:
         "return_label": load_fallback_screens()["shared"]["return_button"],
         "propositions": _propositions_offer(),
         "sans_notice": None if p.sans_notice is None else {
-            **{k.partition(".")[2]: vc.DRAFT_LABELS[k] for k in SANS_NOTICE_LABEL_KEYS},
-            "message": p.sans_notice["message"], "draft_texts": draft_texts(SANS_NOTICE_LABEL_KEYS),
-            "screen": _fallback_screen(p.colour) if p.colour else None},
+            # The same texts whether no notice was provided or none corresponds: never distinguished here.
+            **vc.SANS_NOTICE_TEXTS,
+            "screen": _fallback_screen(p.colour, sans_notice=True) if p.colour else None},
     }
 
 
-# Interface texts of the screen without a notice (DRAFT_LABELS keys).
-SANS_NOTICE_LABEL_KEYS = ("sans_notice.titre", "sans_notice.explication", "sans_notice.consignes")
-
-
-def _fallback_screen(colour: str) -> dict:
-    """The validated fallback screen for this colour (existing rule: red or uncertain -> stop)."""
+def _fallback_screen(colour: str, sans_notice: bool = False) -> dict:
+    """The validated fallback screen for this colour (existing rule: red or uncertain -> stop). Without a notice,
+    only its context sentence about the notice's images is replaced; every instruction is kept as validated."""
     key = "red_or_uncertain" if colour in _RED_OR_UNCERTAIN else "other_colour"
-    screen = load_fallback_screens()["screens"][key]
-    return {"key": key, "lang": "fr", "heading": screen["heading"], "paragraphs": list(screen["paragraphs"])}
+    paragraphs = list(load_fallback_screens()["screens"][key]["paragraphs"])
+    if sans_notice:
+        paragraphs = [x.replace(vc.FALLBACK_NOTICE_CONTEXT, vc.FALLBACK_SANS_NOTICE_CONTEXT) for x in paragraphs]
+    return {"key": key, "lang": "fr", "heading": load_fallback_screens()["screens"][key]["heading"],
+            "paragraphs": paragraphs}
 
 
 # Interface texts of the proposed-images screens (DRAFT_LABELS keys).
@@ -1217,7 +1217,7 @@ def colour(pid: str, req: ColourRequest):
     if p.sans_notice is not None:
         # Without a notice: no photo, no consent to give; the colour is the only input, the screen the only output.
         p.colour = req.colour
-        return {**_state(pid, p), "screen": _fallback_screen(req.colour)}
+        return {**_state(pid, p), "screen": _fallback_screen(req.colour, sans_notice=True)}
     _require_consent(p)
     if p.phase not in ("colour", "fallback"):
         raise HTTPException(status_code=409, detail="La question de couleur n'est pas posée à ce stade.")
@@ -1419,11 +1419,9 @@ V1_HTML = """<!DOCTYPE html>
  </section>
 
  <section class="screen" id="screen-sans-notice" hidden>
-  <p class="draft-mention" hidden></p>
   <h1 id="sans-notice-titre"></h1>
-  <p id="sans-notice-message"></p>
-  <p id="sans-notice-explication"></p>
-  <p id="sans-notice-consignes"></p>
+  <p id="sans-notice-information"></p>
+  <p id="sans-notice-suite"></p>
   <div id="sans-notice-colours"></div>
   <div id="sans-notice-screen" class="fallback" lang="fr" hidden></div>
  </section>
@@ -1945,9 +1943,8 @@ el("dont-know").onclick = () => noMatch("dont_know");
 // No notice for this vehicle: fixed texts, the colour as the only (closed) choice, the validated safety screen.
 function showSansNotice(s) {
   const t = s.sans_notice, box = el("screen-sans-notice");
-  draftMention(box, t.draft_texts);
-  el("sans-notice-titre").textContent = t.titre; el("sans-notice-message").textContent = t.message;
-  el("sans-notice-explication").textContent = t.explication; el("sans-notice-consignes").textContent = t.consignes;
+  el("sans-notice-titre").textContent = t.titre;
+  el("sans-notice-information").textContent = t.information; el("sans-notice-suite").textContent = t.suite;
   const choices = el("sans-notice-colours"); choices.replaceChildren();
   for (const c of s.colours) {
     const b = make("button", c.label); b.dataset.colour = c.key; if (s.colour === c.key) b.classList.add("primary");
