@@ -21,7 +21,7 @@ from pgdr import web_app as web
 from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
 from test_v1_premier_constat import confirm, wire
 
-ALL_KEYS = sorted(set(v1.QUESTION_LABEL_KEYS) | set(v1.BLOCK_LABEL_KEYS) | set(v1.STOPS_LABEL_KEYS))
+ALL_KEYS = sorted(set(v1.BLOCK_LABEL_KEYS) | set(v1.STOPS_LABEL_KEYS) | set(v1.SANS_NOTICE_LABEL_KEYS))
 
 
 def build_labels(manifest, *, status="VALIDE", keys=ALL_KEYS, override=None) -> str:
@@ -51,36 +51,27 @@ def validated_paths(manifest) -> dict:
             "explanations_path": fx.build_explanations(manifest, status="VALIDE", validated_by="Fictive Owner")}
 
 
-def clarify_dont_know(client, r) -> dict:
-    out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json={"group": r["questions"][0]["group"], "answer": "dont_know"})
-    assert out.status_code == 200, out.text
-    return out.json()
-
-
 class TestMentionFollowsStatus:
     def test_absent_with_validated_content(self, monkeypatch, grouped, client):
         w = wire(monkeypatch, grouped, labels_path=build_labels(grouped), **validated_paths(grouped))
         assert w.labels_status == "validated" and set(ALL_KEYS) <= w.labels_validated
         assert w.situations_status == "validated"
         r = confirm(client, ["fx_amber_code_a"])
-        (q,) = r["questions"]
-        assert q["kind"] == "message" and q["draft_texts"] is None
-        (b,) = clarify_dont_know(client, r)["premier_constat"]["presentation"]["ambiguous"]
+        assert "questions" not in r  # no message is ever asked (clôture V1: no free text)
+        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
         assert b["draft_texts"] is None and b["group_draft"] is None
         assert vc.DRAFT_LABELS["draft_texts"] not in json.dumps(b, ensure_ascii=False)
 
     def test_present_with_draft_labels(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped, **validated_paths(grouped))  # no labels file: labels keep their draft status
         r = confirm(client, ["fx_amber_code_a"])
-        assert r["questions"][0]["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
-        (b,) = clarify_dont_know(client, r)["premier_constat"]["presentation"]["ambiguous"]
+        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
         assert b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
 
     def test_present_with_draft_classification(self, monkeypatch, grouped, client):
         wire(monkeypatch, grouped, labels_path=build_labels(grouped), situations_path=fx.build_situations(grouped))
         r = confirm(client, ["fx_amber_code_a"])
-        assert r["questions"][0]["draft_texts"] is None  # the question uses validated labels only
-        (b,) = clarify_dont_know(client, r)["premier_constat"]["presentation"]["ambiguous"]
+        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
         assert b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]  # draft situations shown in the block
 
 
@@ -94,12 +85,13 @@ class TestLabelsFile:
         assert w.labels_validated == frozenset() and w.labels_status == "draft_dev_trial"
 
     def test_changed_text_rejected_alone(self, monkeypatch, grouped, client):
-        w = wire(monkeypatch, grouped, labels_path=build_labels(grouped, override={"message_none": "Autre texte fictif"}),
+        w = wire(monkeypatch, grouped, labels_path=build_labels(grouped, override={"common": "Autre texte fictif"}),
                  **validated_paths(grouped))
-        assert "message_none" not in w.labels_validated and w.labels_rejected == {"message_none": "text differs from the current label"}
-        assert "message_question" in w.labels_validated
+        assert "common" not in w.labels_validated and w.labels_rejected == {"common": "text differs from the current label"}
+        assert "no_common" in w.labels_validated
         r = confirm(client, ["fx_amber_code_a"])
-        assert r["questions"][0]["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
+        (b,) = r["premier_constat"]["presentation"]["ambiguous"]
+        assert b["draft_texts"] == vc.DRAFT_LABELS["draft_texts"]
 
     def test_unknown_key_rejected(self, monkeypatch, grouped):
         w = wire(monkeypatch, grouped, labels_path=build_labels(grouped, override={"fictive_key": "Texte fictif"}))
@@ -111,7 +103,7 @@ def test_internal_level_identical_with_and_without_validated_labels(monkeypatch,
     for extra in ({}, {"labels_path": build_labels(grouped)}):
         wire(monkeypatch, grouped, findings_path=fx.build_findings(grouped), **validated_paths(grouped), **extra)
         r = confirm(client, ["fx_red_fluid", "fx_amber_code_a"])
-        out.append(clarify_dont_know(client, r)["premier_constat"])
+        out.append(r["premier_constat"])
     a, b = out
     assert a["triage"] == b["triage"]
     norm = lambda pc: [u for u in pc["internal"]["uncertainties"] if u.get("kind") != "texts.draft"]

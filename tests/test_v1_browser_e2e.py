@@ -19,6 +19,7 @@ import yaml
 from playwright.sync_api import Page, expect
 
 import v1_fictive_notice as fx
+from pgdr import v1_contenu as vc
 from pgdr import v1_parcours as v1
 from pgdr import web_app as web
 from pgdr.adapters.manifest_notice_repository import ManifestNoticeRepository
@@ -360,9 +361,10 @@ def _restitution_for(page: Page, live_server, ids: list[str]) -> None:
     page.click("#confirm")
 
 
-def test_v1_operating_group_mixed_group_and_message_question(page: Page, live_server):
+def test_v1_operating_group_mixed_group_and_no_message_typed(page: Page, live_server):
     """Operating indications: possibilities explained, no stop screen. Mixed group: the stop
-    instruction stays visible under its own variant only. Message question: exact text, never mapped."""
+    instruction stays visible under its own variant only. No free text (clôture V1): a group that only
+    a displayed message could tell apart is shown as ambiguous, without any field to type in."""
     _restitution_for(page, live_server, ["fx_blue_mode_x"])
     expect(page.locator("#screen-restitution")).to_be_visible()
     block = page.locator("#premier-constat .ambiguous")
@@ -398,16 +400,11 @@ def test_v1_operating_group_mixed_group_and_message_question(page: Page, live_se
     page.click('.tile[data-entry-id="fx_amber_code_a"]')
     page.click("#selection-continue")
     page.click("#confirm")
-    expect(page.locator("#screen-clarification")).to_be_visible()
-    q = page.locator('#clarification-questions .question[data-kind="message"]')
-    expect(q).to_contain_text("Un message s'affiche-t-il avec ce voyant ? Recopiez-le exactement.")
-    expect(q.locator("button.message-none")).to_have_text("Aucun message / Je ne sais pas")
-    _no_english_ui(page)
-    q.locator("input.message-input").fill("CODE 12")
-    q.locator("button.message-submit").click()
     expect(page.locator("#screen-restitution")).to_be_visible()
+    expect(page.locator("input[type=text], textarea, [contenteditable]")).to_have_count(0)
+    _no_english_ui(page)
     block = page.locator("#premier-constat .ambiguous")
-    expect(block.locator(".message-given")).to_have_text("Message renseigné par vous : « CODE 12 »")
+    expect(block.locator(".message-given")).to_have_count(0)
     expect(block.locator(".variant")).to_have_count(2)
     expect(block.locator('.variant[data-entry-id="fx_amber_code_a"] .consigne')).to_contain_text(fx.CODE_A_INSTRUCTION)
     expect(block.locator('.variant[data-entry-id="fx_amber_code_b"]')).not_to_contain_text(fx.CODE_A_INSTRUCTION)
@@ -587,7 +584,6 @@ def test_v1_presentation_rule_body_and_folded_details(page: Page, live_server):
     page.click('.tile[data-entry-id="fx_amber_code_b"]')
     page.click("#selection-continue")
     page.click("#confirm")
-    page.locator('#clarification-questions .question[data-kind="message"] button.message-none').click()
     v = page.locator('#premier-constat .variant[data-entry-id="fx_amber_code_b"]')
     q = v.locator(":scope > details.details .condition-quote")
     expect(q).to_have_count(1)
@@ -634,3 +630,31 @@ def test_v1_group_block_variant_explanations_first_and_caution_placement(page: P
         id => document.getElementById(id).getBoundingClientRect().top)""")
     assert order == sorted(order)
     _no_english_ui(page)
+
+
+def test_v1_without_corresponding_notice_fixed_screen_then_safety_by_colour(page: Page, live_server):
+    """Clôture V1: a notice that does not correspond is never shown; a fixed screen, the colour as the only
+    choice, the validated safety screen -- no image, no text field, no dead end."""
+    r = httpx.post(f"{live_server}/api/v1/vir-handoff",
+                   json={"resolution_id": "VIR-FICTIVE-E2E-SANS", "resolution_status": "resolved",
+                         "vehicle_identity": {**fx.VIR_IDENTITY, "generation": "X2"}},
+                   headers={web.IDENTITY_HANDOFF_TOKEN_HEADER: TOKEN}).json()
+    assert r["status"] == "vehicle_not_supported"
+    page.goto(live_server + r["url"])
+    screen = page.locator("#screen-sans-notice")
+    expect(screen).to_be_visible()
+    expect(page.locator("#sans-notice-titre")).to_have_text(vc.DRAFT_LABELS["sans_notice.titre"])
+    expect(page.locator("#sans-notice-message")).to_have_text(r["message"])
+    expect(screen.locator(".draft-mention")).to_have_text(vc.DRAFT_LABELS["draft_texts"])
+    expect(page.locator("img:visible, .tile:visible, input:visible, textarea")).to_have_count(0)
+    expect(page.locator("button.return:visible")).to_have_count(0)
+    _no_english_ui(page)
+    screen.get_by_role("button", name="Rouge").click()
+    expect(page.locator("#sans-notice-screen h2")).to_have_text("Arrêtez-vous en sécurité — vérification humaine nécessaire")
+    expect(page.locator("#sans-notice-screen")).to_contain_text("Arrêtez le véhicule dès que vous pouvez le faire en sécurité.")
+    screen.get_by_role("button", name="Vert").click()
+    expect(page.locator("#sans-notice-screen h2")).to_have_text("Voyant non identifié — vérification humaine nécessaire")
+    page.reload()                                   # the chosen colour and its screen survive a reload
+    expect(page.locator("#sans-notice-screen h2")).to_have_text("Voyant non identifié — vérification humaine nécessaire")
+    for x in ORDER:
+        expect(page.locator(f'[data-entry-id="{x}"]')).to_have_count(0)

@@ -149,7 +149,7 @@ class TestDecision:
                                                                                   established_notice):
         wire(monkeypatch, established_notice)
         r = post(confirmed_generation_context())
-        assert r["status"] == "applicability_not_confirmed" and v1._parcours == {}
+        assert r["status"] == "applicability_not_confirmed" and fx.notice_parcours_opened() == []
         assert any("seule confirmation du conducteur" in x for x in r["reasons"])
         assert r["to_verify"] and "déjà validés" in r["next_action"]
         shown = {k["key"]: k for k in r["identity"]}
@@ -282,7 +282,7 @@ class TestDecision:
         r = post(confirmed_generation_context(contradictions=["model"]))
         assert r["status"] == "vehicle_identity_insufficient"
         assert any("contradictoire" in x for x in r["reasons"]) and "contradiction" in r["next_action"]
-        assert v1._parcours == {}
+        assert fx.notice_parcours_opened() == []
 
     def test_established_values_on_an_established_notice_open_as_before(self, monkeypatch, established_notice):
         wire(monkeypatch, established_notice)

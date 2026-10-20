@@ -74,6 +74,14 @@ DRAFT_LABELS = {
     "message_none": "Aucun message / Je ne sais pas",
     "message_given": "Message renseigné par vous : ",
     "details": "Détails",
+    # Without a notice for the vehicle (none provided, or none corresponding): fixed screen before the safety
+    # instructions by colour. Never a manufacturer text.
+    "sans_notice.titre": "Aucune notice du constructeur pour ce véhicule",
+    "sans_notice.explication": ("PGDR ne dispose d'aucune notice du constructeur qui corresponde à votre véhicule. Il "
+                                "ne peut donc vous montrer ni les images de la notice, ni la signification de votre "
+                                "voyant, ni la consigne du constructeur."),
+    "sans_notice.consignes": ("Les consignes de sécurité ci-dessous dépendent seulement de la couleur du voyant que "
+                              "vous voyez. Choisissez-la :"),
     # Proposed images (owner decision of 2026-10-19): an aid to the driver's selection, never an identification.
     "propositions.consentement_general": (
         "Vous pouvez photographier votre tableau de bord pour comparer vous-même. Cette photo reste sur votre "

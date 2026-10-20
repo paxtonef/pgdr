@@ -395,3 +395,10 @@ def build_situations(manifest: Path, *, status: str = "BROUILLON_NON_VALIDE", va
     path = manifest.parent / "situations.yaml"
     path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False), encoding="utf-8")
     return path
+
+
+def notice_parcours_opened() -> list[str]:
+    """The parcours opened WITH a notice. A refusal opens none: only, beside it, a parcours without notice (fixed
+    screen and safety instructions by colour)."""
+    from pgdr import v1_parcours as v1
+    return [pid for pid, p in v1._parcours.items() if p.sans_notice is None]

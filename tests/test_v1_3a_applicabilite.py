@@ -61,7 +61,7 @@ def test_missing_criterion_is_refused(monkeypatch, tmp_path, field):
     for status in ("resolved", "provisionally_resolved"):
         r = handoff(status=status, identity=identity, unresolved=[field])
         assert r["status"] == "vehicle_identity_insufficient", (status, r)
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []
 
 
 @pytest.mark.parametrize("status", ["resolved", "provisionally_resolved"])
@@ -72,7 +72,7 @@ def test_value_vir_does_not_establish_is_never_used(monkeypatch, tmp_path, statu
     wire(monkeypatch, established(tmp_path))
     assert handoff(status=status, unresolved=["generation"])["status"] == "vehicle_identity_insufficient"
     assert handoff(status=status, contradictions=["model"])["status"] == "vehicle_identity_insufficient"
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []
 
 
 @pytest.mark.parametrize("status", ["ambiguous", "insufficient_data", "contradictory"])
@@ -80,13 +80,13 @@ def test_no_single_identity_is_refused_even_with_every_field(monkeypatch, tmp_pa
     # Several candidates or contradictions: taking the fields shown would be a default choice.
     wire(monkeypatch, established(tmp_path))
     assert handoff(status=status)["status"] == "vehicle_identity_insufficient"
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []
 
 
 def test_other_vehicle_is_not_supported(monkeypatch, tmp_path):
     wire(monkeypatch, established(tmp_path))
     r = handoff(status="provisionally_resolved", identity={**fx.VIR_IDENTITY, "generation": "X2"})
-    assert r["status"] == "vehicle_not_supported" and v1._parcours == {}
+    assert r["status"] == "vehicle_not_supported" and fx.notice_parcours_opened() == []
 
 
 def test_declared_period_is_a_criterion(monkeypatch, tmp_path):
@@ -101,7 +101,7 @@ def test_declared_period_is_a_criterion(monkeypatch, tmp_path):
     assert handoff(identity=unknown)["status"] == "vehicle_identity_insufficient"
     assert handoff(identity=dict(fx.VIR_IDENTITY))["status"] == "vehicle_identity_insufficient"
     assert handoff(identity=inside, unresolved=["production.year"])["status"] == "vehicle_identity_insufficient"
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []
     assert handoff(status="provisionally_resolved", identity=inside)["status"] == "opened"
 
 
@@ -114,10 +114,10 @@ def test_insufficiently_applicable_notice_stays_refused(monkeypatch, tmp_path):
     wire(monkeypatch, fx.build(tmp_path / "notice", applicability_established=False))
     assert handoff(status="provisionally_resolved")["status"] == "applicability_not_confirmed"
     assert handoff(status="resolved")["status"] == "applicability_not_confirmed"
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []
 
 
 def test_absent_notice_is_refused(monkeypatch):
     wire(monkeypatch, None)
     assert handoff(status="provisionally_resolved")["status"] == "notice_unavailable"
-    assert v1._parcours == {}
+    assert fx.notice_parcours_opened() == []

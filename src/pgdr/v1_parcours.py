@@ -30,6 +30,17 @@ Boundaries, all deliberate:
   * DEV TRIAL (PGDR_V1_DEV_TRIAL=1) is the only mode in which a notice whose
     applicability to the vehicle is not established may be shown, and then
     with a permanent banner on every screen.
+  * No dialogue: the driver observes and confirms. Every input is a button
+    or a choice among images (consent, photo, selection, confirmation, the
+    closed choices documented by the notice, "none matches", "I don't know",
+    the colour) -- no free text field, no model-written message, and none of
+    SessionController, DiagnosticLoop or the complaint parser is reached from
+    here.
+  * Without a notice (none provided, or the one provided does not correspond
+    to the vehicle) the refusal stands and a parcours without notice opens
+    beside it: a fixed information screen, then the validated safety screen
+    for the colour the driver sees (red or uncertain -> stop). No catalogue,
+    no manufacturer text, never another vehicle's notice.
   * Applicability (pgdr.v1_applicabilite): value and provenance of each
     identity key, justification of each criterion, exact match, decision --
     four distinct questions. A value resting on a driver confirmation alone
@@ -347,7 +358,11 @@ class Parcours:
     conditions: dict = field(default_factory=dict)  # consigne key -> confirmed / excluded / unknown (driver's answer)
     propositions: list[str] = field(default_factory=list)  # proposed entry_ids, notice order; never a selection
     repli: Optional[str] = None  # why the catalogue was shown without proposals (vp.REPLIS)
-    # vir -> consent -> [propositions] -> catalogue -> confirmation -> restitution | colour -> fallback
+    # PGDR's refusal (status, message) when no notice is provided or none corresponds to the vehicle: the parcours
+    # then holds no notice at all -- a fixed screen and the safety instructions by colour only.
+    sans_notice: Optional[dict] = None
+    # vir -> consent -> [propositions] -> catalogue -> confirmation -> restitution | colour -> fallback;
+    # without a notice: sans_notice (colour chosen there, never a catalogue)
     phase: str = "vir"
 
 
@@ -372,7 +387,16 @@ def _get(pid: str) -> Parcours:
     return p
 
 
+def _with_notice(p: Parcours) -> None:
+    """A parcours opened without a notice never reaches a catalogue, an image or a manufacturer text -- least of
+    all those of a notice that does not correspond to the vehicle."""
+    if p.sans_notice is not None:
+        raise HTTPException(status_code=409, detail="Aucune notice ne correspond à ce véhicule : seules les "
+                                                    "consignes de sécurité sont disponibles.")
+
+
 def _require_consent(p: Parcours) -> None:
+    _with_notice(p)
     if not p.consent:
         raise HTTPException(status_code=403, detail="Consentement requis.")
 
@@ -451,7 +475,22 @@ def _state(pid: str, p: Parcours) -> dict:
         "colours": [{"key": k, "label": v} for k, v in COLOURS],
         "return_label": load_fallback_screens()["shared"]["return_button"],
         "propositions": _propositions_offer(),
+        "sans_notice": None if p.sans_notice is None else {
+            **{k.partition(".")[2]: vc.DRAFT_LABELS[k] for k in SANS_NOTICE_LABEL_KEYS},
+            "message": p.sans_notice["message"], "draft_texts": draft_texts(SANS_NOTICE_LABEL_KEYS),
+            "screen": _fallback_screen(p.colour) if p.colour else None},
     }
+
+
+# Interface texts of the screen without a notice (DRAFT_LABELS keys).
+SANS_NOTICE_LABEL_KEYS = ("sans_notice.titre", "sans_notice.explication", "sans_notice.consignes")
+
+
+def _fallback_screen(colour: str) -> dict:
+    """The validated fallback screen for this colour (existing rule: red or uncertain -> stop)."""
+    key = "red_or_uncertain" if colour in _RED_OR_UNCERTAIN else "other_colour"
+    screen = load_fallback_screens()["screens"][key]
+    return {"key": key, "lang": "fr", "heading": screen["heading"], "paragraphs": list(screen["paragraphs"])}
 
 
 # Interface texts of the proposed-images screens (DRAFT_LABELS keys).
@@ -487,7 +526,6 @@ def _tiles(pid: str, c: NoticeCatalogue, entry_ids) -> list[dict]:
 # Interface texts of each section (DRAFT_LABELS keys). « Textes de cette section en brouillon » is shown
 # only when one of the section's texts comes from draft content: a label not validated, or a draft group,
 # explanation, classification or translation shown in it.
-QUESTION_LABEL_KEYS = ("message_question", "message_submit", "message_none")
 BLOCK_LABEL_KEYS = ("only_for", "message_given", "urgent_title", "action_title", "conditional_title", "condition_question",
                     "condition_confirmed", "condition_excluded", "condition_unknown", "condition_answer.confirmed",
                     "condition_answer.excluded", "condition_answer.unknown", "common", "no_common", "condition",
@@ -540,8 +578,8 @@ def _open_parcours(identity: VehicleIdentityContext) -> dict:
     checked and the next useful action."""
     w = get_wiring()
     if w.repository is None:
-        return {"status": "notice_unavailable", "message": va.MESSAGES["notice_unavailable"], "reasons": [],
-                "to_verify": [], "next_action": None, "identity": []}
+        return _without_notice({"status": "notice_unavailable", "message": va.MESSAGES["notice_unavailable"],
+                                "reasons": [], "to_verify": [], "next_action": None, "identity": []})
     catalogue = w.repository.catalogue
 
     def period() -> Optional[str]:
@@ -552,14 +590,28 @@ def _open_parcours(identity: VehicleIdentityContext) -> dict:
                          single_identity=identity.resolution_status.value in _SINGLE_IDENTITY_STATUSES,
                          period=period)
     if decision.status != "applicable":
-        return decision.refusal()
+        return _without_notice(decision.refusal())
+    admissible = identity.vehicle_identity or {}
+    pid = _new_parcours(Parcours(vehicle={k: admissible.get(k) for k in ("manufacturer", "model", "generation")},
+                                 vehicle_shown=va.shown_vehicle(decision.keys), applicability_basis=decision.basis))
+    return {"status": "opened", "parcours_id": pid, "url": f"/v1?p={pid}", "applicability_basis": decision.basis}
+
+
+def _new_parcours(p: Parcours) -> str:
     if len(_parcours) >= _MAX_PARCOURS:
         _parcours.pop(next(iter(_parcours)))
     pid = f"V1-{uuid.uuid4().hex}"
-    admissible = identity.vehicle_identity or {}
-    _parcours[pid] = Parcours(vehicle={k: admissible.get(k) for k in ("manufacturer", "model", "generation")},
-                              vehicle_shown=va.shown_vehicle(decision.keys), applicability_basis=decision.basis)
-    return {"status": "opened", "parcours_id": pid, "url": f"/v1?p={pid}", "applicability_basis": decision.basis}
+    _parcours[pid] = p
+    return pid
+
+
+def _without_notice(refusal: dict) -> dict:
+    """The refusal stands, unchanged; beside it, a parcours WITHOUT a notice: a fixed information screen, then
+    the safety instructions by the colour of the light (existing rule, validated screens), never a dead end.
+    No catalogue, no manufacturer text, no other vehicle's notice, nothing invented."""
+    pid = _new_parcours(Parcours(vehicle={}, phase="sans_notice",
+                                 sans_notice={"status": refusal["status"], "message": refusal["message"]}))
+    return {**refusal, "parcours_id": pid, "url": f"/v1?p={pid}"}
 
 
 # --- request bodies -----------------------------------------------------------------
@@ -620,6 +672,7 @@ def get_parcours(pid: str):
 @router.post("/api/v1/parcours/{pid}/vir-seen")
 def vir_seen(pid: str):
     p = _get(pid)
+    _with_notice(p)
     if p.phase == "vir":
         p.phase = "consent"
     return _state(pid, p)
@@ -628,6 +681,7 @@ def vir_seen(pid: str):
 @router.post("/api/v1/parcours/{pid}/consent")
 def consent(pid: str, req: ConsentRequest):
     p = _get(pid)
+    _with_notice(p)
     if not req.accepted:
         return {**_state(pid, p), "status": "consent_required",
                 "message": "Sans votre accord, le parcours ne peut pas continuer."}
@@ -1061,12 +1115,6 @@ def _question(pid: str, i: int) -> dict:
     c = _catalogue()
     variants = [c.entry(x) for x in get_wiring().groups[i]]
     fields = vc.distinguishing_fields(variants)
-    if not fields:
-        # The notice speaks of a message for some variants only: ask for it, typed exactly.
-        return {"group": i, "image": _asset_url(pid, variants[0].image_sha256), "kind": "message",
-                "question": vc.DRAFT_LABELS["message_question"], "submit": vc.DRAFT_LABELS["message_submit"],
-                "none": vc.DRAFT_LABELS["message_none"], "choices": [],
-                "draft_texts": draft_texts(QUESTION_LABEL_KEYS, get_wiring().group_draft[i])}
     return {"group": i, "image": _asset_url(pid, variants[0].image_sha256), "kind": "choice", "choices": [
         {"entry_id": v.entry_id,
          "elements": [{"field": f, "label": "Message affiché" if f == "displayed_message" else "État du voyant",
@@ -1083,8 +1131,9 @@ def _after_confirmation(pid: str, p: Parcours) -> dict:
     w = get_wiring()
     for i in list(pending):
         variants = [c.entry(x) for x in w.groups[i]]
-        if not vc.distinguishing_fields(variants) and not vc.message_question(variants, w.situations):
-            # Nothing documented tells these passages apart: no question, shown as ambiguous.
+        if not vc.distinguishing_fields(variants):
+            # Nothing documented tells these passages apart by a closed choice: no question, shown as ambiguous.
+            # The driver is never asked to type a message (no free input in the V1 parcours).
             p.resolved[i] = AMBIGUOUS
             pending.remove(i)
     if pending:
@@ -1113,8 +1162,7 @@ AMBIGUOUS = "__ambiguous__"
 
 class ClarifyRequest(BaseModel):
     group: int
-    answer: str = Field(max_length=200)  # an entry_id of the group, "dont_know", "none" or "message"
-    message: Optional[str] = Field(default=None, max_length=200)  # with "message": typed by the driver
+    answer: str = Field(max_length=200)  # an entry_id of the group, "dont_know" or "none"; nothing typed
 
 
 @router.post("/api/v1/parcours/{pid}/clarify")
@@ -1127,15 +1175,6 @@ def clarify(pid: str, req: ClarifyRequest):
     if req.answer in ("dont_know", "none"):
         # Never chosen for the driver: the group is shown as ambiguous.
         p.resolved[req.group] = AMBIGUOUS
-        return _after_confirmation(pid, p)
-    if req.answer == "message":
-        text = " ".join((req.message or "").split())
-        if not text:
-            raise HTTPException(status_code=400, detail="Message vide.")
-        p.messages[req.group] = text
-        # Exact documented message only; otherwise the group stays ambiguous (never guessed).
-        match = vc.message_match([_catalogue().entry(x) for x in groups[req.group]], text)
-        p.resolved[req.group] = match or AMBIGUOUS
         return _after_confirmation(pid, p)
     if req.answer not in groups[req.group]:
         raise HTTPException(status_code=400, detail="Choix invalide.")
@@ -1175,16 +1214,16 @@ def no_match(pid: str, req: NoMatchRequest):
 @router.post("/api/v1/parcours/{pid}/colour")
 def colour(pid: str, req: ColourRequest):
     p = _get(pid)
+    if p.sans_notice is not None:
+        # Without a notice: no photo, no consent to give; the colour is the only input, the screen the only output.
+        p.colour = req.colour
+        return {**_state(pid, p), "screen": _fallback_screen(req.colour)}
     _require_consent(p)
     if p.phase not in ("colour", "fallback"):
         raise HTTPException(status_code=409, detail="La question de couleur n'est pas posée à ce stade.")
     p.colour = req.colour
     p.phase = "fallback"
-    cfg = load_fallback_screens()
-    key = "red_or_uncertain" if req.colour in _RED_OR_UNCERTAIN else "other_colour"
-    screen = cfg["screens"][key]
-    return {**_state(pid, p), "screen": {"key": key, "lang": "fr", "heading": screen["heading"],
-                                         "paragraphs": list(screen["paragraphs"])}}
+    return {**_state(pid, p), "screen": _fallback_screen(req.colour)}
 
 
 @router.post("/api/v1/parcours/{pid}/return")
@@ -1245,7 +1284,7 @@ V1_HTML = """<!DOCTYPE html>
  .label { font-weight: 600; }
  .tag { display: inline-block; background: #eee; border-radius: 4px; padding: 2px 8px; margin-right: 6px; }
  .page { color: #444; font-size: .9em; }
- .fallback h1 { color: #b00020; }
+ .fallback h1, .fallback h2 { color: #b00020; }
  .muted { color: #555; font-size: .9em; }
  #premier-constat { border: 3px solid #1f4e79; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
  #part1-t2 { background: #eef4fb; padding: 10px 12px; border-radius: 6px; margin-bottom: 12px; }
@@ -1274,7 +1313,6 @@ V1_HTML = """<!DOCTYPE html>
  .described { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
  .situation { background: #f7f7f7; border-radius: 6px; padding: 6px 12px; margin: 8px 0; }
  .situation blockquote .page, .urgent blockquote .page, .expected-action blockquote .page, .conditional blockquote .page, .described blockquote .page, .stops blockquote .page, .confirmed-stops blockquote .page { display: block; font-size: .85em; color: #444; }
- .message-input { width: 100%; padding: 8px; margin: 6px 0; }
  button.red-offer { background: #b00020; color: #fff; border-color: #b00020; }
  .variant-explanations { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin: 8px 0; }
  .variant-explanation { background: #f4f8fc; border-radius: 6px; padding: 6px 12px; }
@@ -1380,6 +1418,16 @@ V1_HTML = """<!DOCTYPE html>
   <button class="return">Revenir aux images de la notice</button>
  </section>
 
+ <section class="screen" id="screen-sans-notice" hidden>
+  <p class="draft-mention" hidden></p>
+  <h1 id="sans-notice-titre"></h1>
+  <p id="sans-notice-message"></p>
+  <p id="sans-notice-explication"></p>
+  <p id="sans-notice-consignes"></p>
+  <div id="sans-notice-colours"></div>
+  <div id="sans-notice-screen" class="fallback" lang="fr" hidden></div>
+ </section>
+
  <section class="screen fallback" id="screen-fallback" hidden>
   <div id="fallback-content" lang="fr"></div>
   <button class="return">Revenir aux images de la notice</button>
@@ -1427,7 +1475,8 @@ async function start() {
     : [v.manufacturer, v.model, v.generation].filter(Boolean)).join(" · ");
   const ct = el("consent-text"); ct.replaceChildren(...state.consent_text.map(t => make("p", t)));
   selected = new Set(state.selection);
-  if (state.phase === "vir") show("screen-vir");
+  if (state.sans_notice) showSansNotice(state);
+  else if (state.phase === "vir") show("screen-vir");
   else if (!state.consent) show("screen-consent");
   else if (state.phase === "propositions") { try { showPropositions(await call("/propositions")); } catch (e) { await openCatalogue(); } }
   else await openCatalogue();
@@ -1795,16 +1844,6 @@ function renderQuestions(s) {
   for (const q of s.questions) {
     const box = make("div", null, "question"); box.dataset.group = q.group;
     const img = make("img"); img.src = q.image; img.alt = ""; box.append(img);
-    if (q.kind === "message") {
-      box.dataset.kind = "message";
-      if (q.draft_texts) box.append(make("p", q.draft_texts, "draft-mention"));
-      const lab = make("label", q.question); const inp = make("input"); inp.type = "text"; inp.maxLength = 200;
-      inp.className = "message-input"; lab.append(document.createElement("br"), inp); box.append(lab);
-      const ok = make("button", q.submit, "message-submit");
-      ok.onclick = () => { if (inp.value.trim()) clarify(q.group, "message", inp.value); };
-      const no = make("button", q.none, "message-none"); no.onclick = () => clarify(q.group, "dont_know");
-      box.append(ok, no); root.append(box); continue;
-    }
     for (const c of q.choices) {
       const b = make("button", null, "choice"); b.dataset.entryId = c.entry_id;
       b.append(make("span", c.elements.map(x => x.label + " : " + x.value).join(" · "), "choice-label"));
@@ -1819,8 +1858,8 @@ function renderQuestions(s) {
   translateAll(root);
   show("screen-clarification");
 }
-async function clarify(group, answer, message) {
-  try { outcome(await call("/clarify", message === undefined ? {group, answer} : {group, answer, message})); } catch (e) { fail(e); }
+async function clarify(group, answer) {
+  try { outcome(await call("/clarify", {group, answer})); } catch (e) { fail(e); }
 }
 function showColour(s) {
   const box = el("colour-choices"); box.replaceChildren();
@@ -1903,6 +1942,22 @@ async function noMatch(reason) {
 }
 el("none-match").onclick = () => noMatch("none_match");
 el("dont-know").onclick = () => noMatch("dont_know");
+// No notice for this vehicle: fixed texts, the colour as the only (closed) choice, the validated safety screen.
+function showSansNotice(s) {
+  const t = s.sans_notice, box = el("screen-sans-notice");
+  draftMention(box, t.draft_texts);
+  el("sans-notice-titre").textContent = t.titre; el("sans-notice-message").textContent = t.message;
+  el("sans-notice-explication").textContent = t.explication; el("sans-notice-consignes").textContent = t.consignes;
+  const choices = el("sans-notice-colours"); choices.replaceChildren();
+  for (const c of s.colours) {
+    const b = make("button", c.label); b.dataset.colour = c.key; if (s.colour === c.key) b.classList.add("primary");
+    b.onclick = async () => { try { showSansNotice(await call("/colour", {colour: c.key})); } catch (e) { fail(e); } };
+    choices.append(b);
+  }
+  const sc = el("sans-notice-screen"), screen = s.screen || t.screen; sc.replaceChildren(); sc.hidden = !screen;
+  if (screen) { sc.dataset.screen = screen.key; sc.append(make("h2", screen.heading)); for (const p of screen.paragraphs) sc.append(make("p", p)); }
+  applyState(s); show("screen-sans-notice");
+}
 function showScreen(screen) {
     const box = el("fallback-content"); box.replaceChildren(make("h1", screen.heading));
     box.dataset.screen = screen.key;

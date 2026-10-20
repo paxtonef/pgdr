@@ -36,10 +36,8 @@ def ambiguous(r) -> list[dict]:
     return r["premier_constat"]["presentation"]["ambiguous"]
 
 
-def clarify(client, r, answer, message=None) -> dict:
+def clarify(client, r, answer) -> dict:
     body = {"group": r["questions"][0]["group"], "answer": answer}
-    if message is not None:
-        body["message"] = message
     out = client.post(f"/api/v1/parcours/{r['pid']}/clarify", json=body)
     assert out.status_code == 200, out.text
     return out.json()
@@ -113,14 +111,17 @@ class TestMixedGroup:
         assert fx.ALARM_STOP not in json.dumps(b_, ensure_ascii=False)
         assert fx.ALARM_STOP not in [c["text"] for c in b["common"]]
 
-    def test_message_question_exact_text_never_mapped(self, monkeypatch, grouped, client):
+    def test_no_message_is_asked_and_the_group_stays_ambiguous(self, monkeypatch, grouped, client):
+        # Clôture V1: no free text in the parcours. Nothing documented tells these passages apart by a closed
+        # choice, so no question is asked and both passages are shown as ambiguous (never guessed).
         with_situations(monkeypatch, grouped)
         r = confirm(client, ["fx_amber_code_a"])
-        (q,) = r["questions"]
-        assert q["kind"] == "message" and q["none"] == "Aucun message / Je ne sais pas"
-        out = clarify(client, r, "message", "  CODE   intrusion ")
-        (b,) = ambiguous(out)  # no documented message: never matched to a variant
-        assert b["message_given"] == {"label": vc.DRAFT_LABELS["message_given"], "text": "CODE intrusion"}
+        assert "questions" not in r and r["phase"] == "restitution"
+        typed = client.post(f"/api/v1/parcours/{r['pid']}/clarify",
+                            json={"group": 0, "answer": "message", "message": "CODE intrusion"})
+        assert typed.status_code == 409  # no clarification expected, and a typed message is never accepted
+        (b,) = ambiguous(r)
+        assert b["message_given"] is None
         a_, b_ = b["variants"]
         # « Contact … » belongs to variant A only.
         assert fx.CODE_A_INSTRUCTION not in [c["text"] for c in b["common"]]
@@ -128,7 +129,7 @@ class TestMixedGroup:
         assert b_["entry"]["situation"]["consignes"] == [] and b_["entry"]["manufacturer_text"]["documented_instruction"] is None
         assert b["urgent"] == [] and b["red_offer"] is None
         r = confirm(client, ["fx_amber_code_b"])
-        (b,) = ambiguous(clarify(client, r, "dont_know"))
+        (b,) = ambiguous(r)
         assert b["message_given"] is None
 
     def test_exact_documented_message_resolves(self, grouped):
@@ -214,7 +215,7 @@ class TestInformationToTakeIntoAccount:
     def test_failure_term_is_a_reported_defect(self, monkeypatch, grouped, client):
         with_situations(monkeypatch, grouped)
         r = confirm(client, ["fx_amber_code_a"])
-        (b,) = ambiguous(clarify(client, r, "message", "FICTIVE"))
+        (b,) = ambiguous(r)
         st = b["variants"][0]["entry"]["situation"]
         assert st["nature"] == "anomalie_defaut" and st["label"] == "Défaut signalé par la notice"
         assert "possible" not in vc.NATURE_LABELS["anomalie_defaut"]
